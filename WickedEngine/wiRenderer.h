@@ -56,6 +56,17 @@ namespace wi::renderer
 	// ~8 screen pixels of even diffusion. Substitutes for resolution: blur and supersampling
 	// attack the same under-sampling.
 	extern int gg_reflection_blur;
+	// GG: 1 draws every object in the planar reflection passes at its last LOD (the level's "Reflections Use
+	// Fastest LOD"). Read in DrawScene, which is the one place the reflection's batches are queued.
+	extern int gg_reflection_lowest_lod;
+	// GG: 0 leaves the transparent objects out of the planar reflection (an A/B lever, SET_REFLTRANSPARENT)
+	extern int gg_reflection_transparent;
+	// GG: how many object batches the last frame's main and planar reflection passes queued, opaque and transparent
+	// (DUMP_LODSTATS)
+	extern int gg_dbg_main_opaque_batches;
+	extern int gg_dbg_main_transparent_batches;
+	extern int gg_dbg_refl_opaque_batches;
+	extern int gg_dbg_refl_transparent_batches;
 	constexpr wi::graphics::Format format_depthbuffer_main = wi::graphics::Format::D32_FLOAT_S8X24_UINT;
 	constexpr wi::graphics::Format format_rendertarget_main = wi::graphics::Format::R11G11B10_FLOAT;
 	constexpr wi::graphics::Format format_idbuffer = wi::graphics::Format::R32_UINT;

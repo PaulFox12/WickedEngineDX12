@@ -44,6 +44,9 @@ namespace wi::scene
 	// GGMAX 1.55: global env-probe brightness multiplier (1 = stock), set by the game's
 	// "Global Probe Brightness" slider; consumed in lightingHF EnvironmentReflection_Global.
 	float gg_envprobe_brightness = 1.0f;
+	// GG: the distance between LOD steps (the level's LOD Multiplier times 200, the DX11 rule): LOD 1 past two
+	// steps, LOD 2 past three, LOD 3 past four. Negative keeps the engine's own choice by projected size.
+	float gg_lod_step = -1.0f;
 	// GGMAX 2.89 (#157): env-probe parallax precision / policy.
 	//   0 = stock half (reproduces the fp16 overflow defect)
 	//   1 = float precision, parallax kept
@@ -5790,7 +5793,19 @@ namespace wi::scene
 				// LOD select:
 				if (mesh.subsets_per_lod > 0)
 				{
-					object.lod = ComputeObjectLODForView(object, aabb, mesh, camera.GetViewProjection());
+					if (gg_lod_step >= 0)
+					{
+						const float dist = wi::math::Distance(camera.Eye, object.center);
+						uint32_t lod = 0;
+						if (dist > gg_lod_step * 2) lod = 1;
+						if (dist > gg_lod_step * 3) lod = 2;
+						if (dist > gg_lod_step * 4) lod = 3;
+						object.lod = std::min(lod, mesh.GetLODCount() - 1);
+					}
+					else
+					{
+						object.lod = ComputeObjectLODForView(object, aabb, mesh, camera.GetViewProjection());
+					}
 				}
 
 				union SortBits
