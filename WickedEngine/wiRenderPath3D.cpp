@@ -1571,7 +1571,9 @@ namespace wi
 				// GGMAX 2.13: state-safe hook boundary (see the transparent hook / game task #120)
 				if (customDraw_Prepass_Reflections)
 				{
+					auto gg_range = wi::profiler::BeginRangeGPU("Planar Reflections Z-Prepass Custom", cmd);
 					customDraw_Prepass_Reflections(&camera_reflection.frustum, cmd);
+					wi::profiler::EndRange(gg_range);
 					wi::graphics::GetDevice()->GG_InvalidateCommandListState(cmd);
 					wi::renderer::BindCameraCB(camera_reflection, camera_reflection_previous, camera_reflection, cmd);
 					wi::renderer::BindCommonResources(cmd);
@@ -1657,6 +1659,7 @@ namespace wi
 				vp.max_depth = 1;
 				device->BindViewports(1, &vp, cmd);
 
+				auto gg_range = wi::profiler::BeginRangeGPU("Planar Reflections Opaque", cmd);
 				wi::renderer::DrawScene(
 					visibility_reflection,
 					RENDERPASS_MAIN,
@@ -1666,23 +1669,34 @@ namespace wi
 					wi::renderer::DRAWSCENE_HAIRPARTICLE |
 					wi::renderer::DRAWSCENE_SKIP_PLANAR_REFLECTION_OBJECTS
 				);
+				wi::profiler::EndRange(gg_range);
 				// Custom scene draw (terrain/trees reflection opaque):
 				// GGMAX 2.13: state-safe hook boundary (see the transparent hook / game task #120)
 				if (customDraw_Opaque)
 				{
+					gg_range = wi::profiler::BeginRangeGPU("Planar Reflections Custom", cmd);
 					customDraw_Opaque(&camera_reflection.frustum, 1, cmd);
+					wi::profiler::EndRange(gg_range);
 					wi::graphics::GetDevice()->GG_InvalidateCommandListState(cmd);
 					wi::renderer::BindCameraCB(camera_reflection, camera_reflection_previous, camera_reflection, cmd);
 					wi::renderer::BindCommonResources(cmd);
 				}
+				gg_range = wi::profiler::BeginRangeGPU("Planar Reflections Sky", cmd);
 				wi::renderer::DrawSky(*scene, cmd);
-				wi::renderer::DrawScene(
-					visibility_reflection,
-					RENDERPASS_MAIN,
-					cmd,
-					wi::renderer::DRAWSCENE_TRANSPARENT |
-					wi::renderer::DRAWSCENE_SKIP_PLANAR_REFLECTION_OBJECTS
-				); // separate renderscene, to be drawn after opaque and transparent sort order
+				wi::profiler::EndRange(gg_range);
+				gg_range = wi::profiler::BeginRangeGPU("Planar Reflections Transparent", cmd);
+				if (wi::renderer::gg_reflection_transparent != 0)
+				{
+					wi::renderer::DrawScene(
+						visibility_reflection,
+						RENDERPASS_MAIN,
+						cmd,
+						wi::renderer::DRAWSCENE_TRANSPARENT |
+						wi::renderer::DRAWSCENE_SKIP_PLANAR_REFLECTION_OBJECTS
+					); // separate renderscene, to be drawn after opaque and transparent sort order
+				}
+				wi::profiler::EndRange(gg_range);
+				gg_range = wi::profiler::BeginRangeGPU("Planar Reflections Tail", cmd);
 
 				if (scene->weather.IsRealisticSky() && scene->weather.IsRealisticSkyAerialPerspective())
 				{
@@ -1709,6 +1723,7 @@ namespace wi
 
 				wi::renderer::DrawSoftParticles(visibility_reflection, false, cmd);
 				wi::renderer::DrawSpritesAndFonts(*scene, camera_reflection, false, cmd);
+				wi::profiler::EndRange(gg_range);
 
 				device->RenderPassEnd(cmd);
 

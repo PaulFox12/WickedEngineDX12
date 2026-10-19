@@ -531,6 +531,13 @@ int gg_reflection_width = 0;
 // GGMAX 3.90: Water Reflection Blur - passes of the separable Gaussian over the resolved
 // planar reflection. 0 = off. See wiRenderer.h and the consumer in wiRenderPath3D.cpp.
 int gg_reflection_blur = 0;
+// GG: the planar reflection passes draw every object at its last LOD. See wiRenderer.h.
+int gg_reflection_lowest_lod = 0;
+int gg_reflection_transparent = 1;
+int gg_dbg_main_opaque_batches = 0;
+int gg_dbg_main_transparent_batches = 0;
+int gg_dbg_refl_opaque_batches = 0;
+int gg_dbg_refl_transparent_batches = 0;
 static bool localShadowInvalidate = true;           // settings/level change -> next decision forces a full clear
 static uint64_t localShadowDecisionFrame = ~0ull;   // frame the Phase 2 decision was produced
 // GGMAX 2.07c: dir + cone are part of the key — the spot shadow's content depends on the
@@ -9367,6 +9374,8 @@ void DrawScene(
 	const bool skip_planar_reflection_objects = flags & DRAWSCENE_SKIP_PLANAR_REFLECTION_OBJECTS;
 	const bool foreground = flags & DRAWSCENE_FOREGROUND_ONLY;
 	const bool maincamera = flags & DRAWSCENE_MAINCAMERA;
+	// GG: only the planar reflection passes skip the reflection objects, so this is the reflection pass test
+	const bool reflection_lowest_lod = skip_planar_reflection_objects && gg_reflection_lowest_lod != 0;
 
 	device->EventBegin("DrawScene", cmd);
 	device->BindShadingRate(ShadingRate::RATE_1X1, cmd);
@@ -9458,7 +9467,24 @@ void DrawScene(
 			}
 
 			if (ggQ) gg_dbg_watch_q[renderPass][GG_Q_ADDED].fetch_add(1, std::memory_order_relaxed);
-			renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits);
+			if (reflection_lowest_lod)
+			{
+				const MeshComponent& mesh = vis.scene->meshes[object.mesh_index];
+				renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits, 0xFF, (uint8_t)(mesh.GetLODCount() - 1));
+			}
+			else
+			{
+				renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits);
+			}
+		}
+		if (renderPass == RENDERPASS_MAIN && !foreground)
+		{
+			// GG: the queue sizes for DUMP_LODSTATS; the reflection passes are the ones that skip the reflection objects,
+			// and the foreground (weapon) passes are left out so they do not overwrite the scene's count
+			int& count = skip_planar_reflection_objects
+				? (transparent ? gg_dbg_refl_transparent_batches : gg_dbg_refl_opaque_batches)
+				: (transparent ? gg_dbg_main_transparent_batches : gg_dbg_main_opaque_batches);
+			count = (int)renderQueue.batches.size();
 		}
 		if (!renderQueue.empty())
 		{
