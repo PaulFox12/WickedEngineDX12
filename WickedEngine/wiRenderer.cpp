@@ -503,6 +503,8 @@ int gg_reflection_width = 0;
 int gg_reflection_blur = 0;
 // GG: the planar reflection passes draw every object at its last LOD. See wiRenderer.h.
 int gg_reflection_lowest_lod = 0;
+int gg_shadow_lowest_lod = 0;
+int gg_probe_lowest_lod = 0;
 int gg_reflection_transparent = 1;
 int gg_dbg_main_opaque_batches = 0;
 int gg_dbg_main_transparent_batches = 0;
@@ -8736,6 +8738,8 @@ void DrawShadowmaps(
 						// gg_shadow_caster_extrude — that is the whole point of the counter.
 						gg_dbg_shadow_casters.fetch_add(1, std::memory_order_relaxed);
 
+						// GG: the shadow at the last LOD when the level asks (Shadows Use Fastest LOD)
+						if (gg_shadow_lowest_lod != 0) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
 						RenderBatch batch;
 						batch.Create(object.mesh_index, uint32_t(i), gg_shadowBatchDist, object.sort_bits, camera_mask, shadow_lod);
 
@@ -8906,6 +8910,8 @@ void DrawShadowmaps(
 						if (!gg_ShadowFadeBatchDistance(object, distanceSq, gg_shadowBatchDist))
 							continue;
 
+						// GG: the shadow at the last LOD when the level asks (Shadows Use Fastest LOD)
+						if (gg_shadow_lowest_lod != 0) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
 						RenderBatch batch;
 						batch.Create(object.mesh_index, uint32_t(i), gg_shadowBatchDist, object.sort_bits, 0xFF, shadow_lod);
 
@@ -9080,6 +9086,8 @@ void DrawShadowmaps(
 						if (!gg_ShadowFadeBatchDistance(object, distanceSq, gg_shadowBatchDist))
 							continue;
 
+						// GG: the shadow at the last LOD when the level asks (Shadows Use Fastest LOD)
+						if (gg_shadow_lowest_lod != 0) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
 						RenderBatch batch;
 						batch.Create(object.mesh_index, uint32_t(i), gg_shadowBatchDist, object.sort_bits, camera_mask, shadow_lod);
 
@@ -11510,7 +11518,9 @@ void RefreshEnvProbes(const Visibility& vis, CommandList cmd)
 						if (camera_mask == 0)
 							continue;
 
-						renderQueue.add(object.mesh_index, uint32_t(i), 0, object.sort_bits, camera_mask);
+						// GG: the probes' capture at the last LOD when the level asks
+						renderQueue.add(object.mesh_index, uint32_t(i), 0, object.sort_bits, camera_mask,
+							gg_probe_lowest_lod != 0 ? (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1) : (uint8_t)0xFF);
 					}
 				}
 			}
