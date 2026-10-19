@@ -635,6 +635,9 @@ namespace wi::scene
 		//	layerMask		:	filter based on layer
 		//	lod				:	specify min level of detail for meshes
 		RayIntersectionResult Intersects(const wi::primitive::Ray& ray, uint32_t filterMask = wi::enums::FILTER_OPAQUE, uint32_t layerMask = ~0, uint32_t lod = 0) const;
+		// GG: the same, against the given object indices only (pOnlyObjects, or every object when null) and leaving out the
+		// objects of the given entities (pExclude)
+		RayIntersectionResult Intersects(const wi::primitive::Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod, const uint32_t* pOnlyObjects, uint32_t onlyCount, const wi::ecs::Entity* pExclude, uint32_t excludeCount) const;
 
 		// Given a ray, finds the first intersection point against all mesh instances or colliders
 		//	returns true immediately if intersection was found, false otherwise
@@ -818,6 +821,10 @@ namespace wi::scene
 	// Deprecated, use Scene::Intersects() function instead
 	using PickResult = Scene::RayIntersectionResult;
 	PickResult Pick(const wi::primitive::Ray& ray, uint32_t filterMask = wi::enums::FILTER_OPAQUE, uint32_t layerMask = ~0, const Scene& scene = GetScene(), uint32_t lod = 0);
+	// GG: a pick that leaves out the objects of the given entities (a caster and its gun) without changing their layers
+	PickResult Pick(const wi::primitive::Ray& ray, uint32_t filterMask, uint32_t layerMask, const Scene& scene, const wi::ecs::Entity* pExclude, uint32_t excludeCount);
+	// GG: a pick against the given object indices only (one model's frames), the same tests as Pick
+	PickResult PickObjects(const wi::primitive::Ray& ray, const uint32_t* pObjectIndices, uint32_t count, uint32_t filterMask = wi::enums::FILTER_OPAQUE, uint32_t layerMask = ~0, const Scene& scene = GetScene());
 
 	// Deprecated, use Scene::Intersects() function instead
 	using SceneIntersectSphereResult = Scene::SphereIntersectionResult;
