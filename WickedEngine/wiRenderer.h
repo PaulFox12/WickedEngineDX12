@@ -59,6 +59,10 @@ namespace wi::renderer
 	// GG: 1 draws every object in the planar reflection passes at its last LOD (the level's "Reflections Use
 	// Fastest LOD"). Read in DrawScene, which is the one place the reflection's batches are queued.
 	extern int gg_reflection_lowest_lod;
+	// GG: 1 draws every object's shadow at its last LOD (the level's "Shadows Use Fastest LOD"); 1 draws the environment
+	// probes' capture at the last LOD ("Probes Use Fastest LOD"). The DX11 rules, per-category flags in the level's visuals
+	extern int gg_shadow_lowest_lod;
+	extern int gg_probe_lowest_lod;
 	// GG: 0 leaves the transparent objects out of the planar reflection (an A/B lever, SET_REFLTRANSPARENT)
 	extern int gg_reflection_transparent;
 	// GG: how many object batches the last frame's main and planar reflection passes queued, opaque and transparent

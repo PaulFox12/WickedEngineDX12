@@ -47,6 +47,11 @@ namespace wi::scene
 	// GG: the distance between LOD steps (the level's LOD Multiplier times 200, the DX11 rule): LOD 1 past two
 	// steps, LOD 2 past three, LOD 3 past four. Negative keeps the engine's own choice by projected size.
 	float gg_lod_step = -1.0f;
+	// GG: 1 makes a ray test a mesh with no BVH (a skinned one) at its last LOD, the level's "Raycast Use Fastest LOD"
+	// (the DX11 rule); every triangle of that LOD is still tested, and skinned per ray, so the fewer the better
+	int gg_raycast_lowest_lod = 0;
+	Scene::GGRayCost Scene::gg_raycost_ring[Scene::GG_RAYCOST_RING];
+	std::atomic<uint32_t> Scene::gg_raycost_next{ 0 };
 	// GGMAX 2.89 (#157): env-probe parallax precision / policy.
 	//   0 = stock half (reproduces the fp16 overflow defect)
 	//   1 = float precision, parallax kept
@@ -7768,6 +7773,11 @@ namespace wi::scene
 			std::sort(gg_candidates.begin(), gg_candidates.end(),
 				[](const GGRayCandidate& a, const GGRayCandidate& b) { return a.t < b.t; });
 
+			// GG: this ray's cost record (DUMP_RAYCOST)
+			GGRayCost gg_cost;
+			gg_cost.candidates = (uint32_t)gg_candidates.size();
+			const unsigned long long gg_tris_before = gg_dbg_isect_tris.load(std::memory_order_relaxed);
+			const unsigned long long gg_skin_before = gg_dbg_isect_skintris.load(std::memory_order_relaxed);
 			for (size_t gg_ci = 0; gg_ci < gg_candidates.size(); ++gg_ci)
 			{
 				// front-to-back early out: nothing further along the ray can beat this hit
@@ -7779,6 +7789,7 @@ namespace wi::scene
 				const MeshComponent* mesh = meshes.GetComponent(object.meshID);
 
 				gg_dbg_isect_aabbpass.fetch_add(1, std::memory_order_relaxed);
+				const unsigned long long gg_tris_object_before = gg_dbg_isect_tris.load(std::memory_order_relaxed);
 
 				const Entity entity = objects.GetEntity(objectIndex);
 				const SoftBodyPhysicsComponent* softbody = softbodies.GetComponent(object.meshID);
@@ -7938,12 +7949,46 @@ namespace wi::scene
 						intersect_triangle(subsetIndex, indexOffset, triangleIndex);
 					});
 				}
+				else if (armature != nullptr && !armature->boneData.empty() && softbody == nullptr && (mesh->gg_bone_clusters_built || mesh->vertex_boneweights.size() == mesh->vertex_positions.size()))
+				{
+					// GG: a skinned mesh by its bone clusters: each group's bind-pose box moved by the bone's current matrix, a
+					// little room added for the vertices that follow other bones, and only the groups the ray crosses skinned
+					// and tested (every triangle of a character was tested before, 5-18 ms a ray)
+					if (!mesh->gg_bone_clusters_built)
+						mesh->GG_BuildBoneClusters();
+					const Ray ray_local = Ray(rayOrigin_local, rayDirection_local);
+					for (const MeshComponent::GGBoneCluster& cluster : mesh->gg_bone_clusters)
+					{
+						AABB box = cluster.aabb;
+						if (cluster.bone < armature->boneData.size())
+						{
+							const XMFLOAT4X4 m4 = armature->boneData[cluster.bone].GetMatrix();
+							box = cluster.aabb.transform(XMMatrixTranspose(XMLoadFloat4x4(&m4)));
+						}
+						const XMFLOAT3 bmin = box.getMin();
+						const XMFLOAT3 bmax = box.getMax();
+						const float pad = std::max(2.0f, 0.15f * std::max(bmax.x - bmin.x, std::max(bmax.y - bmin.y, bmax.z - bmin.z)));
+						box = AABB(XMFLOAT3(bmin.x - pad, bmin.y - pad, bmin.z - pad), XMFLOAT3(bmax.x + pad, bmax.y + pad, bmax.z + pad));
+						if (!ray_local.intersects(box))
+							continue;
+						for (uint32_t packed : cluster.triangles)
+						{
+							const uint32_t subsetIndex = packed >> 24;
+							intersect_triangle(subsetIndex, mesh->subsets[subsetIndex].indexOffset, packed & 0xFFFFFF);
+						}
+					}
+				}
 				else
 				{
 					// Brute-force intersection test:
 					uint32_t first_subset = 0;
 					uint32_t last_subset = 0;
-					mesh->GetLODSubsetRange(lod, first_subset, last_subset);
+					// GG: at the last LOD when the level asks (gg_raycast_lowest_lod): a skinned model's every triangle is
+					// skinned and tested here, and a weapon ray through a character cost 5-18 ms at LOD 0
+					uint32_t gg_lod = lod;
+					if (gg_raycast_lowest_lod != 0 && mesh->GetLODCount() > 1)
+						gg_lod = mesh->GetLODCount() - 1;
+					mesh->GetLODSubsetRange(gg_lod, first_subset, last_subset);
 					for (uint32_t subsetIndex = first_subset; subsetIndex < last_subset; ++subsetIndex)
 					{
 						const MeshComponent::MeshSubset& subset = mesh->subsets[subsetIndex];
@@ -7959,7 +8004,17 @@ namespace wi::scene
 					}
 				}
 
+				// GG: the object that took the most triangles of this ray
+				const uint32_t gg_tris_object = (uint32_t)(gg_dbg_isect_tris.load(std::memory_order_relaxed) - gg_tris_object_before);
+				if (gg_tris_object > gg_cost.dearest_tris)
+				{
+					gg_cost.dearest_tris = gg_tris_object;
+					gg_cost.dearest = entity;
+				}
 			}
+			gg_cost.tris = (uint32_t)(gg_dbg_isect_tris.load(std::memory_order_relaxed) - gg_tris_before);
+			gg_cost.skintris = (uint32_t)(gg_dbg_isect_skintris.load(std::memory_order_relaxed) - gg_skin_before);
+			gg_raycost_ring[gg_raycost_next.fetch_add(1, std::memory_order_relaxed) % GG_RAYCOST_RING] = gg_cost;
 		}
 
 		if (filterMask & FILTER_RAGDOLL)

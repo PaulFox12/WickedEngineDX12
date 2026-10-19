@@ -635,6 +635,19 @@ namespace wi::scene
 		//	layerMask		:	filter based on layer
 		//	lod				:	specify min level of detail for meshes
 		RayIntersectionResult Intersects(const wi::primitive::Ray& ray, uint32_t filterMask = wi::enums::FILTER_OPAQUE, uint32_t layerMask = ~0, uint32_t lod = 0) const;
+		// GG: the last 64 ray picks, for the harness (DUMP_RAYCOST): how many triangles each tested, how many of them
+		// skinned, how many objects passed the box test, and the object that took the most triangles
+		struct GGRayCost
+		{
+			uint32_t tris = 0;
+			uint32_t skintris = 0;
+			uint32_t candidates = 0;
+			uint32_t dearest_tris = 0;
+			wi::ecs::Entity dearest = wi::ecs::INVALID_ENTITY;
+		};
+		static constexpr uint32_t GG_RAYCOST_RING = 64;
+		static GGRayCost gg_raycost_ring[GG_RAYCOST_RING];
+		static std::atomic<uint32_t> gg_raycost_next;
 		// GG: the same, against the given object indices only (pOnlyObjects, or every object when null) and leaving out the
 		// objects of the given entities (pExclude)
 		RayIntersectionResult Intersects(const wi::primitive::Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod, const uint32_t* pOnlyObjects, uint32_t onlyCount, const wi::ecs::Entity* pExclude, uint32_t excludeCount) const;
