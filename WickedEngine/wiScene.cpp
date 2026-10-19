@@ -7630,6 +7630,10 @@ namespace wi::scene
 
 	Scene::RayIntersectionResult Scene::Intersects(const Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod) const
 	{
+		return Intersects(ray, filterMask, layerMask, lod, nullptr, 0, nullptr, 0);
+	}
+	Scene::RayIntersectionResult Scene::Intersects(const Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod, const uint32_t* pOnlyObjects, uint32_t onlyCount, const Entity* pExclude, uint32_t excludeCount) const
+	{
 		RayIntersectionResult result;
 
 		gg_dbg_isect_calls.fetch_add(1, std::memory_order_relaxed);
@@ -7706,8 +7710,13 @@ namespace wi::scene
 			const XMFLOAT3 gg_ro = ray.origin;
 			const XMFLOAT3 gg_ri = ray.direction_inverse;
 
-			for (size_t objectIndex = 0; objectIndex < objectCount; ++objectIndex)
+			// GG: the given objects only when a list is passed, and none of the excluded entities' objects
+			const size_t gg_iterCount = pOnlyObjects != nullptr ? (size_t)onlyCount : objectCount;
+			for (size_t gg_k = 0; gg_k < gg_iterCount; ++gg_k)
 			{
+				const size_t objectIndex = pOnlyObjects != nullptr ? (size_t)pOnlyObjects[gg_k] : gg_k;
+				if (objectIndex >= objectCount)
+					continue;
 				const AABB& aabb = aabb_objects[objectIndex];
 				if ((layerMask & aabb.layerMask) == 0)
 					continue;
@@ -7717,6 +7726,15 @@ namespace wi::scene
 				const ObjectComponent& object = objects[objectIndex];
 				if (object.meshID == INVALID_ENTITY)
 					continue;
+				if (pExclude != nullptr && excludeCount > 0)
+				{
+					const Entity gg_entity = objects.GetEntity(objectIndex);
+					bool gg_excluded = false;
+					for (uint32_t gg_x = 0; gg_x < excludeCount && !gg_excluded; ++gg_x)
+						gg_excluded = pExclude[gg_x] == gg_entity;
+					if (gg_excluded)
+						continue;
+				}
 				if (!object.IsRenderable() && (object.GetFilterMask() & FILTER_NAVIGATION_MESH) == 0)
 					continue; // GGMAX 1.68: DX11 parity — do not pick hidden objects
 				if ((filterMask & object.GetFilterMask()) == 0)
@@ -10430,6 +10448,14 @@ namespace wi::scene
 	PickResult Pick(const wi::primitive::Ray& ray, uint32_t filterMask, uint32_t layerMask, const Scene& scene, uint32_t lod)
 	{
 		return scene.Intersects(ray, filterMask, layerMask, lod);
+	}
+	PickResult Pick(const wi::primitive::Ray& ray, uint32_t filterMask, uint32_t layerMask, const Scene& scene, const Entity* pExclude, uint32_t excludeCount)
+	{
+		return scene.Intersects(ray, filterMask, layerMask, 0, nullptr, 0, pExclude, excludeCount);
+	}
+	PickResult PickObjects(const wi::primitive::Ray& ray, const uint32_t* pObjectIndices, uint32_t count, uint32_t filterMask, uint32_t layerMask, const Scene& scene)
+	{
+		return scene.Intersects(ray, filterMask, layerMask, 0, pObjectIndices, count, nullptr, 0);
 	}
 	SceneIntersectSphereResult SceneIntersectSphere(const wi::primitive::Sphere& sphere, uint32_t filterMask, uint32_t layerMask, const Scene& scene, uint32_t lod)
 	{
