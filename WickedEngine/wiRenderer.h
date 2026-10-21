@@ -50,6 +50,7 @@ namespace wi::renderer
 	// RenderPath3D::setReflectionsEnabled, so every path that re-creates the reflection
 	// targets picks it up for free - including ResizeBuffers and the game's own callers.
 	extern int gg_reflection_width;
+	extern bool gg_probe_capture; // GGMAX: environment probe captures on or held (wiRenderer.cpp)
 	// GGMAX 3.90: Water Reflection Blur. Number of 9-tap separable Gaussian passes run over
 	// rtReflection_resolved after the planar reflection pass. 0 = off, image byte-identical.
 	// The reflection is magnified ~4x on flat water, so one pass of ~2 texels sigma reads as
