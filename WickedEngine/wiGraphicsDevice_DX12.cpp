@@ -186,6 +186,29 @@ void gg_vram_unregister(const void* key)
 	if (gg_vram_live == nullptr) return;
 	gg_vram_live->erase(key);
 }
+// GGMAX: a destroyed resource's record kept, keyed by its allocation, until the deferred destroyer releases that
+// allocation (gg_vram_released from AllocationHandler::Update), so the dump can name the backlog: at the start of a
+// level the allocator held 8.5 GB against 3.7 GB live (2026-10-21), the rest destroyed and waiting for a frame
+static std::map<const void*, GGVramRec>* gg_vram_pending = nullptr;
+void gg_vram_pending_move(const void* key, const void* allocation)
+{
+	std::scoped_lock lck(gg_vram_mutex);
+	if (gg_vram_live == nullptr) return;
+	auto it = gg_vram_live->find(key);
+	if (it == gg_vram_live->end()) return;
+	if (allocation != nullptr)
+	{
+		if (gg_vram_pending == nullptr) gg_vram_pending = new std::map<const void*, GGVramRec>();
+		(*gg_vram_pending)[allocation] = it->second;
+	}
+	gg_vram_live->erase(it);
+}
+void gg_vram_released(const void* allocation)
+{
+	std::scoped_lock lck(gg_vram_mutex);
+	if (gg_vram_pending == nullptr) return;
+	gg_vram_pending->erase(allocation);
+}
 
 // Aggregate totals for the harness GET_PERF_DATA VRAM line (no file IO).
 void GG_GetVRAMTotals(unsigned long long* out_census, unsigned long long* out_default_heap,
@@ -319,7 +342,30 @@ void GG_DumpVRAMCensus(const char* path)
 				gg_vram_stages[i].usage, gg_vram_stages[i].census, gg_vram_stages[i].psos);
 		}
 	}
+	// the backlog: destroyed resources whose allocations the deferred destroyer has not released yet (kind in lowercase)
+	std::vector<GGVramRec> pending;
+	unsigned long long pending_total = 0;
+	{
+		std::scoped_lock lck(gg_vram_mutex);
+		if (gg_vram_pending != nullptr)
+		{
+			pending.reserve(gg_vram_pending->size());
+			for (auto& x : *gg_vram_pending) { pending.push_back(x.second); pending_total += x.second.bytes; }
+		}
+	}
+	std::sort(pending.begin(), pending.end(), [](const GGVramRec& a, const GGVramRec& b) { return a.bytes > b.bytes; });
+	fprintf(f, "# PENDING records=%llu bytes=%llu (destroyed, allocation not yet released)\n", (unsigned long long)pending.size(), pending_total);
 	fprintf(f, "# kind bytes w h d mips arr samples fmt bind misc usage alias \"name\"\n");
+	for (const GGVramRec& r : pending)
+	{
+		const char* kindstr = (r.kind == 0) ? "t" : ((r.kind == 1) ? "b" : "a");
+		fprintf(f, "%s %llu %u %u %u %u %u %u %s 0x%X 0x%X %u %u \"%s\"\n",
+			kindstr, r.bytes,
+			r.kind == 1 ? (unsigned int)(r.desc_size & 0xFFFFFFFF) : r.width,
+			r.height, r.depth, r.mips, r.arraysize, r.samples,
+			r.kind == 0 ? wi::graphics::GetFormatString((wi::graphics::Format)r.format) : "-",
+			r.bind_flags, r.misc_flags, r.usage, r.aliased, r.name);
+	}
 	for (const GGVramRec& r : snapshot)
 	{
 		const char* kindstr = (r.kind == 0) ? "T" : ((r.kind == 1) ? "B" : "A");
@@ -1841,7 +1887,7 @@ namespace dx12_internal
 
 		virtual ~Resource_DX12()
 		{
-			::gg_vram_unregister((const void*)this); // GGMAX 1.70: VRAM census
+			::gg_vram_pending_move((const void*)this, (const void*)allocation.Get()); // GGMAX 1.70: VRAM census, the record kept until the allocation is released
 			std::scoped_lock lck(allocationhandler->destroylocker);
 			uint64_t framecount = allocationhandler->framecount;
 			if (allocation) allocationhandler->destroyer_allocations.push_back(std::make_pair(allocation, framecount));
