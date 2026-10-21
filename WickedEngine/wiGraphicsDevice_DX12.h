@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include "CommonInclude.h"
+void gg_vram_released(const void* allocation); // GGMAX: VRAM census (wiGraphicsDevice_DX12.cpp)
 #include "wiPlatform.h"
 
 #ifdef _WIN32
@@ -630,6 +631,7 @@ namespace wi::graphics
 					return;
 				while (!destroyer_allocations.empty() && destroyer_allocations.front().second + BUFFERCOUNT < FRAMECOUNT)
 				{
+					::gg_vram_released((const void*)destroyer_allocations.front().first.Get()); // GGMAX: VRAM census, the pending record goes with the allocation
 					destroyer_allocations.pop_front();
 					// comptr auto delete
 				}
