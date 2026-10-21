@@ -498,6 +498,9 @@ int gg_shadow_res_steps = 4;
 // GGMAX 3.89: Water Reflection Size. 0 = stock internal-resolution/4 for the planar
 // reflection target. See wiRenderer.h and the only consumer, setReflectionsEnabled.
 int gg_reflection_width = 0;
+// GGMAX: environment probe captures on (1) or held (0); a lever for the harness, to tell whether a frame drawn from
+// another direction comes from a probe capture
+bool gg_probe_capture = true;
 // GGMAX 3.90: Water Reflection Blur - passes of the separable Gaussian over the resolved
 // planar reflection. 0 = off. See wiRenderer.h and the consumer in wiRenderPath3D.cpp.
 int gg_reflection_blur = 0;
@@ -11211,6 +11214,7 @@ void DrawSun(CommandList cmd)
 
 void RefreshEnvProbes(const Visibility& vis, CommandList cmd)
 {
+	if (!gg_probe_capture) return; // GGMAX: captures held (harness SET_PROBECAPTURE 0); the probes keep their last cube
 	device->EventBegin("EnvironmentProbe Refresh", cmd);
 	auto range = wi::profiler::BeginRangeGPU("Environment Probe Refresh", cmd);
 
