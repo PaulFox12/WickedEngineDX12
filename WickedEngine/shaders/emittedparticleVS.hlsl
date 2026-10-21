@@ -39,7 +39,31 @@ float3 ParticleLight(float3 P, float3 N)
 	surface.f0 = 0;
 
 	TiledLighting(surface, lighting, GetFlatTileIndex(surface.pixel));
-	return lighting.direct.diffuse / PI + lighting.indirect.diffuse;
+	float3 light = lighting.direct.diffuse / PI + lighting.indirect.diffuse;
+
+	// the sun's forward scattering, by the strength set (SetParticleScatter; 0, the default, skips it): a cloud with the sun
+	// behind it glows, brightest looking toward the sun through it (ComputeScattering, Henyey-Greenstein). The sun's light
+	// is taken through light_directional with the surface turned to face it, so its cascaded shadow applies and a cloud in
+	// shadow stays dark; the light code returns early for a surface facing away, which a backlit sprite's own normal does
+	[branch]
+	if (xParticleScatter > 0 && !directional_lights().empty())
+	{
+		ShaderEntityIterator iterator = directional_lights();
+		for (uint entity_index = iterator.first_item(); entity_index < iterator.end_item(); ++entity_index)
+		{
+			ShaderEntity sun = load_entity(entity_index);
+			if (sun.IsStaticLight())
+				continue;
+			const float3 L = sun.GetDirection();
+			Surface facing = surface;
+			facing.N = L;
+			Lighting sunlight;
+			sunlight.create(0, 0, 0, 0);
+			light_directional(sun, facing, sunlight);
+			light += xParticleScatter * ComputeScattering(saturate(dot(L, -surface.V))) * sunlight.direct.diffuse;
+		}
+	}
+	return light;
 }
 
 // the sprite's rounded normal at a place on it (0-1 across, unrotated), as the pixel shader makes it

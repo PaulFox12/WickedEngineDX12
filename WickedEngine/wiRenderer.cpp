@@ -506,6 +506,7 @@ uint32_t gg_lights_packed = 0;
 static constexpr uint32_t GG_MATRIXARRAY_COUNT = SHADER_ENTITY_COUNT * 2; // GGMAX: decals, probes and every shadowed light's matrices, with headroom
 bool gg_probe_capture = true;
 bool particleHalfResolution = true; // GG: emitters marked for it drawn at half resolution (SetParticleHalfResolutionEnabled)
+float particleScatter = 0; // GG: the sun's forward scattering on lit particle layers (SetParticleScatter), 0 off
 // GGMAX 3.90: Water Reflection Blur - passes of the separable Gaussian over the resolved
 // planar reflection. 0 = off. See wiRenderer.h and the consumer in wiRenderPath3D.cpp.
 int gg_reflection_blur = 0;
@@ -7854,6 +7855,8 @@ void DrawSoftParticles(
 // full resolution particles, as one layer
 void SetParticleHalfResolutionEnabled(bool value) { particleHalfResolution = value; }
 bool GetParticleHalfResolutionEnabled() { return particleHalfResolution; }
+void SetParticleScatter(float value) { particleScatter = std::max(0.0f, value); }
+float GetParticleScatter() { return particleScatter; }
 
 static bool IsHalfResolutionEmitter(const wi::EmittedParticleSystem& emitter)
 {
