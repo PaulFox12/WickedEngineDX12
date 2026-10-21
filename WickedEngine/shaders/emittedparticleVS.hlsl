@@ -57,6 +57,7 @@ float3 ParticleLight(float3 P, float3 N)
 			const float3 L = sun.GetDirection();
 			Surface facing = surface;
 			facing.N = L;
+			facing.V = L; // the view along the light too: no Fresnel, and the half vector never degenerate (NaN looking straight at the sun)
 			Lighting sunlight;
 			sunlight.create(0, 0, 0, 0);
 			light_directional(sun, facing, sunlight);
