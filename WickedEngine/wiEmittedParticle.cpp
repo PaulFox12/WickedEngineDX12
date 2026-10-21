@@ -22,6 +22,7 @@ using namespace wi::enums;
 namespace wi
 {
 	static Shader vertexShader;
+	static Shader vertexShader_lighting; // GG: the lit layers' vertex shader, lit at the corners and the centre
 	static Shader meshShader;
 	static Shader pixelShader[EmittedParticleSystem::PARTICLESHADERTYPE_COUNT];
 	static Shader kickoffUpdateCS;
@@ -1111,6 +1112,7 @@ namespace wi
 		void LoadShaders()
 		{
 			wi::renderer::LoadShader(ShaderStage::VS, vertexShader, "emittedparticleVS.cso");
+			wi::renderer::LoadShader(ShaderStage::VS, vertexShader_lighting, "emittedparticleVS_lighting.cso");
 
 			if (ALLOW_MESH_SHADER && wi::graphics::GetDevice()->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
 			{
@@ -1158,6 +1160,7 @@ namespace wi
 
 				for (int j = 0; j < EmittedParticleSystem::PARTICLESHADERTYPE_COUNT; ++j)
 				{
+					if (desc.vs != nullptr) desc.vs = (j == EmittedParticleSystem::SOFT_LIGHTING) ? &vertexShader_lighting : &vertexShader; // GG: the lit layers lit per vertex
 					desc.ps = &pixelShader[j];
 					device->CreatePipelineState(&desc, &PSO[i][j]);
 					// GG: the same into the half resolution target, its blend and no depth test
