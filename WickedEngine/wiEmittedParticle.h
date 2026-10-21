@@ -214,6 +214,8 @@ namespace wi
 		mutable XMFLOAT3 prev_emitter_pos = XMFLOAT3(0, 0, 0); // where it was last frame (the trail, a wrapping volume's streaks)
 		mutable uint64_t prev_emitter_frame = 0;
 		mutable uint32_t gg_blendmode = 0; // the material's blend mode as last drawn (UpdateGPU has no material; the fog form follows it a frame late at most)
+		bool gg_reencode_sheet = false; // the colour sheet is stored plain but read through an sRGB view: the shader puts it back to the stored values (the host sets it)
+		bool gg_reencode_emissive = false; // the same for the emissive map
 
 		// Render/lifecycle gating the DX11 fork had and upstream does not.
 		// bActive drives the auto-deactivate that lets fire-and-forget decal effects
