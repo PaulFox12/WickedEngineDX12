@@ -182,7 +182,7 @@ namespace wi
 		float burst_delay_timer = 0.0f;
 		float spawn_random = 0.0f;      // gust / stutter emission model
 		float randemit = 0.0f;
-		uint32_t randpause = 0;
+		float randpause = 0; // GG: in 60ths of a second
 		uint32_t total_emit_count = 0;
 
 		float distance_sort_bias = 0.0f;
@@ -200,7 +200,7 @@ namespace wi
 		float layer_size_scale = 1.0f; // multiplies the particle size (a layer's)
 		float emissive_scale = 1.0f; // multiplies the material's emissive
 		float speed_scale = 1.0f; // multiplies the velocities
-		float spread_scale = 1.0f; // multiplies the spawn spread (the orbital offset and the random position)
+		float spread_scale = 1.0f; // multiplies the spawn spread: the volume (or mesh) it emits from, the orbital offset and the random position
 		float life_scale = 1.0f; // multiplies new particles' life
 		XMFLOAT3 layer_wind = XMFLOAT3(0, 0, 0); // the air's velocity the drag works against (WParticleEffectSetLayerWind)
 		XMFLOAT3 wrap_motion = XMFLOAT3(0, 0, 0); // a wrapping volume's set motion, its streaks drawn against it

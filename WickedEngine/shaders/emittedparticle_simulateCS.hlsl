@@ -58,14 +58,15 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 	particle.force = 0;
 
 	// drag, against the layer's wind (GG: the air's velocity, so the particles drift with it)
-	particle.velocity = xParticleWind + (particle.velocity - xParticleWind) * xParticleDrag;
+	// GG: the drag per 60th of a second, so a layer slows the same at any frame rate (as at 60 frames a second before)
+	particle.velocity = xParticleWind + (particle.velocity - xParticleWind) * (xParticleDrag > 0 ? pow(xParticleDrag, dt * 60) : 0);
 
 	// GG: a wrapping volume (the layer's option bit 16): a particle leaving the emitter's box comes back in at the opposite face
 	[branch]
 	if (xParticleLocalOptions & 64)
 	{
 		const float4x4 emitterWorld = EmitterGetInstance().transform.GetMatrix();
-		const float3x3 box = (float3x3)emitterWorld;
+		const float3x3 box = (float3x3)emitterWorld * xParticleSpreadScale; // GG: widened by the layer's spread, as the emit volume
 		const float3 c0 = cross(box[1], box[2]), c1 = cross(box[2], box[0]), c2 = cross(box[0], box[1]);
 		const float det = dot(box[0], c0);
 		[branch]

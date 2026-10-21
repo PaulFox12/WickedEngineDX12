@@ -137,7 +137,7 @@ CBUFFER(EmittedParticleCB, CBSLOT_OTHER_EMITTEDPARTICLE)
 
 	uint		xParticleMirror;			// bit 1 a particle may be mirrored left-right, bit 2 upside down (the layer's wpe_filler_2)
 	uint		xEmitterKillBoxCount;
-	float		xParticlePadding2;
+	float		xParticleSpreadScale;		// the layer's spread scale (the wrapping volume's box, as the emit volume)
 	float		xParticlePadding3;
 
 	float4		xEmitterKillBoxMin[EMITTER_KILLBOX_COUNT];
