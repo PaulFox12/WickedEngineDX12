@@ -45,6 +45,11 @@ namespace wi
 	static DepthStencilState	depthStencilState;
 	static PipelineState		PSO[BLENDMODE_COUNT][EmittedParticleSystem::PARTICLESHADERTYPE_COUNT];
 	static PipelineState		PSO_wire;
+	// GG: into the half resolution target (wi::renderer::DrawSoftParticles_Half), no depth test (the depth fade hides it behind the
+	// scene), each blend keeping the colour premultiplied and in alpha how much of the scene shows through
+	static PipelineState		PSO_half[BLENDMODE_COUNT][EmittedParticleSystem::PARTICLESHADERTYPE_COUNT];
+	static BlendState			halfBlendStates[BLENDMODE_COUNT];
+	static DepthStencilState	depthStencilStateNone;
 
 	static bool ALLOW_MESH_SHADER = false;
 
@@ -367,8 +372,8 @@ namespace wi
 			if (randpause > spawn_random)
 				randpause = 0;
 
-			emit += (float)count * dt;
-			randemit = (float)count;
+			emit += (float)count * count_scale * dt; // GG: the layer's count scale
+			randemit = (float)count * count_scale;
 		}
 		else
 		{
@@ -472,7 +477,7 @@ namespace wi
 			burst_delay_timer = burst_delay;
 		}
 
-		burst += num;
+		burst += (int)((float)num * count_scale + 0.5f); // GG: the layer's count scale
 
 		if (num > 0)
 		{
@@ -515,7 +520,9 @@ namespace wi
 	void EmittedParticleSystem::Restart()
 	{
 		SetPaused(false);
-		counterBuffer = {}; // will be recreated
+		// GG: the particles are cleared in the next UpdateGPU and the buffers kept: making the counters again left the dead list as
+		// it was, with the live particles' indices missing from it, and a pooled effect's every reuse paid for it
+		if (counterBuffer.IsValid()) restartPending = true;
 	}
 
 	void EmittedParticleSystem::UpdateGPU(uint32_t instanceIndex, const MeshComponent* mesh, CommandList cmd) const
@@ -526,6 +533,22 @@ namespace wi
 			return;
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
+		if (restartPending)
+		{
+			// GG: every particle dead, as in new buffers: the counters, and every index on the dead list again (before this frame's emit)
+			restartPending = false;
+			ParticleCounters counters;
+			counters.aliveCount = 0;
+			counters.deadCount = MAX_PARTICLES;
+			counters.realEmitCount = 0;
+			counters.aliveCount_afterSimulation = 0;
+			counters.cellAllocator = 0;
+			device->UpdateBuffer(&counterBuffer, &counters, cmd);
+			static thread_local wi::vector<uint32_t> indices;
+			indices.resize(MAX_PARTICLES);
+			for (uint32_t i = 0; i < MAX_PARTICLES; ++i) indices[i] = i;
+			device->UpdateBuffer(&deadList, indices.data(), cmd, sizeof(uint32_t) * MAX_PARTICLES);
+		}
 		device->EventBegin("UpdateEmittedParticles", cmd);
 
 		if (!IsPaused() && dt > 0)
@@ -570,12 +593,12 @@ namespace wi
 				cb.xEmitterMeshGeometryCount = last_subset - first_subset;
 			}
 			cb.xEmitterRandomness = wi::random::GetRandom(0.0f, 1.0f);
-			cb.xParticleLifeSpan = life;
+			cb.xParticleLifeSpan = life * life_scale; // GG: the layer's life scale
 			cb.xParticleLifeSpanRandomness = random_life;
-			cb.xParticleNormalFactor = normal_factor;
+			cb.xParticleNormalFactor = normal_factor * speed_scale; // GG: the layer's speed scale
 			cb.xParticleRandomFactor = random_factor;
 			cb.xParticleScaling = scaleX;
-			cb.xParticleSize = size;
+			cb.xParticleSize = size * size_scale * layer_size_scale; // GG: the script's and the layer's size scales
 			cb.xParticleMotionBlurAmount = motionBlurAmount;
 			cb.xParticleRotation = rotation * XM_PI;
 			cb.xParticleMass = mass;
@@ -589,7 +612,7 @@ namespace wi
 			cb.xEmitterFrameRate = frameRate;
 			cb.xParticleGravity = gravity;
 			cb.xParticleDrag = drag;
-			XMStoreFloat3(&cb.xParticleVelocity, XMVector3TransformNormal(XMLoadFloat3(&velocity), XMLoadFloat4x4(&worldMatrix)));
+			XMStoreFloat3(&cb.xParticleVelocity, XMVector3TransformNormal(XMLoadFloat3(&velocity), XMLoadFloat4x4(&worldMatrix)) * speed_scale); // GG: the layer's speed scale
 			cb.xParticleRandomColorFactor = random_color;
 			cb.xEmitterLayerMask = layerMask;
 			cb.xEmitterInstanceIndex = instanceIndex;
@@ -597,11 +620,11 @@ namespace wi
 			// GGMAX 2.00: GameGuru WPE parameters (see PARTICLE_SYSTEM_PLAN.md section 6).
 			cb.xParticleEndColor = XMFLOAT3(endcolor_red, endcolor_green, endcolor_blue);
 			cb.xEmitterFadeinTime = fadein_time;
-			cb.xParticleNormalFactorXYZ = XMFLOAT3(normal_factor_x, normal_factor_y, normal_factor_z);
+			cb.xParticleNormalFactorXYZ = XMFLOAT3(normal_factor_x * speed_scale, normal_factor_y * speed_scale, normal_factor_z * speed_scale);
 			cb.xParticleBurstFactorSpeed = burst_factor_speed;
-			cb.xParticleBurstFactor = XMFLOAT3(burst_factor_x, burst_factor_y, burst_factor_z);
+			cb.xParticleBurstFactor = XMFLOAT3(burst_factor_x * speed_scale, burst_factor_y * speed_scale, burst_factor_z * speed_scale);
 			cb.xParticleNormalRandom = normal_random;
-			cb.xParticleSinPos = startpos;
+			cb.xParticleSinPos = XMFLOAT3(startpos.x * spread_scale, startpos.y * spread_scale, startpos.z * spread_scale); // GG: the layer's spread scale
 			cb.xParticleRotationRandom = rotation_random;
 			cb.xParticleSizeRandom = size_random;
 			cb.xParticleScalingRandom = scaling_random;
@@ -609,8 +632,39 @@ namespace wi
 			cb.xParticleRandomPos = random_position;
 			cb.xParticleRandomPosScale = random_position_scale;
 			cb.xTotalEmitCount = total_emit_count;
-			cb.xParticlePadding0 = 0;
-			cb.xParticlePadding1 = 0;
+			// GG: the layer's options (wpe_filler_3: bit 1 the spreads turn with the emitter, 2 the trail, 4 no fog), 8 and 16 the blend's
+			// fog form, 32 half resolution, 64 a wrapping volume
+			cb.xParticleLocalOptions = (uint32_t)wi::math::Clamp(wpe_filler_3, 0.0f, 7.0f);
+			if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_ADDITIVE) cb.xParticleLocalOptions |= 8;
+			else if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_PREMULTIPLIED) cb.xParticleLocalOptions |= 16;
+			if (wi::renderer::GetParticleHalfResolutionEnabled() && IsHalfResolution()) cb.xParticleLocalOptions |= 32;
+			if (IsWrapVolume()) cb.xParticleLocalOptions |= 64;
+			cb.xParticleFadeOutStart = wi::math::Clamp(wpe_filler_1, 0.0f, 0.99f);
+			cb.xParticleMirror = (uint32_t)wi::math::Clamp(wpe_filler_2, 0.0f, 3.0f);
+			cb.xParticleWind = layer_wind;
+			cb.xParticleEmissiveScale = emissive_scale;
+			{
+				// where the emitter was last frame, if last frame it was (a load or a teleport is no trail)
+				const XMFLOAT3 emitterPos = XMFLOAT3(worldMatrix._41, worldMatrix._42, worldMatrix._43);
+				const uint64_t frame = device->GetFrameCount();
+				const bool bPrevValid = prev_emitter_frame + 1 == frame && wi::math::Distance(prev_emitter_pos, emitterPos) < 4000.0f;
+				cb.xEmitterPrevPos = bPrevValid ? prev_emitter_pos : emitterPos;
+				cb.xEmitterPrevValid = bPrevValid ? 1.0f : 0.0f;
+				prev_emitter_pos = emitterPos;
+				prev_emitter_frame = frame;
+			}
+			cb.xEmitterWrapMotion = wrap_motion;
+			cb.xEmitterWrapMotionSet = bWrapMotion ? 1.0f : 0.0f;
+			cb.xParticleColorTint = color_tint;
+			cb.xParticleOpacityScale = opacity_scale;
+			cb.xEmitterKillBoxCount = std::min(killbox_count, (uint32_t)EMITTER_KILLBOX_COUNT);
+			for (uint32_t i = 0; i < cb.xEmitterKillBoxCount; ++i)
+			{
+				cb.xEmitterKillBoxMin[i] = killbox_min[i];
+				cb.xEmitterKillBoxMax[i] = killbox_max[i];
+			}
+			cb.xParticlePadding2 = 0;
+			cb.xParticlePadding3 = 0;
 
 			cb.xEmitterOptions = 0;
 			if (IsSPHEnabled())
@@ -949,7 +1003,7 @@ namespace wi
 	}
 
 
-	void EmittedParticleSystem::Draw(const MaterialComponent& material, CommandList cmd, const PARTICLESHADERTYPE* shadertype_override) const
+	void EmittedParticleSystem::Draw(const MaterialComponent& material, CommandList cmd, const PARTICLESHADERTYPE* shadertype_override, bool bHalfResolution) const
 	{
 		if (IsInactive())
 			return;
@@ -965,7 +1019,9 @@ namespace wi
 		else
 		{
 			const wi::enums::BLENDMODE blendMode = material.GetBlendMode();
-			device->BindPipelineState(&PSO[blendMode][shadertype_override == nullptr ? shaderType : *shadertype_override], cmd);
+			gg_blendmode = (uint32_t)blendMode;
+			const PARTICLESHADERTYPE type = shadertype_override == nullptr ? shaderType : *shadertype_override;
+			device->BindPipelineState(bHalfResolution ? &PSO_half[blendMode][type] : &PSO[blendMode][type], cmd);
 
 			device->BindShadingRate(material.shadingRate, cmd);
 		}
@@ -1089,6 +1145,11 @@ namespace wi
 				{
 					desc.ps = &pixelShader[j];
 					device->CreatePipelineState(&desc, &PSO[i][j]);
+					// GG: the same into the half resolution target, its blend and no depth test
+					PipelineStateDesc half = desc;
+					half.bs = &halfBlendStates[i];
+					half.dss = &depthStencilStateNone;
+					device->CreatePipelineState(&half, &PSO_half[i][j]);
 				}
 			}
 
@@ -1211,6 +1272,31 @@ namespace wi
 
 		bd.render_target[0].blend_enable = false;
 		blendStates[BLENDMODE_OPAQUE] = bd;
+
+		// GG: into the half resolution target, cleared to no colour and the whole scene showing through: over, its alpha taking
+		// from what shows through; premultiplied likewise; additive adding colour and leaving it
+		BlendState half;
+		half.render_target[0].blend_enable = true;
+		half.render_target[0].src_blend = Blend::SRC_ALPHA;
+		half.render_target[0].dest_blend = Blend::INV_SRC_ALPHA;
+		half.render_target[0].blend_op = BlendOp::ADD;
+		half.render_target[0].src_blend_alpha = Blend::ZERO;
+		half.render_target[0].dest_blend_alpha = Blend::INV_SRC_ALPHA;
+		half.render_target[0].blend_op_alpha = BlendOp::ADD;
+		half.render_target[0].render_target_write_mask = ColorWrite::ENABLE_ALL;
+		half.independent_blend_enable = false;
+		for (int i = 0; i < BLENDMODE_COUNT; ++i) halfBlendStates[i] = half;
+		half.render_target[0].src_blend = Blend::ONE;
+		halfBlendStates[BLENDMODE_PREMULTIPLIED] = half;
+		half.render_target[0].src_blend = Blend::SRC_ALPHA;
+		half.render_target[0].dest_blend = Blend::ONE;
+		half.render_target[0].dest_blend_alpha = Blend::ONE;
+		halfBlendStates[BLENDMODE_ADDITIVE] = half;
+
+		DepthStencilState none;
+		none.depth_enable = false;
+		none.stencil_enable = false;
+		depthStencilStateNone = none;
 
 		static wi::eventhandler::Handle handle = wi::eventhandler::Subscribe(wi::eventhandler::EVENT_RELOAD_SHADERS, [](uint64_t userdata) { EmittedParticleSystem_Internal::LoadShaders(); });
 		EmittedParticleSystem_Internal::LoadShaders();

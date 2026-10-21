@@ -316,7 +316,10 @@ namespace wi::scene
 		textureStreamingFeedbackMapped = (const uint32_t*)textureStreamingFeedbackBuffer_readback[cpu_gpu_mapped_resource_index].mapped_data;
 
 		// Occlusion culling read:
-		if(wi::renderer::GetOcclusionCullingEnabled() && !wi::renderer::GetFreezeCullingCameraEnabled())
+		// GG: only the scene that is drawn makes and reads occlusion queries; a scene loaded only to be merged into it (a particle
+		// effect load each time) made its query heaps on every load, released with it
+		const bool bDrawnScene = this == &GetScene();
+		if(wi::renderer::GetOcclusionCullingEnabled() && !wi::renderer::GetFreezeCullingCameraEnabled() && bDrawnScene)
 		{
 			uint32_t minQueryCount = uint32_t(objects.GetCount() + lights.GetCount() + 1); // +1: ocean (don't know for sure if it exists yet before weather update)
 			if (queryHeap.desc.query_count < minQueryCount)
@@ -582,7 +585,9 @@ namespace wi::scene
 
 		RunLightUpdateSystem(ctx);
 
-		RunParticleUpdateSystem(ctx);
+		// GG: a scene loaded only to be merged leaves its emitters' buffers to be made once they are in the drawn scene
+		if (this == &GetScene())
+			RunParticleUpdateSystem(ctx);
 
 		RunSoundUpdateSystem(ctx);
 

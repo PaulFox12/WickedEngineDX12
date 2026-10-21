@@ -97,6 +97,7 @@ namespace wi
 		rtWaterRipple = {};
 		rtParticleDistortion_render = {};
 		rtParticleDistortion = {};
+		rtParticleHalf = {};
 		rtVolumetricLights = {};
 		rtBloom = {};
 		rtBloom_tmp = {};
@@ -251,6 +252,21 @@ namespace wi
 			desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 			device->CreateTexture(&desc, nullptr, &rtCustomDepth);
 			device->SetName(&rtCustomDepth, "rtCustomDepth");
+		}
+		{
+			// GG: the half resolution particles, cleared to no colour with the whole scene showing through
+			TextureDesc desc;
+			desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+			desc.format = Format::R16G16B16A16_FLOAT;
+			desc.width = (internalResolution.x + 1) / 2;
+			desc.height = (internalResolution.y + 1) / 2;
+			desc.sample_count = 1;
+			desc.clear.color[0] = 0;
+			desc.clear.color[1] = 0;
+			desc.clear.color[2] = 0;
+			desc.clear.color[3] = 1;
+			device->CreateTexture(&desc, nullptr, &rtParticleHalf);
+			device->SetName(&rtParticleHalf, "rtParticleHalf");
 		}
 		{
 			TextureDesc desc;
@@ -2699,6 +2715,38 @@ namespace wi
 
 		device->RenderPassEnd(cmd);
 		wi::profiler::EndRange(range_ttail); // GGMAX 2.91: close at the pass boundary
+
+		// GG: the emitters marked for half resolution, drawn together into a quarter of the pixels and laid over the scene by
+		// depth (wi::renderer::SetParticleHalfResolutionEnabled)
+		if (rtParticleHalf.IsValid() && wi::renderer::HasHalfResolutionParticles(visibility_main))
+		{
+			{
+				RenderPassImage rp[] = { RenderPassImage::RenderTarget(&rtParticleHalf, RenderPassImage::LoadOp::CLEAR) };
+				device->RenderPassBegin(rp, arraysize(rp), cmd);
+			}
+			Viewport vph;
+			vph.width = (float)rtParticleHalf.GetDesc().width;
+			vph.height = (float)rtParticleHalf.GetDesc().height;
+			device->BindViewports(1, &vph, cmd);
+			wi::renderer::DrawSoftParticles_Half(visibility_main, cmd);
+			device->RenderPassEnd(cmd);
+
+			if (getMSAASampleCount() > 1)
+			{
+				RenderPassImage rp[] = { RenderPassImage::RenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD), RenderPassImage::Resolve(&rtMain) };
+				device->RenderPassBegin(rp, arraysize(rp), cmd);
+			}
+			else
+			{
+				RenderPassImage rp[] = { RenderPassImage::RenderTarget(&rtMain, RenderPassImage::LoadOp::LOAD) };
+				device->RenderPassBegin(rp, arraysize(rp), cmd);
+			}
+			vph.width = (float)depthBuffer_Main.GetDesc().width;
+			vph.height = (float)depthBuffer_Main.GetDesc().height;
+			device->BindViewports(1, &vph, cmd);
+			wi::renderer::DrawParticleHalfComposite(rtParticleHalf, cmd);
+			device->RenderPassEnd(cmd);
+		}
 
 		// Distortion particles:
 		{

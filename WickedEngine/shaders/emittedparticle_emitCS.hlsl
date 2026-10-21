@@ -198,16 +198,36 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	particle.position = pos;
 	particle.force = 0;
 	particle.mass = xParticleMass;
-	particle.velocity = velocity + (nor + (float3(rng.next_float(), rng.next_float(), rng.next_float()) - 0.5f) * xParticleNormalRandom) * xParticleNormalFactor;
-	// two additive per-axis terms: normal_factor_* phased on rand*2PI, burst_factor_* on thread index
-	particle.velocity += float3(
+	// GG: the spread apart from the base velocity, so it can turn with the emitter (the layer's option bit 1)
+	particle.velocity = velocity + nor * xParticleNormalFactor;
+	float3 spread = (float3(rng.next_float(), rng.next_float(), rng.next_float()) - 0.5f) * xParticleNormalRandom * xParticleNormalFactor;
+	spread += float3(
 		sin((float)rng.next_float() * PI * 2) * xParticleNormalFactorXYZ.x,
 		(rng.next_float() - 0.5f) * xParticleNormalFactorXYZ.y,
 		cos((float)rng.next_float() * PI * 2) * xParticleNormalFactorXYZ.z);
-	particle.velocity += float3(
+	spread += float3(
 		sin((float)DTid.x) * xParticleBurstFactor.x,
 		(rng.next_float() - 0.5f) * xParticleBurstFactor.y,
 		cos((float)DTid.x) * xParticleBurstFactor.z);
+	[branch]
+	if (xParticleLocalOptions & 1)
+	{
+		const float spreadLength = length(spread);
+		if (spreadLength > 0) spread = normalize(mul((float3x3)worldMatrix, spread)) * spreadLength;
+	}
+	particle.velocity += spread;
+	// GG: a trail along the emitter's path since last frame (the layer's option bit 2): this frame's particles spread back
+	// along it and aged as if emitted on the way
+	float trailAge = 0;
+	[branch]
+	if ((xParticleLocalOptions & 2) && xEmitterPrevValid > 0)
+	{
+		const float trailT = saturate(((float)DTid.x + rng.next_float()) / (float)max(location.count, 1u));
+		const float3 emitterPos = mul(worldMatrix, float4(0, 0, 0, 1)).xyz;
+		particle.position += (xEmitterPrevPos - emitterPos) * (1 - trailT);
+		trailAge = (1 - trailT) * GetFrame().delta_time;
+		particle.position += particle.velocity * trailAge;
+	}
 	// GGMAX 2.46: start_rotation means two different things. Upstream treats it as a constant
 	// initial angle (the .x seeded here); the DX11 fork used it as a SCALE on a per-particle
 	// velocity-aligned rotation applied at billboard time - see emittedparticle_simulateCS.hlsl.
@@ -218,13 +238,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	const float ggStartAngle = (xEmitterFadeinTime >= 0) ? 0 : xParticleStartRotation;
 	particle.rotation_rotationVelocity = pack_half2(float2(ggStartAngle, xParticleRotation + (rng.next_float() - 0.5f) * xParticleRotationRandom));
 	particle.maxLife = xParticleLifeSpan + xParticleLifeSpan * (rng.next_float() - 0.5f) * xParticleLifeSpanRandomness;
-	particle.life = particle.maxLife;
+	particle.life = max(particle.maxLife - trailAge, 0.001f);
 	particle.sizeBeginEnd = float2(particleStartingSize, particleStartingSize * xParticleScaling + (rng.next_float() - 0.5f) * xParticleScalingRandom);
 
 	baseColor.r *= lerp(1, rng.next_float(), xParticleRandomColorFactor);
 	baseColor.g *= lerp(1, rng.next_float(), xParticleRandomColorFactor);
 	baseColor.b *= lerp(1, rng.next_float(), xParticleRandomColorFactor);
 	particle.color = pack_rgba(baseColor);
+	// GG: the random mirroring the layer allows, kept in the two low bits of the alpha byte (read and cleared by the simulate pass)
+	particle.color &= ~0x03000000u;
+	if ((xParticleMirror & 1) && rng.next_float() > 0.5f) particle.color |= 0x01000000u;
+	if ((xParticleMirror & 2) && rng.next_float() < 0.5f) particle.color |= 0x02000000u;
 	
 	// new particle index retrieved from dead list (pop):
 	int deadCount;
