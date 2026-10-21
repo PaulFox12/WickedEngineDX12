@@ -39,11 +39,19 @@ float4 main(VertextoPixel input) : SV_TARGET
 	if (material.textures[SLOT].IsValid())
 	{
 		color = material.textures[SLOT].Sample(sampler_linear_clamp, input.tex.xyxy);
+#ifndef EMITTEDPARTICLE_DISTORTION
+		// GG: a sheet stored plain but read through an sRGB view, put back to its stored values (option bit 128), as the DX11
+		// build sampled it: the effects' colours were made against them
+		if (xParticleLocalOptions & 128) color.rgb = (half3)ApplySRGBCurve(color.rgb);
+#endif // EMITTEDPARTICLE_DISTORTION
 
 		[branch]
 		if (xEmitterOptions & EMITTER_OPTION_BIT_FRAME_BLENDING_ENABLED)
 		{
 			half4 color2 = material.textures[SLOT].Sample(sampler_linear_clamp, input.tex.zwzw);
+#ifndef EMITTEDPARTICLE_DISTORTION
+			if (xParticleLocalOptions & 128) color2.rgb = (half3)ApplySRGBCurve(color2.rgb);
+#endif // EMITTEDPARTICLE_DISTORTION
 			color = lerp(color, color2, input.frameBlend);
 		}
 	}
@@ -98,6 +106,7 @@ float4 main(VertextoPixel input) : SV_TARGET
 		{
 			emissiveColor = lerp(emissiveColor, material.textures[EMISSIVEMAP].Sample(sampler_linear_clamp, input.tex.zwzw).rgb, input.frameBlend);
 		}
+		if (xParticleLocalOptions & 256) emissiveColor = (half3)ApplySRGBCurve(emissiveColor); // GG: as the colour sheet (bit 256)
 		color.rgb *= inputColor.rgb;
 		ggEmissive = emissiveColor * inputColor.rgb * material.GetEmissive() * xParticleEmissiveScale;
 	}

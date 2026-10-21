@@ -652,6 +652,8 @@ namespace wi
 			else if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_PREMULTIPLIED) cb.xParticleLocalOptions |= 16;
 			if (wi::renderer::GetParticleHalfResolutionEnabled() && IsHalfResolution()) cb.xParticleLocalOptions |= 32;
 			if (IsWrapVolume()) cb.xParticleLocalOptions |= 64;
+			if (gg_reencode_sheet) cb.xParticleLocalOptions |= 128; // GG: the sheets put back to their stored values in the shader
+			if (gg_reencode_emissive) cb.xParticleLocalOptions |= 256;
 			cb.xParticleFadeOutStart = wi::math::Clamp(wpe_filler_1, 0.0f, 0.99f);
 			cb.xParticleMirror = (uint32_t)wi::math::Clamp(wpe_filler_2, 0.0f, 3.0f);
 			cb.xParticleWind = layer_wind;
