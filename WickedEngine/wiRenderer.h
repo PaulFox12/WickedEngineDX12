@@ -491,6 +491,10 @@ namespace wi::renderer
 	// the transparent pass and laid over the scene by depth; on by default (the host's SetParticleHalfResolution)
 	void SetParticleHalfResolutionEnabled(bool value);
 	bool GetParticleHalfResolutionEnabled();
+	// GG: the sun's forward scattering on lit particle layers: a cloud with the sun behind it glows, brightest looking toward
+	// the sun through it; 0 off (the default), 1 the phase function as it is
+	void SetParticleScatter(float value);
+	float GetParticleScatter();
 	bool HasHalfResolutionParticles(const Visibility& vis);
 	void DrawSoftParticles_Half(const Visibility& vis, wi::graphics::CommandList cmd);
 	void DrawParticleHalfComposite(const wi::graphics::Texture& particleHalf, wi::graphics::CommandList cmd);

@@ -680,7 +680,7 @@ namespace wi
 				cb.xEmitterKillBoxMax[i] = killbox_max[i];
 			}
 			cb.xParticleSpreadScale = spread_scale; // GG: the wrapping volume's box widened as the emit volume
-			cb.xParticlePadding3 = 0;
+			cb.xParticleScatter = wi::renderer::GetParticleScatter(); // GG: the sun's forward scattering on the lit layers (0 off)
 
 			cb.xEmitterOptions = 0;
 			if (IsSPHEnabled())
