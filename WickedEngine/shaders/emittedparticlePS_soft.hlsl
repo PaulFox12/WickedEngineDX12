@@ -24,6 +24,9 @@ float4 main(VertextoPixel input) : SV_TARGET
 	}
 
 	float2 ScreenCoord = input.pos.xy * GetCamera().internal_resolution_rcp; // use pixel center!
+	// GG: drawn at half resolution, so the scene's depth (full resolution) is at twice the pixel: its gather the farthest of
+	// the 2x2 pixels this one covers, which the half resolution composite matches
+	if (xParticleLocalOptions & 32) ScreenCoord *= 2;
 	min16uint2 pixel = input.pos.xy; // no longer pixel center!
 	
 	write_mipmap_feedback(EmitterGetGeometry().materialIndex, ddx_coarse(input.tex.xyxy), ddy_coarse(input.tex.xyxy));
@@ -83,7 +86,28 @@ float4 main(VertextoPixel input) : SV_TARGET
 
 	opacity = saturate(opacity);
 
-	color.rgb *= inputColor.rgb * (1 + material.GetEmissive());
+	// GG: the material's emissive map on the sprite (its colour times the emissive strength, added), else the strength as a gain;
+	// the layer's emissive scale on either
+	half3 ggEmissive = 0;
+	[branch]
+	if (material.textures[EMISSIVEMAP].IsValid())
+	{
+		half3 emissiveColor = material.textures[EMISSIVEMAP].Sample(sampler_linear_clamp, input.tex.xyxy).rgb;
+		[branch]
+		if (xEmitterOptions & EMITTER_OPTION_BIT_FRAME_BLENDING_ENABLED)
+		{
+			emissiveColor = lerp(emissiveColor, material.textures[EMISSIVEMAP].Sample(sampler_linear_clamp, input.tex.zwzw).rgb, input.frameBlend);
+		}
+		color.rgb *= inputColor.rgb;
+		ggEmissive = emissiveColor * inputColor.rgb * material.GetEmissive() * xParticleEmissiveScale;
+	}
+	else
+	{
+		color.rgb *= inputColor.rgb * (1 + material.GetEmissive() * xParticleEmissiveScale);
+	}
+#ifndef EMITTEDPARTICLE_DISTORTION
+	color.rgb += ggEmissive;
+#endif // EMITTEDPARTICLE_DISTORTION
 	color.a = opacity;
 
 #ifdef EMITTEDPARTICLE_DISTORTION
@@ -131,7 +155,16 @@ float4 main(VertextoPixel input) : SV_TARGET
 		//color.rgb = float3(unrotated_uv, 0);
 		//color.rgb = float3(input.tex, 0);
 
-		ApplyFog(dist, V, color);
+		// GG: the scene's fog as the blend wants it: none for a layer that skips it (option bit 4); an additive layer dims (fog
+		// colour added would brighten); a premultiplied one fogs its colour by its opacity; the rest as objects have it
+		[branch]
+		if ((xParticleLocalOptions & 4) == 0)
+		{
+			const half4 fog = GetFog(dist, GetCamera().position, -V);
+			if (xParticleLocalOptions & 8) color.rgb *= 1 - fog.a;
+			else if (xParticleLocalOptions & 16) color.rgb = lerp(color.rgb, fog.rgb * color.a, fog.a);
+			else color.rgb = lerp(color.rgb, fog.rgb, fog.a);
+		}
 
 		color = max(0, color);
 	}

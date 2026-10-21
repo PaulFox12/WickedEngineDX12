@@ -487,6 +487,13 @@ namespace wi::renderer
 		bool distortion, 
 		wi::graphics::CommandList cmd
 	);
+	// GG: the emitters marked for half resolution (a layer's option bit 8) drawn together into a quarter of the pixels after
+	// the transparent pass and laid over the scene by depth; on by default (the host's SetParticleHalfResolution)
+	void SetParticleHalfResolutionEnabled(bool value);
+	bool GetParticleHalfResolutionEnabled();
+	bool HasHalfResolutionParticles(const Visibility& vis);
+	void DrawSoftParticles_Half(const Visibility& vis, wi::graphics::CommandList cmd);
+	void DrawParticleHalfComposite(const wi::graphics::Texture& particleHalf, wi::graphics::CommandList cmd);
 	// Draw the sprites and fonts from the scene
 	void DrawSpritesAndFonts(
 		const wi::scene::Scene& scene,

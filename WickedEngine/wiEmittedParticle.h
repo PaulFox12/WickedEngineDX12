@@ -76,7 +76,7 @@ namespace wi
 
 		// Must have a transform and material component, but mesh is optional
 		void UpdateGPU(uint32_t instanceIndex, const wi::scene::MeshComponent* mesh, wi::graphics::CommandList cmd) const;
-		void Draw(const wi::scene::MaterialComponent& material, wi::graphics::CommandList cmd, const PARTICLESHADERTYPE* shadertype_override = nullptr) const;
+		void Draw(const wi::scene::MaterialComponent& material, wi::graphics::CommandList cmd, const PARTICLESHADERTYPE* shadertype_override = nullptr, bool bHalfResolution = false) const;
 
 		void CreateRaytracingRenderData();
 
@@ -186,6 +186,34 @@ namespace wi
 		uint32_t total_emit_count = 0;
 
 		float distance_sort_bias = 0.0f;
+
+		// GG: the three option fields the .PE effect files carry after distance_sort_bias (the DX11 fork's wpe_filler_1..3)
+		float wpe_filler_1 = 0; // the fade-out start, the share of a particle's life it stays fully opaque (0 fades over all of it)
+		float wpe_filler_2 = 0; // the random mirroring a particle may take, bit 1 left-right, bit 2 upside down (0 none)
+		float wpe_filler_3 = 0; // options: bit 1 the velocity spreads turn with the emitter, bit 2 a trail along its path, bit 4 no fog, bit 8 half resolution, bit 16 a wrapping volume
+		bool IsHalfResolution() const { return ((int)wpe_filler_3 & 8) != 0; } // drawn at half resolution with the others marked so, when the renderer has them on
+		mutable bool restartPending = false; // GG: Restart clears the particles in the next UpdateGPU, keeping the buffers
+		bool IsWrapVolume() const { return ((int)wpe_filler_3 & 16) != 0; } // a particle leaving the emitter's box comes back in at the opposite face
+
+		// GG: the layer and script controls the DX11 branch had
+		float count_scale = 1.0f; // multiplies the emit count (WParticleEffectSetLayer)
+		float layer_size_scale = 1.0f; // multiplies the particle size (a layer's)
+		float emissive_scale = 1.0f; // multiplies the material's emissive
+		float speed_scale = 1.0f; // multiplies the velocities
+		float spread_scale = 1.0f; // multiplies the spawn spread (the orbital offset and the random position)
+		float life_scale = 1.0f; // multiplies new particles' life
+		XMFLOAT3 layer_wind = XMFLOAT3(0, 0, 0); // the air's velocity the drag works against (WParticleEffectSetLayerWind)
+		XMFLOAT3 wrap_motion = XMFLOAT3(0, 0, 0); // a wrapping volume's set motion, its streaks drawn against it
+		bool bWrapMotion = false;
+		float size_scale = 1.0f; // multiplies the particle size (WParticleEffectSetSize)
+		float opacity_scale = 1.0f; // multiplies the opacity (WParticleEffectSetOpacity)
+		XMFLOAT3 color_tint = XMFLOAT3(1, 1, 1); // multiplies the colour
+		uint32_t killbox_count = 0; // boxes a particle dies in (WParticleEffectSetKillBox)
+		XMFLOAT4 killbox_min[8] = {};
+		XMFLOAT4 killbox_max[8] = {};
+		mutable XMFLOAT3 prev_emitter_pos = XMFLOAT3(0, 0, 0); // where it was last frame (the trail, a wrapping volume's streaks)
+		mutable uint64_t prev_emitter_frame = 0;
+		mutable uint32_t gg_blendmode = 0; // the material's blend mode as last drawn (UpdateGPU has no material; the fog form follows it a frame late at most)
 
 		// Render/lifecycle gating the DX11 fork had and upstream does not.
 		// bActive drives the auto-deactivate that lets fire-and-forget decal effects

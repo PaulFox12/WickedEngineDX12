@@ -121,6 +121,7 @@ namespace wi
 		wi::graphics::Texture rtWaterRipple; // water ripple sprite normal maps are rendered into this
 		wi::graphics::Texture rtParticleDistortion_render; // contains distortive particles (can be MSAA)
 		wi::graphics::Texture rtParticleDistortion; // contains distortive particles
+		wi::graphics::Texture rtParticleHalf; // GG: the particles drawn at half resolution (colour premultiplied, alpha the scene showing through)
 		wi::graphics::Texture rtVolumetricLights; // contains the volumetric light results
 		wi::graphics::Texture rtBloom; // contains the bright parts of the image + mipchain
 		wi::graphics::Texture rtBloom_tmp; // temporary for bloom downsampling

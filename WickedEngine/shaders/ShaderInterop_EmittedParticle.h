@@ -4,6 +4,8 @@
 #include "ShaderInterop.h"
 #include "ShaderInterop_Renderer.h"
 
+static const uint EMITTER_KILLBOX_COUNT = 8; // GG: boxes a particle dies in (a script's kill boxes)
+
 struct Particle
 {
 	float3 position;
@@ -117,8 +119,29 @@ CBUFFER(EmittedParticleCB, CBSLOT_OTHER_EMITTEDPARTICLE)
 
 	float		xParticleRandomPosScale;
 	uint		xTotalEmitCount;
-	float		xParticlePadding0;
-	float		xParticlePadding1;
+	uint		xParticleLocalOptions;		// GG: bit 32 drawn at half resolution (its depth read at twice the pixel)
+	float		xParticleFadeOutStart;		// GG: the share of a particle's life it stays fully opaque before fading (the layer's wpe_filler_1)
+
+	// GG: the layer and script controls the DX11 branch had
+	float3		xParticleWind;				// the air's velocity the drag works against (a script's layer wind)
+	float		xParticleEmissiveScale;		// multiplies the material's emissive
+
+	float3		xEmitterPrevPos;			// where the emitter was last frame, for the trail and a wrapping volume's streaks
+	float		xEmitterPrevValid;
+
+	float3		xEmitterWrapMotion;			// a wrapping volume's set motion (WParticleEffectSetWrapMotion)
+	float		xEmitterWrapMotionSet;
+
+	float3		xParticleColorTint;			// multiplies the colour
+	float		xParticleOpacityScale;		// multiplies the opacity
+
+	uint		xParticleMirror;			// bit 1 a particle may be mirrored left-right, bit 2 upside down (the layer's wpe_filler_2)
+	uint		xEmitterKillBoxCount;
+	float		xParticlePadding2;
+	float		xParticlePadding3;
+
+	float4		xEmitterKillBoxMin[EMITTER_KILLBOX_COUNT];
+	float4		xEmitterKillBoxMax[EMITTER_KILLBOX_COUNT];
 };
 
 struct EmitLocation

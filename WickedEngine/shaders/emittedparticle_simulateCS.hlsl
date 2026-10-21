@@ -57,8 +57,31 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 	// reset force for next frame:
 	particle.force = 0;
 
-	// drag: 
-	particle.velocity *= xParticleDrag;
+	// drag, against the layer's wind (GG: the air's velocity, so the particles drift with it)
+	particle.velocity = xParticleWind + (particle.velocity - xParticleWind) * xParticleDrag;
+
+	// GG: a wrapping volume (the layer's option bit 16): a particle leaving the emitter's box comes back in at the opposite face
+	[branch]
+	if (xParticleLocalOptions & 64)
+	{
+		const float4x4 emitterWorld = EmitterGetInstance().transform.GetMatrix();
+		const float3x3 box = (float3x3)emitterWorld;
+		const float3 c0 = cross(box[1], box[2]), c1 = cross(box[2], box[0]), c2 = cross(box[0], box[1]);
+		const float det = dot(box[0], c0);
+		[branch]
+		if (abs(det) > 1e-6)
+		{
+			const float3 centre = mul(emitterWorld, float4(0, 0, 0, 1)).xyz;
+			const float3 local = mul(transpose(float3x3(c0, c1, c2)), particle.position - centre) / det;
+			const float3 wrapped = local - 2 * floor((local + 1) * 0.5f);
+			if (any(wrapped != local)) particle.position = centre + mul(box, wrapped);
+		}
+	}
+	// GG: a script's kill boxes: a particle inside one dies now
+	for (uint k = 0; k < xEmitterKillBoxCount; ++k)
+	{
+		if (all(particle.position >= xEmitterKillBoxMin[k].xyz) && all(particle.position <= xEmitterKillBoxMax[k].xyz)) particle.life = 0;
+	}
 		
 	// Blocker shadow map check using previous frame:
 	//	This is extended with blocker position calculation for splashing
@@ -288,7 +311,9 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 		float opacity;
 		if (xEmitterFadeinTime >= 0)
 		{
-			opacity = saturate(lerp(1, 0, lifeLerp) * baseAlpha);
+			// GG: the layer's fade-out start, the share of the life it stays fully opaque
+			const float fadeLerp = saturate((lifeLerp - xParticleFadeOutStart) / (1 - xParticleFadeOutStart));
+			opacity = saturate(lerp(1, 0, fadeLerp) * baseAlpha);
 			const float normalizedTime = saturate(lifeLerp / max(xEmitterFadeinTime, 0.000001));
 			opacity = saturate(lerp(0, opacity, normalizedTime));
 		}
@@ -296,7 +321,11 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 		{
 			opacity = saturate(lifeOpa * baseAlpha);
 		}
-		float4 particleColor = unpack_rgba(particle.color);
+		// GG: the mirroring bits (emitCS) out of the colour's alpha byte; the script's opacity scale and colour tint
+		const uint mirror = (particle.color >> 24) & 3;
+		opacity = saturate(opacity * xParticleOpacityScale);
+		float4 particleColor = unpack_rgba(particle.color & ~0x03000000u);
+		particleColor.rgb *= xParticleColorTint;
 		if (xEmitterFadeinTime >= 0)
 		{
 			// colour-over-life toward endcolor_* (defaults to white, as in the DX11 fork)
@@ -374,6 +403,8 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 			// expand the point into a billboard in view space:
 			float3 quadPos = BILLBOARD[vertexID];
 			float2 uv = quadPos.xy * float2(0.5f, -0.5f) + 0.5f;
+			if (mirror & 1) uv.x = 1 - uv.x; // GG: the random mirroring
+			if (mirror & 2) uv.y = 1 - uv.y;
 			float2 uv2 = uv;
 
 			// sprite sheet UV transform:
@@ -390,6 +421,17 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 
 			// scale the billboard along view space motion vector:
 			float3 velocity = mul((float3x3)GetCamera().view, particle.velocity);
+			// GG: a wrapping volume's streaks against its motion (set, or the emitter's since last frame), as rain falls past a
+			// moving camera, not along the particle's own speed
+			[branch]
+			if ((xParticleLocalOptions & 64) && (xEmitterWrapMotionSet > 0 || (xEmitterPrevValid > 0 && GetFrame().delta_time > 0)))
+			{
+				const float3 emitterNow = mul(EmitterGetInstance().transform.GetMatrix(), float4(0, 0, 0, 1)).xyz;
+				const float3 emitterVelocity = xEmitterWrapMotionSet > 0 ? xEmitterWrapMotion : (emitterNow - xEmitterPrevPos) / GetFrame().delta_time;
+				const float3 relative = particle.velocity - emitterVelocity;
+				const float relativeSpeed = length(relative);
+				velocity = relativeSpeed > 0 ? mul((float3x3)GetCamera().view, relative) * sqrt(length(particle.velocity) / relativeSpeed) : 0;
+			}
 			quadPos += dot(quadPos, velocity) * velocity * xParticleMotionBlurAmount;
 
 			// rotate the billboard to face the camera:
