@@ -123,8 +123,14 @@ float4 main(VertextoPixel input) : SV_TARGET
 
 #ifdef EMITTEDPARTICLE_LIGHTING
 
+	// GG: a GameGuru layer takes the vertex shader's light, the centre's blended into the corners' towards the edges
 	[branch]
-	if (color.a > 0)
+	if (xEmitterFadeinTime >= 0)
+	{
+		const float edge = saturate(length(float2(input.unrotated_uv) - 0.5) * 2);
+		color.rgb *= (half3)lerp(input.litCentre, input.litCorner, edge);
+	}
+	else if (color.a > 0)
 	{
 		float3 N;
 		N.x = -cos(PI * input.unrotated_uv.x);
@@ -155,7 +161,9 @@ float4 main(VertextoPixel input) : SV_TARGET
 
 		TiledLighting(surface, lighting, GetFlatTileIndex(pixel));
 
-		color.rgb *= lighting.direct.diffuse + lighting.indirect.diffuse;
+		// the direct light divided by PI, as ApplyLighting does for objects: BRDF_GetDiffuse leaves it out, so without it a lit
+		// particle took PI times the direct light an object does
+		color.rgb *= lighting.direct.diffuse / PI + lighting.indirect.diffuse;
 		color.rgb += lighting.indirect.specular;
 
 		//color.rgb = float3(unrotated_uv, 0);
