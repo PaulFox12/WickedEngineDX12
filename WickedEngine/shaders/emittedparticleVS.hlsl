@@ -33,6 +33,10 @@ float3 ParticleLight(float3 P, float3 N)
 	surface.sss = material.GetSSS();
 	surface.sss_inv = material.GetSSSInverse();
 	surface.update();
+	// no Fresnel on a particle's light: smoke and dust are clouds of grains, not a surface with an interface, and the
+	// Fresnel factor took the diffuse light away when the light was behind the cloud, where real smoke brightens; with no
+	// reflectance F_Schlick is 0, so the diffuse is the full light, as the DX11 build lit it
+	surface.f0 = 0;
 
 	TiledLighting(surface, lighting, GetFlatTileIndex(surface.pixel));
 	return lighting.direct.diffuse / PI + lighting.indirect.diffuse;
