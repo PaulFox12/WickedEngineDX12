@@ -362,13 +362,13 @@ namespace wi
 		//     several frames rather than all in one, which is what makes an explosion read as a
 		//     sequence rather than a single pop.
 		// Do NOT "simplify" these: the shipped effects were tuned against these exact curves.
-		if (randpause == 0)
+		if (randpause <= 0.01f) // GG: counted in 60ths of a second below, not frames
 		{
-			randpause = (uint32_t)((wi::random::GetRandom(0, 1000) * 0.001f) * spawn_random);
+			randpause = (float)(uint32_t)((wi::random::GetRandom(0, 1000) * 0.001f) * spawn_random);
 			if (randpause < (spawn_random * 0.6f))
 				randpause = 0;
 			else
-				randpause -= (uint32_t)(spawn_random * 0.5f);
+				randpause -= (float)(uint32_t)(spawn_random * 0.5f);
 			if (randpause > spawn_random)
 				randpause = 0;
 
@@ -378,8 +378,9 @@ namespace wi
 		else
 		{
 			emit += randemit * dt;
-			randemit *= 0.05f;
-			randpause--;
+			// GG: the decay and the pause per 60th of a second, so the stutter keeps its timing at any frame rate
+			randemit *= std::pow(0.05f, dt * 60.0f);
+			randpause -= dt * 60.0f;
 		}
 
 		if (emit < 0)
@@ -394,10 +395,22 @@ namespace wi
 		{
 			if (burst_split > 0)
 			{
-				float amount = (float)burst / burst_split;
-				emit += amount;
-				burst -= (int)amount;
-				if (burst < 0) burst = 0;
+				// GG: a burst_split'th of what is left each 60th of a second whatever the frame rate, the count taken down by whole
+				// particles, rounded up, so it always runs out (truncating the share, as before, left a burst smaller than the split
+				// stuck, a fraction of it emitted every frame for as long as the emitter lived); a split of 1 or less releases it at once
+				if (burst_split <= 1.0f)
+				{
+					emit += (float)burst / burst_split;
+					burst = 0;
+				}
+				else if (dt > 0)
+				{
+					const float share = 1.0f - std::pow(1.0f - 1.0f / burst_split, dt * 60.0f);
+					const float amount = (float)burst * share;
+					emit += amount;
+					burst -= std::max(1, (int)std::ceil(amount));
+					if (burst < 0) burst = 0;
+				}
 			}
 			else
 			{
@@ -554,7 +567,7 @@ namespace wi
 		if (!IsPaused() && dt > 0)
 		{
 			auto alloc = device->AllocateGPU(sizeof(EmitLocation) * emit_locations.size(), cmd);
-			const XMMATRIX W = XMLoadFloat4x4(&worldMatrix);
+			const XMMATRIX W = XMMatrixScaling(spread_scale, spread_scale, spread_scale) * XMLoadFloat4x4(&worldMatrix); // GG: the layer's spread widens the volume (or mesh) it emits from, as on DX11
 			for (size_t i = 0; i < emit_locations.size(); ++i)
 			{
 				EmitLocation& location = emit_locations[i];
@@ -630,11 +643,11 @@ namespace wi
 			cb.xParticleScalingRandom = scaling_random;
 			cb.xParticleStartRotation = start_rotation;
 			cb.xParticleRandomPos = random_position;
-			cb.xParticleRandomPosScale = random_position_scale;
+			cb.xParticleRandomPosScale = random_position_scale * spread_scale; // GG: the layer's spread scale, as on DX11
 			cb.xTotalEmitCount = total_emit_count;
 			// GG: the layer's options (wpe_filler_3: bit 1 the spreads turn with the emitter, 2 the trail, 4 no fog), 8 and 16 the blend's
 			// fog form, 32 half resolution, 64 a wrapping volume
-			cb.xParticleLocalOptions = (uint32_t)wi::math::Clamp(wpe_filler_3, 0.0f, 7.0f);
+			cb.xParticleLocalOptions = (uint32_t)std::max(0.0f, wpe_filler_3) & 7; // masked, as on DX11: a clamp turned 8 and up into 7 (no fog, a trail)
 			if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_ADDITIVE) cb.xParticleLocalOptions |= 8;
 			else if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_PREMULTIPLIED) cb.xParticleLocalOptions |= 16;
 			if (wi::renderer::GetParticleHalfResolutionEnabled() && IsHalfResolution()) cb.xParticleLocalOptions |= 32;
@@ -663,7 +676,7 @@ namespace wi
 				cb.xEmitterKillBoxMin[i] = killbox_min[i];
 				cb.xEmitterKillBoxMax[i] = killbox_max[i];
 			}
-			cb.xParticlePadding2 = 0;
+			cb.xParticleSpreadScale = spread_scale; // GG: the wrapping volume's box widened as the emit volume
 			cb.xParticlePadding3 = 0;
 
 			cb.xEmitterOptions = 0;

@@ -105,9 +105,6 @@ float4 main(VertextoPixel input) : SV_TARGET
 	{
 		color.rgb *= inputColor.rgb * (1 + material.GetEmissive() * xParticleEmissiveScale);
 	}
-#ifndef EMITTEDPARTICLE_DISTORTION
-	color.rgb += ggEmissive;
-#endif // EMITTEDPARTICLE_DISTORTION
 	color.a = opacity;
 
 #ifdef EMITTEDPARTICLE_DISTORTION
@@ -155,23 +152,36 @@ float4 main(VertextoPixel input) : SV_TARGET
 		//color.rgb = float3(unrotated_uv, 0);
 		//color.rgb = float3(input.tex, 0);
 
-		// GG: the scene's fog as the blend wants it: none for a layer that skips it (option bit 4); an additive layer dims (fog
-		// colour added would brighten); a premultiplied one fogs its colour by its opacity; the rest as objects have it
-		[branch]
-		if ((xParticleLocalOptions & 4) == 0)
-		{
-			const half4 fog = GetFog(dist, GetCamera().position, -V);
-			if (xParticleLocalOptions & 8) color.rgb *= 1 - fog.a;
-			else if (xParticleLocalOptions & 16) color.rgb = lerp(color.rgb, fog.rgb * color.a, fog.a);
-			else color.rgb = lerp(color.rgb, fog.rgb, fog.a);
-		}
-
 		color = max(0, color);
 	}
 
 #endif // EMITTEDPARTICLE_LIGHTING
 
+	// GG: the emissive map's glow added after the light, so the light does not dim it (as on DX11)
+#ifndef EMITTEDPARTICLE_DISTORTION
+	color.rgb += ggEmissive;
+#endif // EMITTEDPARTICLE_DISTORTION
+
 	color.rgb = mul(saturationMatrix(material.GetSaturation()), color.rgb);
+
+	// GG: the scene's fog on every layer, lit or not (upstream fogs only the lit ones), as the blend wants it: none for a
+	// layer that skips it (option bit 4); a distortion bends less; an additive layer dims (fog colour added would brighten);
+	// a premultiplied one fogs its colour by its opacity; the rest as objects have it
+	[branch]
+	if ((xParticleLocalOptions & 4) == 0)
+	{
+		float3 fogV = input.GetViewVector();
+		const float fogDist = length(fogV);
+		fogV /= max(fogDist, 0.0001);
+		const half4 fog = GetFog(fogDist, GetCamera().position, -fogV);
+#ifdef EMITTEDPARTICLE_DISTORTION
+		color.rgb *= 1 - fog.a;
+#else
+		if (xParticleLocalOptions & 8) color.rgb *= 1 - fog.a;
+		else if (xParticleLocalOptions & 16) color.rgb = lerp(color.rgb, fog.rgb * color.a, fog.a);
+		else color.rgb = lerp(color.rgb, fog.rgb, fog.a);
+#endif // EMITTEDPARTICLE_DISTORTION
+	}
 
 #ifdef EMITTEDPARTICLE_DISTORTION
 	// GGMAX 2.47: restore the fork's positive-only distortion.
