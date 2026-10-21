@@ -449,7 +449,7 @@ namespace wi
 		else if (bActive)
 		{
 			inactive_timer += dt;
-			const float worst_case_life = life * (1.0f + std::abs(random_life) * 0.5f);
+			const float worst_case_life = life * life_scale * (1.0f + std::abs(random_life) * 0.5f); // GG: the layer's life scale lengthens the wait
 			if (inactive_timer > worst_case_life * 2.0f + 0.1f)
 			{
 				bActive = false;
