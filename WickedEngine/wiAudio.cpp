@@ -338,6 +338,45 @@ namespace wi::audio
 
 	}
 
+#ifdef GGREDUCED
+	// an Ogg file can carry more than one logical stream (cover art muxed in ahead of the audio, for one), and stb_vorbis
+	// reads only the first; this copies out the pages of the Vorbis stream alone, found by its identification header
+	static bool ExtractOggVorbisStream(const uint8_t* data, size_t size, std::vector<uint8_t>& vorbis)
+	{
+		vorbis.clear();
+		bool found = false;
+		uint32_t vorbisSerial = 0;
+		size_t pos = 0;
+		while (pos + 27 <= size && memcmp(data + pos, "OggS", 4) == 0)
+		{
+			// page header: capture pattern, version, header type, granule position, serial, sequence, CRC, segment count and
+			// the segment table, then the body
+			const uint8_t headerType = data[pos + 5];
+			uint32_t serial = 0;
+			memcpy(&serial, data + pos + 14, 4);
+			const size_t segments = data[pos + 26];
+			if (pos + 27 + segments > size)
+				break;
+			size_t bodySize = 0;
+			for (size_t s = 0; s < segments; ++s)
+				bodySize += data[pos + 27 + s];
+			const size_t pageSize = 27 + segments + bodySize;
+			if (pos + pageSize > size)
+				break;
+			const uint8_t* body = data + pos + 27 + segments;
+			if (!found && (headerType & 0x02) != 0 && bodySize >= 7 && body[0] == 0x01 && memcmp(body + 1, "vorbis", 6) == 0)
+			{
+				found = true;
+				vorbisSerial = serial;
+			}
+			if (found && serial == vorbisSerial)
+				vorbis.insert(vorbis.end(), data + pos, data + pos + pageSize);
+			pos += pageSize;
+		}
+		return found && !vorbis.empty();
+	}
+#endif
+
 	bool CreateSound(const std::string& filename, Sound* sound)
 	{
 		wi::vector<uint8_t> filedata;
@@ -399,6 +438,15 @@ namespace wi::audio
 			int sample_rate = 0;
 			short* output = nullptr;
 			int samples = stb_vorbis_decode_memory(data, (int)size, &channels, &sample_rate, &output);
+#ifdef GGREDUCED
+			if (samples < 0)
+			{
+				// the Vorbis stream may not be the first in the file
+				std::vector<uint8_t> vorbis;
+				if (ExtractOggVorbisStream(data, size, vorbis))
+					samples = stb_vorbis_decode_memory(vorbis.data(), (int)vorbis.size(), &channels, &sample_rate, &output);
+			}
+#endif
 			if (samples < 0)
 			{
 				assert(0);
