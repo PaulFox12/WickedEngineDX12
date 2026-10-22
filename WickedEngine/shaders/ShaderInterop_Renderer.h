@@ -1649,6 +1649,8 @@ struct LensFlarePush
 	float xLensFlareOffset;
 	float2 xLensFlareSize;
 	float2 xLensFlare_padding;
+
+	float4 xLensFlareColor; // rgb: the light's hue and brightness the flare takes
 };
 
 struct WetmapPush

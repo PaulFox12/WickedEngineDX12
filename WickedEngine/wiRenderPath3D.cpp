@@ -144,6 +144,7 @@ namespace wi
 		volumetriccloudResources = {};
 		volumetriccloudResources_reflection = {};
 		bloomResources = {};
+		screenLensFlareResources = {};
 		surfelGIResources = {};
 		temporalAAResources = {};
 		visibilityResources = {};
@@ -430,6 +431,7 @@ namespace wi
 		setEyeAdaptionEnabled(eyeAdaptionEnabled);
 		setReflectionsEnabled(reflectionsEnabled);
 		setBloomEnabled(bloomEnabled);
+		setScreenLensFlareEnabled(screenLensFlareEnabled);
 		setVolumeLightsEnabled(volumeLightsEnabled);
 		setLightShaftsEnabled(lightShaftsEnabled);
 		setOutlineEnabled(outlineEnabled);
@@ -2961,6 +2963,23 @@ namespace wi
 					getBloomBeforeExposure()
 				);
 			}
+			// the screen-space lens flare from the image's bright spots; following the bloom, what blooms flares
+			const bool screenLensFlare = getScreenLensFlareEnabled() && screenLensFlareResources.texture_flare.IsValid();
+			if (screenLensFlare)
+			{
+				const bool followBloom = getScreenLensFlareFollowBloom();
+				wi::renderer::ComputeScreenLensFlare(
+					screenLensFlareResources,
+					rt_first == nullptr ? *rt_read : *rt_first,
+					depthBuffer_Copy,
+					cmd,
+					followBloom ? getBloomThreshold() : getScreenLensFlareThreshold(),
+					followBloom ? getBloomCap() : getScreenLensFlareCap(),
+					getScreenLensFlareSpacing(),
+					getScreenLensFlareHalo(),
+					getScreenLensFlareNoSky()
+				);
+			}
 
 			wi::renderer::Postprocess_Tonemap(
 				rt_first == nullptr ? *rt_read : *rt_first,
@@ -2980,7 +2999,9 @@ namespace wi
 				&distortion_overlay,
 				getHDRCalibration(),
 				getBloomStrength(),
-				getBloomRadius()
+				getBloomRadius(),
+				screenLensFlare ? &screenLensFlareResources.texture_flare : nullptr,
+				getScreenLensFlareIntensity()
 			);
 
 			rt_first = nullptr;
@@ -3664,6 +3685,23 @@ namespace wi
 			rtReflection = {};
 			depthBuffer_Reflection = {};
 			tiledLightResources_planarReflection = {};
+		}
+	}
+	void RenderPath3D::setScreenLensFlareEnabled(bool value)
+	{
+		screenLensFlareEnabled = value;
+
+		if (value)
+		{
+			XMUINT2 internalResolution = GetInternalResolution();
+			if (screenLensFlareResources.texture_bright.IsValid() && screenLensFlareResources.texture_bright.desc.width == std::max(1u, internalResolution.x / 4)
+				&& screenLensFlareResources.texture_bright.desc.height == std::max(1u, internalResolution.y / 4))
+				return;
+			wi::renderer::CreateScreenLensFlareResources(screenLensFlareResources, internalResolution);
+		}
+		else
+		{
+			screenLensFlareResources = {};
 		}
 	}
 	void RenderPath3D::setBloomEnabled(bool value)
