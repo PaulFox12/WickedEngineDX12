@@ -13789,7 +13789,7 @@ void CreateBloomResources(BloomResources& res, XMUINT2 resolution)
 	desc.format = Format::R11G11B10_FLOAT;
 	desc.width = resolution.x / 4;
 	desc.height = resolution.y / 4;
-	desc.mip_levels = std::min(5u, (uint32_t)std::log2(std::max(desc.width, desc.height)));
+	desc.mip_levels = std::min(7u, (uint32_t)std::log2(std::max(desc.width, desc.height))); // two past the tonemap's three taps, for the bloom radius
 	device->CreateTexture(&desc, nullptr, &res.texture_bloom);
 	device->SetName(&res.texture_bloom, "bloom.texture_bloom");
 	device->CreateTexture(&desc, nullptr, &res.texture_temp);
@@ -13814,7 +13814,9 @@ void ComputeBloom(
 	CommandList cmd,
 	float threshold,
 	float exposure,
-	const GPUBuffer* buffer_luminance
+	const GPUBuffer* buffer_luminance,
+	float cap,
+	bool before_exposure
 )
 {
 	device->EventBegin("Bloom", cmd);
@@ -13855,6 +13857,8 @@ void ComputeBloom(
 		bloom.texture_input = device->GetDescriptorIndex(&input, SubresourceType::SRV);
 		bloom.texture_output = device->GetDescriptorIndex(&res.texture_bloom, SubresourceType::UAV);
 		bloom.buffer_input_luminance = device->GetDescriptorIndex(buffer_luminance, SubresourceType::SRV);
+		bloom.cap = cap;
+		bloom.before_exposure = before_exposure ? 1 : 0;
 		device->PushConstants(&bloom, sizeof(bloom), cmd);
 
 		device->Dispatch(
@@ -19518,7 +19522,8 @@ void Postprocess_Tonemap(
 	Tonemap tonemap,
 	const Texture* texture_distortion_overlay,
 	float hdr_calibration,
-	float bloom_strength
+	float bloom_strength,
+	float bloom_radius
 )
 {
 	if (!input.IsValid() || !output.IsValid())
@@ -19571,6 +19576,7 @@ void Postprocess_Tonemap(
 	tonemap_push.texture_colorgrade_lookuptable = device->GetDescriptorIndex(texture_colorgradinglut, SubresourceType::SRV);
 	tonemap_push.texture_bloom = device->GetDescriptorIndex(texture_bloom, SubresourceType::SRV);
 	tonemap_push.bloom_strength = bloom_strength;
+	tonemap_push.bloom_radius = bloom_radius;
 	tonemap_push.texture_output = device->GetDescriptorIndex(&output, SubresourceType::UAV);
 	device->PushConstants(&tonemap_push, sizeof(tonemap_push), cmd);
 

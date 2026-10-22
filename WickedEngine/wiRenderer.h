@@ -557,7 +557,9 @@ namespace wi::renderer
 		wi::graphics::CommandList cmd,
 		float threshold = 1.0f, // cutoff value, pixels below this will not contribute to bloom
 		float exposure = 1.0f,
-		const wi::graphics::GPUBuffer* buffer_luminance = nullptr
+		const wi::graphics::GPUBuffer* buffer_luminance = nullptr,
+		float cap = 10.0f, // the brightest a pixel counts for
+		bool before_exposure = false // the threshold and cap taken on the scene's own values, the exposure applied after
 	);
 
 	void ComputeShadingRateClassification(
@@ -1038,7 +1040,8 @@ namespace wi::renderer
 		Tonemap tonemap = Tonemap::Reinhard,
 		const wi::graphics::Texture* texture_distortion_overlay = nullptr,
 		float hdr_calibration = 1,
-		float bloom_strength = 1 // how strongly the bloom is added
+		float bloom_strength = 1, // how strongly the bloom is added
+		float bloom_radius = 0 // how much of the bloom's two widest mips is added, 0 none
 	);
 	void Postprocess_FSR(
 		const wi::graphics::Texture& input,
