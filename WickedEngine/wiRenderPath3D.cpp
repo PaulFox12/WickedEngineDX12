@@ -2956,7 +2956,9 @@ namespace wi
 					cmd,
 					getBloomThreshold(),
 					getExposure(),
-					getEyeAdaptionEnabled() ? &luminanceResources.luminance : nullptr
+					getEyeAdaptionEnabled() ? &luminanceResources.luminance : nullptr,
+					getBloomCap(),
+					getBloomBeforeExposure()
 				);
 			}
 
@@ -2977,7 +2979,8 @@ namespace wi
 				getTonemap(),
 				&distortion_overlay,
 				getHDRCalibration(),
-				getBloomStrength()
+				getBloomStrength(),
+				getBloomRadius()
 			);
 
 			rt_first = nullptr;

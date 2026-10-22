@@ -108,8 +108,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		Texture2D<half4> texture_bloom = bindless_textures_half4[descriptor_index(tonemap_push.texture_bloom)];
 		half3 bloom = texture_bloom.SampleLevel(sampler_linear_clamp, uv, 1.5).rgb;
 		bloom += texture_bloom.SampleLevel(sampler_linear_clamp, uv, 3.5).rgb;
-		bloom += texture_bloom.SampleLevel(sampler_linear_clamp, uv, 4.5).rgb;
+		bloom += texture_bloom.SampleLevel(sampler_linear_clamp, uv, 4).rgb; // the last of five mips, as 4.5 read it before the radius's two
 		bloom /= 3.0;
+		[branch]
+		if (tonemap_push.bloom_radius > 0)
+		{
+			bloom += tonemap_push.bloom_radius * 0.5 * (texture_bloom.SampleLevel(sampler_linear_clamp, uv, 5).rgb + texture_bloom.SampleLevel(sampler_linear_clamp, uv, 6).rgb);
+		}
 		result.rgb += bloom * tonemap_push.bloom_strength;
 	}
 
