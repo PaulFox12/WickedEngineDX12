@@ -1057,7 +1057,8 @@ namespace wi::renderer
 		wi::graphics::ColorSpace display_colorspace = wi::graphics::ColorSpace::SRGB,
 		Tonemap tonemap = Tonemap::Reinhard,
 		const wi::graphics::Texture* texture_distortion_overlay = nullptr,
-		float hdr_calibration = 1
+		float hdr_calibration = 1,
+		float bloom_strength = 1 // how strongly the bloom is added
 	);
 	void Postprocess_FSR(
 		const wi::graphics::Texture& input,

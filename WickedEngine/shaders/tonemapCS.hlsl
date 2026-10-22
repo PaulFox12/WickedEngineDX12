@@ -110,7 +110,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		bloom += texture_bloom.SampleLevel(sampler_linear_clamp, uv, 3.5).rgb;
 		bloom += texture_bloom.SampleLevel(sampler_linear_clamp, uv, 4.5).rgb;
 		bloom /= 3.0;
-		result.rgb += bloom;
+		result.rgb += bloom * tonemap_push.bloom_strength;
 	}
 
 	[branch]
