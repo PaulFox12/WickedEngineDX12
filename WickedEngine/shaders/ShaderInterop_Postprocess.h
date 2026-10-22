@@ -151,6 +151,8 @@ struct PushConstantsTonemap
 	int texture_output;
 	int texture_input_distortion_overlay;
 	uint flags_hdrcalibration;
+
+	float bloom_strength;
 };
 
 struct PostprocessTileStatistics

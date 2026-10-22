@@ -2976,7 +2976,8 @@ namespace wi
 				colorspace,
 				getTonemap(),
 				&distortion_overlay,
-				getHDRCalibration()
+				getHDRCalibration(),
+				getBloomStrength()
 			);
 
 			rt_first = nullptr;

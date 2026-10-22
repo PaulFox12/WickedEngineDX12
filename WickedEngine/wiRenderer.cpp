@@ -19517,7 +19517,8 @@ void Postprocess_Tonemap(
 	ColorSpace display_colorspace,
 	Tonemap tonemap,
 	const Texture* texture_distortion_overlay,
-	float hdr_calibration
+	float hdr_calibration,
+	float bloom_strength
 )
 {
 	if (!input.IsValid() || !output.IsValid())
@@ -19569,6 +19570,7 @@ void Postprocess_Tonemap(
 	tonemap_push.texture_input_distortion_overlay = device->GetDescriptorIndex(texture_distortion_overlay, SubresourceType::SRV);
 	tonemap_push.texture_colorgrade_lookuptable = device->GetDescriptorIndex(texture_colorgradinglut, SubresourceType::SRV);
 	tonemap_push.texture_bloom = device->GetDescriptorIndex(texture_bloom, SubresourceType::SRV);
+	tonemap_push.bloom_strength = bloom_strength;
 	tonemap_push.texture_output = device->GetDescriptorIndex(&output, SubresourceType::UAV);
 	device->PushConstants(&tonemap_push, sizeof(tonemap_push), cmd);
 
