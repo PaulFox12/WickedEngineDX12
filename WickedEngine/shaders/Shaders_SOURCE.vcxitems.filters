@@ -203,6 +203,12 @@
     <FxCompile Include="$(MSBuildThisFileDirectory)bloomseparateCS.hlsl">
       <Filter>CS</Filter>
     </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)ssflare_brightCS.hlsl">
+      <Filter>CS</Filter>
+    </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)ssflare_ghostsCS.hlsl">
+      <Filter>CS</Filter>
+    </FxCompile>
     <FxCompile Include="$(MSBuildThisFileDirectory)depthoffield_mainCS.hlsl">
       <Filter>CS</Filter>
     </FxCompile>

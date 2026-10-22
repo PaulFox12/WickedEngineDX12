@@ -43,6 +43,15 @@ namespace wi
 		float bloomRadius = 0.0f; // wider halos from the bloom's two widest mips, 0 none
 		float bloomCap = 10.0f; // the brightest a pixel counts for in the bloom
 		bool bloomBeforeExposure = false; // the bloom's threshold and cap taken before the exposure, as GameGuru MAX's DX11 build
+		// the screen-space lens flare from the image's bright spots, off as before
+		bool screenLensFlareEnabled = false;
+		float screenLensFlareThreshold = 4.0f;
+		float screenLensFlareIntensity = 0.1f;
+		float screenLensFlareSpacing = 0.35f;
+		float screenLensFlareHalo = 0.45f;
+		bool screenLensFlareNoSky = true;
+		float screenLensFlareCap = 200.0f;
+		bool screenLensFlareFollowBloom = false; // the bloom's threshold and cap in place of its own
 		float motionBlurStrength = 100.0f;
 		float dofStrength = 10.0f;
 		float sharpenFilterAmount = 0.28f;
@@ -168,6 +177,7 @@ namespace wi
 		wi::renderer::VolumetricCloudResources volumetriccloudResources;
 		wi::renderer::VolumetricCloudResources volumetriccloudResources_reflection;
 		wi::renderer::BloomResources bloomResources;
+		wi::renderer::ScreenLensFlareResources screenLensFlareResources;
 		wi::renderer::SurfelGIResources surfelGIResources;
 		wi::renderer::TemporalAAResources temporalAAResources;
 		wi::renderer::VisibilityResources visibilityResources;
@@ -251,6 +261,14 @@ namespace wi
 		constexpr float getBloomRadius() const { return bloomRadius; }
 		constexpr float getBloomCap() const { return bloomCap; }
 		constexpr bool getBloomBeforeExposure() const { return bloomBeforeExposure; }
+		constexpr bool getScreenLensFlareEnabled() const { return screenLensFlareEnabled; }
+		constexpr float getScreenLensFlareThreshold() const { return screenLensFlareThreshold; }
+		constexpr float getScreenLensFlareIntensity() const { return screenLensFlareIntensity; }
+		constexpr float getScreenLensFlareSpacing() const { return screenLensFlareSpacing; }
+		constexpr float getScreenLensFlareHalo() const { return screenLensFlareHalo; }
+		constexpr bool getScreenLensFlareNoSky() const { return screenLensFlareNoSky; }
+		constexpr float getScreenLensFlareCap() const { return screenLensFlareCap; }
+		constexpr bool getScreenLensFlareFollowBloom() const { return screenLensFlareFollowBloom; }
 		constexpr float getMotionBlurStrength() const { return motionBlurStrength; }
 		constexpr float getDepthOfFieldStrength() const { return dofStrength; }
 		constexpr float getSharpenFilterAmount() const { return sharpenFilterAmount; }
@@ -314,6 +332,13 @@ namespace wi
 		constexpr void setBloomRadius(float value) { bloomRadius = value; }
 		constexpr void setBloomCap(float value) { bloomCap = value; }
 		constexpr void setBloomBeforeExposure(bool value) { bloomBeforeExposure = value; }
+		constexpr void setScreenLensFlareThreshold(float value) { screenLensFlareThreshold = value; }
+		constexpr void setScreenLensFlareIntensity(float value) { screenLensFlareIntensity = value; }
+		constexpr void setScreenLensFlareSpacing(float value) { screenLensFlareSpacing = value; }
+		constexpr void setScreenLensFlareHalo(float value) { screenLensFlareHalo = value; }
+		constexpr void setScreenLensFlareNoSky(bool value) { screenLensFlareNoSky = value; }
+		constexpr void setScreenLensFlareCap(float value) { screenLensFlareCap = value; }
+		constexpr void setScreenLensFlareFollowBloom(bool value) { screenLensFlareFollowBloom = value; }
 		constexpr void setMotionBlurStrength(float value) { motionBlurStrength = value; }
 		constexpr void setDepthOfFieldStrength(float value) { dofStrength = value; }
 		constexpr void setSharpenFilterAmount(float value) { sharpenFilterAmount = value; }
@@ -349,6 +374,7 @@ namespace wi
 		void setEyeAdaptionEnabled(bool value);
 		void setReflectionsEnabled(bool value);
 		void setBloomEnabled(bool value);
+		void setScreenLensFlareEnabled(bool value);
 		void setVolumeLightsEnabled(bool value);
 		void setLightShaftsEnabled(bool value);
 		// GGMAX 2026-08-08 (task #120): per-stage readback stats of the light-shaft chain

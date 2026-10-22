@@ -39,6 +39,25 @@ struct Bloom
 	uint before_exposure;
 };
 
+struct ScreenLensFlarePush
+{
+	float2 resolution_rcp;
+	float threshold;
+	float cap;
+
+	float spacing;
+	float halo;
+	float fringe;
+	float mip;
+
+	uint ghosts;
+	uint nosky;
+	int texture_input;
+	int depth_index;
+
+	int texture_output;
+};
+
 #define lineardepth_inputresolution postprocess.params0.xy
 #define lineardepth_inputresolution_rcp postprocess.params0.zw
 
@@ -156,6 +175,8 @@ struct PushConstantsTonemap
 
 	float bloom_strength;
 	float bloom_radius;
+	int texture_lensflare;
+	float lensflare_intensity;
 };
 
 struct PostprocessTileStatistics

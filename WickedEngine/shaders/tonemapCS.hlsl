@@ -119,6 +119,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	}
 
 	[branch]
+	if (tonemap_push.texture_lensflare >= 0)
+	{
+		// the screen lens flare, scaled by the exposure as if added before it, as the DX11 build added it to the HDR image
+		Texture2D<half4> texture_lensflare = bindless_textures_half4[descriptor_index(tonemap_push.texture_lensflare)];
+		result.rgb += texture_lensflare.SampleLevel(sampler_linear_clamp, uv, 0).rgb * (half)(tonemap_push.lensflare_intensity * exposure);
+	}
+
+	[branch]
 	if (flags & TONEMAP_FLAG_SRGB)
 	{
 		if (flags & TONEMAP_FLAG_ACES)

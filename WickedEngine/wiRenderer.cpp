@@ -1562,6 +1562,8 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_MOTIONBLUR_EARLYEXIT], "motionblurCS_earlyexit.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_MOTIONBLUR_CHEAP], "motionblurCS_cheap.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_BLOOMSEPARATE], "bloomseparateCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_SSFLARE_BRIGHT], "ssflare_brightCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_SSFLARE_GHOSTS], "ssflare_ghostsCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE], "aerialPerspectiveCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE], "aerialPerspectiveCS_capture.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE_MSAA], "aerialPerspectiveCS_capture_MSAA.cso"); });
@@ -8547,6 +8549,19 @@ void DrawVolumeLights(
 
 	device->EventEnd(cmd);
 }
+// the lens flare's light colour (SetLensFlareLightColour)
+static float g_fLensFlareLightHue = 1.0f;
+static float g_fLensFlareLightBrightness = 1.0f;
+static float g_fLensFlareEnergyReference = 0.0f;
+void SetLensFlareLightColour(float hue, float brightness)
+{
+	g_fLensFlareLightHue = std::max(0.0f, std::min(1.0f, hue));
+	g_fLensFlareLightBrightness = std::max(0.0f, std::min(1.0f, brightness));
+}
+float GetLensFlareLightHue() { return g_fLensFlareLightHue; }
+float GetLensFlareLightBrightness() { return g_fLensFlareLightBrightness; }
+void SetLensFlareEnergyReference(float energy) { g_fLensFlareEnergyReference = energy; }
+
 void DrawLensFlares(
 	const Visibility& vis,
 	CommandList cmd,
@@ -8604,6 +8619,18 @@ void DrawLensFlares(
 
 				LensFlarePush cb;
 				XMStoreFloat3(&cb.xLensFlarePos, flarePos);
+				// the light's hue (its brightest channel 1) and its brightness against the level's sun, blended in by
+				// SetLensFlareLightColour; a red horizon sun gives a dimmer red flare
+				{
+					float fBrightest = std::max(light.color.x, std::max(light.color.y, light.color.z));
+					XMFLOAT3 hue = fBrightest > 0 ? XMFLOAT3(light.color.x / fBrightest, light.color.y / fBrightest, light.color.z / fBrightest) : XMFLOAT3(1, 1, 1);
+					float fBrightness = g_fLensFlareEnergyReference > 0 ? std::max(0.0f, std::min(2.0f, light.intensity / g_fLensFlareEnergyReference)) : 1.0f;
+					fBrightness = 1.0f + (fBrightness - 1.0f) * g_fLensFlareLightBrightness;
+					cb.xLensFlareColor.x = (1.0f + (hue.x - 1.0f) * g_fLensFlareLightHue) * fBrightness;
+					cb.xLensFlareColor.y = (1.0f + (hue.y - 1.0f) * g_fLensFlareLightHue) * fBrightness;
+					cb.xLensFlareColor.z = (1.0f + (hue.z - 1.0f) * g_fLensFlareLightHue) * fBrightness;
+					cb.xLensFlareColor.w = 1.0f;
+				}
 
 				uint32_t i = 0;
 				for (auto& x : light.lensFlareRimTextures)
@@ -13991,6 +14018,126 @@ void ComputeBloom(
 	mipopt.wide_gauss = true;
 	GenerateMipChain(res.texture_bloom, MIPGENFILTER_GAUSSIAN, cmd, mipopt);
 	device->EventEnd(cmd);
+
+	wi::profiler::EndRange(range);
+	device->EventEnd(cmd);
+}
+void CreateScreenLensFlareResources(ScreenLensFlareResources& res, XMUINT2 resolution)
+{
+	TextureDesc desc;
+	desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+	desc.format = Format::R11G11B10_FLOAT;
+	desc.width = std::max(1u, resolution.x / 4);
+	desc.height = std::max(1u, resolution.y / 4);
+	desc.mip_levels = std::min(3u, std::max(1u, (uint32_t)std::log2(std::max(desc.width, desc.height))));
+	device->CreateTexture(&desc, nullptr, &res.texture_bright);
+	device->SetName(&res.texture_bright, "ssflare.texture_bright");
+	device->CreateTexture(&desc, nullptr, &res.texture_temp);
+	device->SetName(&res.texture_temp, "ssflare.texture_temp");
+
+	for (uint32_t i = 0; i < res.texture_bright.desc.mip_levels; ++i)
+	{
+		int subresource_index;
+		subresource_index = device->CreateSubresource(&res.texture_bright, SubresourceType::SRV, 0, 1, i, 1);
+		assert(subresource_index == i);
+		subresource_index = device->CreateSubresource(&res.texture_temp, SubresourceType::SRV, 0, 1, i, 1);
+		assert(subresource_index == i);
+		subresource_index = device->CreateSubresource(&res.texture_bright, SubresourceType::UAV, 0, 1, i, 1);
+		assert(subresource_index == i);
+		subresource_index = device->CreateSubresource(&res.texture_temp, SubresourceType::UAV, 0, 1, i, 1);
+		assert(subresource_index == i);
+	}
+
+	desc.mip_levels = 1;
+	device->CreateTexture(&desc, nullptr, &res.texture_flare);
+	device->SetName(&res.texture_flare, "ssflare.texture_flare");
+}
+void ComputeScreenLensFlare(
+	const ScreenLensFlareResources& res,
+	const Texture& input,
+	const Texture& depth,
+	CommandList cmd,
+	float threshold,
+	float cap,
+	float spacing,
+	float halo,
+	bool nosky
+)
+{
+	device->EventBegin("Screen Lens Flare", cmd);
+	auto range = wi::profiler::BeginRangeGPU("Screen Lens Flare", cmd);
+
+	// the bright parts at a quarter of the resolution, each sample capped so the sun or a missile doesn't swamp it
+	{
+		device->EventBegin("Screen Lens Flare Bright", cmd);
+		device->Barrier(GPUBarrier::Image(&res.texture_bright, res.texture_bright.desc.layout, ResourceState::UNORDERED_ACCESS), cmd);
+
+		const TextureDesc& desc = res.texture_bright.GetDesc();
+		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSFLARE_BRIGHT], cmd);
+
+		ScreenLensFlarePush push = {};
+		push.resolution_rcp.x = 1.0f / desc.width;
+		push.resolution_rcp.y = 1.0f / desc.height;
+		push.threshold = threshold;
+		push.cap = cap;
+		push.nosky = nosky ? 1 : 0;
+		push.texture_input = device->GetDescriptorIndex(&input, SubresourceType::SRV);
+		push.depth_index = device->GetDescriptorIndex(&depth, SubresourceType::SRV);
+		push.texture_output = device->GetDescriptorIndex(&res.texture_bright, SubresourceType::UAV);
+		device->PushConstants(&push, sizeof(push), cmd);
+
+		device->Dispatch(
+			(desc.width + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE,
+			(desc.height + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE,
+			1,
+			cmd
+		);
+
+		device->Barrier(GPUBarrier::Image(&res.texture_bright, ResourceState::UNORDERED_ACCESS, res.texture_bright.desc.layout), cmd);
+		device->EventEnd(cmd);
+	}
+
+	// blurred through its mips, so the ghosts are soft
+	{
+		device->EventBegin("Screen Lens Flare Blur", cmd);
+		MIPGEN_OPTIONS mipopt;
+		mipopt.gaussian_temp = &res.texture_temp;
+		mipopt.wide_gauss = true;
+		GenerateMipChain(res.texture_bright, MIPGENFILTER_GAUSSIAN, cmd, mipopt);
+		device->EventEnd(cmd);
+	}
+
+	// the ghosts and the halo
+	{
+		device->EventBegin("Screen Lens Flare Ghosts", cmd);
+		device->Barrier(GPUBarrier::Image(&res.texture_flare, res.texture_flare.desc.layout, ResourceState::UNORDERED_ACCESS), cmd);
+
+		const TextureDesc& desc = res.texture_flare.GetDesc();
+		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSFLARE_GHOSTS], cmd);
+
+		ScreenLensFlarePush push = {};
+		push.resolution_rcp.x = 1.0f / desc.width;
+		push.resolution_rcp.y = 1.0f / desc.height;
+		push.spacing = spacing;
+		push.halo = halo;
+		push.fringe = 0.004f; // the colour fringe
+		push.ghosts = 5;
+		push.mip = (float)std::min(2u, res.texture_bright.desc.mip_levels - 1); // the blur
+		push.texture_input = device->GetDescriptorIndex(&res.texture_bright, SubresourceType::SRV);
+		push.depth_index = -1;
+		push.texture_output = device->GetDescriptorIndex(&res.texture_flare, SubresourceType::UAV);
+		device->PushConstants(&push, sizeof(push), cmd);
+
+		device->Dispatch(
+			(desc.width + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE,
+			(desc.height + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE,
+			1,
+			cmd
+		);
+
+		device->Barrier(GPUBarrier::Image(&res.texture_flare, ResourceState::UNORDERED_ACCESS, res.texture_flare.desc.layout), cmd);
+		device->EventEnd(cmd);
+	}
 
 	wi::profiler::EndRange(range);
 	device->EventEnd(cmd);
@@ -19629,7 +19776,9 @@ void Postprocess_Tonemap(
 	const Texture* texture_distortion_overlay,
 	float hdr_calibration,
 	float bloom_strength,
-	float bloom_radius
+	float bloom_radius,
+	const Texture* texture_lensflare,
+	float lensflare_intensity
 )
 {
 	if (!input.IsValid() || !output.IsValid())
@@ -19683,6 +19832,8 @@ void Postprocess_Tonemap(
 	tonemap_push.texture_bloom = device->GetDescriptorIndex(texture_bloom, SubresourceType::SRV);
 	tonemap_push.bloom_strength = bloom_strength;
 	tonemap_push.bloom_radius = bloom_radius;
+	tonemap_push.texture_lensflare = device->GetDescriptorIndex(texture_lensflare, SubresourceType::SRV);
+	tonemap_push.lensflare_intensity = lensflare_intensity;
 	tonemap_push.texture_output = device->GetDescriptorIndex(&output, SubresourceType::UAV);
 	device->PushConstants(&tonemap_push, sizeof(tonemap_push), cmd);
 
