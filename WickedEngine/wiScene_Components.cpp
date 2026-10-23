@@ -36,9 +36,9 @@ bool gg_applytransform_garbage_file = true;
 #include <atomic>
 #include <chrono>
 // GG diagnostic: MeshComponent::CreateRenderData's time by section, in microseconds (tangents, provoking index buffer,
-// bounds and sizes, suballocate, buffer and copy, descriptors, and the vertex fill inside buffer and copy); the spawn
-// probe reads them around each call
-std::atomic<unsigned long long> gg_meshrd_us[7] = {};
+// bounds and sizes, suballocate, buffer and copy, descriptors; then the vertex fill inside buffer and copy, and the
+// bounds and the 16 bit position test inside bounds and sizes); the spawn probe reads them around each call
+std::atomic<unsigned long long> gg_meshrd_us[9] = {};
 
 using namespace wi::ecs;
 using namespace wi::enums;
@@ -872,6 +872,8 @@ namespace wi::scene
 			_max = wi::math::Max(_max, pos);
 		}
 		aabb = AABB(_min, _max);
+		const auto gg_bounds_t = std::chrono::high_resolution_clock::now();
+		::gg_meshrd_us[7].fetch_add((unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(gg_bounds_t - gg_rd_t).count(), std::memory_order_relaxed);
 
 		if (IsQuantizedPositionsDisabled())
 		{
@@ -928,6 +930,7 @@ namespace wi::scene
 			}
 		}
 
+		::gg_meshrd_us[8].fetch_add((unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - gg_bounds_t).count(), std::memory_order_relaxed);
 		// Determine UV range for normalization:
 		size_t uv_stride = sizeof(Vertex_UVS);
 		Format uv_format = Vertex_UVS::FORMAT;
