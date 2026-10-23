@@ -26,7 +26,9 @@ VertexOut main(uint vertexID : SV_VertexID)
 	// determine the flare opacity based on depth buffer occlusion and occlusion mask:
 	float referenceDepth = saturate(1 - push.xLensFlarePos.z);
 	const float2 step = 1.0 / (GetInternalResolution() * push.xLensFlarePos.z);
-	const float2 range = 10.5 * step;
+	// as GameGuru MAX's DX11 flare: 9x9 taps counted over 64, so an unoccluded sun is drawn at 81/64 (the DX11 look; 21x21
+	// taps averaged drew it at 0.7-0.8 of that)
+	const float2 range = 4.0 * step;
 	float samples = 0;
 	float visibility = 0;
 	for (float y = -range.y; y <= range.y; y += step.y)
@@ -39,7 +41,7 @@ VertexOut main(uint vertexID : SV_VertexID)
 			visibility += vis;
 		}
 	}
-	visibility /= samples;
+	visibility *= 1.0 / 64.0;
 
 	Out.opacity = visibility;
 
