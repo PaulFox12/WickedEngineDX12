@@ -607,7 +607,11 @@ namespace wi::renderer
 		float cap,
 		float spacing, // how far apart the ghosts are
 		float halo, // the halo ring's radius
-		bool nosky // the sky left out
+		bool nosky, // the sky left out
+		const wi::graphics::Texture* texture_bloom = nullptr, // the bloom the tonemap adds, so what blooms flares
+		float exposure = 1.0f, // the exposure the bloom was scaled by
+		const wi::graphics::GPUBuffer* buffer_luminance = nullptr,
+		float bloom_radius = 0
 	);
 	// adds the flare ComputeScreenLensFlare made to the HDR image, before the bloom and the tone map
 	void Postprocess_ScreenLensFlare(

@@ -2980,7 +2980,11 @@ namespace wi
 					followBloom ? getBloomCap() : getScreenLensFlareCap(),
 					getScreenLensFlareSpacing(),
 					getScreenLensFlareHalo(),
-					getScreenLensFlareNoSky()
+					getScreenLensFlareNoSky(),
+					getBloomEnabled() ? &bloomResources.texture_bloom : nullptr,
+					getExposure(),
+					getEyeAdaptionEnabled() ? &luminanceResources.luminance : nullptr,
+					getBloomRadius()
 				);
 				wi::renderer::Postprocess_ScreenLensFlare(
 					screenLensFlareResources,
