@@ -33,6 +33,13 @@ bool gg_applytransform_garbage_file = true;
 #endif // OIDN_VERSION_MAJOR >= 2
 #endif // __has_include("OpenImageDenoise/oidn.hpp")
 
+#include <atomic>
+#include <chrono>
+// GG diagnostic: MeshComponent::CreateRenderData's time by section, in microseconds (tangents, provoking index buffer,
+// bounds and sizes, suballocate, buffer and copy, descriptors, and the vertex fill inside buffer and copy); the spawn
+// probe reads them around each call
+std::atomic<unsigned long long> gg_meshrd_us[7] = {};
+
 using namespace wi::ecs;
 using namespace wi::enums;
 using namespace wi::graphics;
@@ -726,6 +733,12 @@ namespace wi::scene
 		DeleteRenderData();
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
+		auto gg_rd_t = std::chrono::high_resolution_clock::now();
+		auto gg_rd_lap = [&](int section) {
+			const auto now = std::chrono::high_resolution_clock::now();
+			::gg_meshrd_us[section].fetch_add((unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(now - gg_rd_t).count(), std::memory_order_relaxed);
+			gg_rd_t = now;
+		};
 
 		if (vertex_tangents.empty() && !vertex_uvset_0.empty() && !vertex_normals.empty())
 		{
@@ -839,11 +852,13 @@ namespace wi::scene
 #endif
 		}
 
+		gg_rd_lap(0);
 		// SV_PrimitiveID avoiding workaround: provoking vertex can refer to triangel index
 		//	SV_PrimitiveID needs geometry shader emulation on some platforms (on PC is can happen automatically by driver), but with this that can be avoided.
 		wi::vector<unsigned int> provoke(indices.size()); // mesh needs to be drawn with this as index buffer when SV_PrimitiveID is required
 		wi::vector<unsigned int> reorder(vertex_positions.size() + indices.size() / 3); // This can be used as vertexID lookup from current index
 		reorder.resize(meshopt_generateProvokingIndexBuffer(&provoke[0], &reorder[0], &indices[0], indices.size(), vertex_positions.size()));
+		gg_rd_lap(1);
 
 		const size_t uv_count = std::max(vertex_uvset_0.size(), vertex_uvset_1.size());
 
@@ -1097,6 +1112,7 @@ namespace wi::scene
 		}
 
 		auto init_callback = [&](void* dest) {
+			const auto gg_fill_t = std::chrono::high_resolution_clock::now();
 			uint8_t* buffer_data = (uint8_t*)dest;
 			uint64_t buffer_offset = 0ull;
 
@@ -1453,12 +1469,15 @@ namespace wi::scene
 				std::memcpy(buffer_data + buffer_offset, cluster_bounds.data(), vb_bou.size);
 				buffer_offset += AlignTo(vb_bou.size, alignment);
 			}
+			::gg_meshrd_us[6].fetch_add((unsigned long long)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - gg_fill_t).count(), std::memory_order_relaxed);
 		};
 
+		gg_rd_lap(2);
 		// The suballocation strategy is used to have all mesh buffers reside in a global buffer
 		//	With this we can avoid rebinding the index buffer for every mesh and can work with purely offsets
 		//	Though the index buffer will still need to be rebound if the index format changes, but that happens less frequently
 		wi::renderer::BufferSuballocation suballoc = wi::renderer::SuballocateGPUBuffer(bd.size);
+		gg_rd_lap(3);
 		if (suballoc.IsValid())
 		{
 			bool success = device->CreateBuffer2(&bd, init_callback, &generalBuffer, &suballoc.alias, suballoc.allocation.byte_offset);
@@ -1475,6 +1494,7 @@ namespace wi::scene
 			device->SetName(&generalBuffer, "MeshComponent::generalBuffer");
 		}
 
+		gg_rd_lap(4);
 		const Format ib_format = GetIndexFormat() == IndexBufferFormat::UINT32 ? Format::R32_UINT : Format::R16_UINT;
 
 		assert(ib_reorder.IsValid());
@@ -1541,6 +1561,7 @@ namespace wi::scene
 		{
 			CreateStreamoutRenderData();
 		}
+		gg_rd_lap(5);
 	}
 	void MeshComponent::CreateStreamoutRenderData()
 	{
