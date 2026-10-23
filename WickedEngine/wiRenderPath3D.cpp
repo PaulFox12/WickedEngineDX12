@@ -2938,6 +2938,33 @@ namespace wi
 
 		// 2.) Tone mapping HDR -> LDR
 		{
+			// the screen-space lens flare from the image's bright spots, added to the HDR image before the bloom and the
+			// tone map, as the DX11 build added it; following the bloom, what blooms flares
+			if (getScreenLensFlareEnabled() && screenLensFlareResources.texture_flare.IsValid())
+			{
+				const bool followBloom = getScreenLensFlareFollowBloom();
+				wi::renderer::ComputeScreenLensFlare(
+					screenLensFlareResources,
+					rt_first == nullptr ? *rt_read : *rt_first,
+					depthBuffer_Copy,
+					cmd,
+					followBloom ? getBloomThreshold() : getScreenLensFlareThreshold(),
+					followBloom ? getBloomCap() : getScreenLensFlareCap(),
+					getScreenLensFlareSpacing(),
+					getScreenLensFlareHalo(),
+					getScreenLensFlareNoSky()
+				);
+				wi::renderer::Postprocess_ScreenLensFlare(
+					screenLensFlareResources,
+					rt_first == nullptr ? *rt_read : *rt_first,
+					*rt_write,
+					cmd,
+					getScreenLensFlareIntensity()
+				);
+				rt_first = nullptr;
+				std::swap(rt_read, rt_write);
+			}
+
 			// Bloom and eye adaption is not part of post process "chain",
 			//	because they will be applied to the screen in tonemap
 			if (getEyeAdaptionEnabled())
@@ -2960,24 +2987,8 @@ namespace wi
 					getExposure(),
 					getEyeAdaptionEnabled() ? &luminanceResources.luminance : nullptr,
 					getBloomCap(),
-					getBloomBeforeExposure()
-				);
-			}
-			// the screen-space lens flare from the image's bright spots; following the bloom, what blooms flares
-			const bool screenLensFlare = getScreenLensFlareEnabled() && screenLensFlareResources.texture_flare.IsValid();
-			if (screenLensFlare)
-			{
-				const bool followBloom = getScreenLensFlareFollowBloom();
-				wi::renderer::ComputeScreenLensFlare(
-					screenLensFlareResources,
-					rt_first == nullptr ? *rt_read : *rt_first,
-					depthBuffer_Copy,
-					cmd,
-					followBloom ? getBloomThreshold() : getScreenLensFlareThreshold(),
-					followBloom ? getBloomCap() : getScreenLensFlareCap(),
-					getScreenLensFlareSpacing(),
-					getScreenLensFlareHalo(),
-					getScreenLensFlareNoSky()
+					getBloomBeforeExposure(),
+					getBloomStrength()
 				);
 			}
 
@@ -2998,10 +3009,7 @@ namespace wi
 				getTonemap(),
 				&distortion_overlay,
 				getHDRCalibration(),
-				getBloomStrength(),
-				getBloomRadius(),
-				screenLensFlare ? &screenLensFlareResources.texture_flare : nullptr,
-				getScreenLensFlareIntensity()
+				getBloomRadius()
 			);
 
 			rt_first = nullptr;

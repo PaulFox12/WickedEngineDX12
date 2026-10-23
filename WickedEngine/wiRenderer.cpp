@@ -1564,6 +1564,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_BLOOMSEPARATE], "bloomseparateCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_SSFLARE_BRIGHT], "ssflare_brightCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_SSFLARE_GHOSTS], "ssflare_ghostsCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_SSFLARE_COMBINE], "ssflare_combineCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE], "aerialPerspectiveCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE], "aerialPerspectiveCS_capture.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE_MSAA], "aerialPerspectiveCS_capture_MSAA.cso"); });
@@ -13941,6 +13942,12 @@ void CreateBloomResources(BloomResources& res, XMUINT2 resolution)
 		assert(subresource_index == i);
 	}
 }
+// the default root signature has 12 root constants (globals.hlsli); a longer push constant struct overwrites the root
+// arguments after them and reads back wrong or hangs the GPU, and the shader compiler does not catch it
+static_assert(sizeof(Bloom) <= 12 * sizeof(uint32_t), "Bloom is over the 12 root constants");
+static_assert(sizeof(PushConstantsTonemap) <= 12 * sizeof(uint32_t), "PushConstantsTonemap is over the 12 root constants");
+static_assert(sizeof(ScreenLensFlarePush) <= 12 * sizeof(uint32_t), "ScreenLensFlarePush is over the 12 root constants");
+static_assert(sizeof(LensFlarePush) <= 12 * sizeof(uint32_t), "LensFlarePush is over the 12 root constants");
 void ComputeBloom(
 	const BloomResources& res,
 	const Texture& input,
@@ -13949,7 +13956,8 @@ void ComputeBloom(
 	float exposure,
 	const GPUBuffer* buffer_luminance,
 	float cap,
-	bool before_exposure
+	bool before_exposure,
+	float strength
 )
 {
 	device->EventBegin("Bloom", cmd);
@@ -13992,6 +14000,7 @@ void ComputeBloom(
 		bloom.buffer_input_luminance = device->GetDescriptorIndex(buffer_luminance, SubresourceType::SRV);
 		bloom.cap = cap;
 		bloom.before_exposure = before_exposure ? 1 : 0;
+		bloom.strength = strength;
 		device->PushConstants(&bloom, sizeof(bloom), cmd);
 
 		device->Dispatch(
@@ -14082,7 +14091,7 @@ void ComputeScreenLensFlare(
 		push.cap = cap;
 		push.nosky = nosky ? 1 : 0;
 		push.texture_input = device->GetDescriptorIndex(&input, SubresourceType::SRV);
-		push.depth_index = device->GetDescriptorIndex(&depth, SubresourceType::SRV);
+		push.texture_aux = device->GetDescriptorIndex(&depth, SubresourceType::SRV);
 		push.texture_output = device->GetDescriptorIndex(&res.texture_bright, SubresourceType::UAV);
 		device->PushConstants(&push, sizeof(push), cmd);
 
@@ -14120,11 +14129,9 @@ void ComputeScreenLensFlare(
 		push.resolution_rcp.y = 1.0f / desc.height;
 		push.spacing = spacing;
 		push.halo = halo;
-		push.fringe = 0.004f; // the colour fringe
-		push.ghosts = 5;
 		push.mip = (float)std::min(2u, res.texture_bright.desc.mip_levels - 1); // the blur
 		push.texture_input = device->GetDescriptorIndex(&res.texture_bright, SubresourceType::SRV);
-		push.depth_index = -1;
+		push.texture_aux = -1;
 		push.texture_output = device->GetDescriptorIndex(&res.texture_flare, SubresourceType::UAV);
 		device->PushConstants(&push, sizeof(push), cmd);
 
@@ -14140,6 +14147,41 @@ void ComputeScreenLensFlare(
 	}
 
 	wi::profiler::EndRange(range);
+	device->EventEnd(cmd);
+}
+void Postprocess_ScreenLensFlare(
+	const ScreenLensFlareResources& res,
+	const Texture& input,
+	const Texture& output,
+	CommandList cmd,
+	float intensity
+)
+{
+	device->EventBegin("Screen Lens Flare Combine", cmd);
+
+	device->Barrier(GPUBarrier::Image(&output, output.desc.layout, ResourceState::UNORDERED_ACCESS), cmd);
+
+	const TextureDesc& desc = output.GetDesc();
+	device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSFLARE_COMBINE], cmd);
+
+	ScreenLensFlarePush push = {};
+	push.resolution_rcp.x = 1.0f / desc.width;
+	push.resolution_rcp.y = 1.0f / desc.height;
+	push.intensity = intensity;
+	push.texture_input = device->GetDescriptorIndex(&input, SubresourceType::SRV);
+	push.texture_aux = device->GetDescriptorIndex(&res.texture_flare, SubresourceType::SRV);
+	push.texture_output = device->GetDescriptorIndex(&output, SubresourceType::UAV);
+	device->PushConstants(&push, sizeof(push), cmd);
+
+	device->Dispatch(
+		(desc.width + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE,
+		(desc.height + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE,
+		1,
+		cmd
+	);
+
+	device->Barrier(GPUBarrier::Image(&output, ResourceState::UNORDERED_ACCESS, output.desc.layout), cmd);
+
 	device->EventEnd(cmd);
 }
 
@@ -19775,10 +19817,7 @@ void Postprocess_Tonemap(
 	Tonemap tonemap,
 	const Texture* texture_distortion_overlay,
 	float hdr_calibration,
-	float bloom_strength,
-	float bloom_radius,
-	const Texture* texture_lensflare,
-	float lensflare_intensity
+	float bloom_radius
 )
 {
 	if (!input.IsValid() || !output.IsValid())
@@ -19824,16 +19863,13 @@ void Postprocess_Tonemap(
 		tonemap_push.flags_hdrcalibration |= TONEMAP_FLAG_SRGB;
 	}
 	tonemap_push.flags_hdrcalibration |= XMConvertFloatToHalf(hdr_calibration) << 16u;
+	tonemap_push.flags_hdrcalibration |= uint32_t(std::max(0.0f, std::min(2.0f, bloom_radius)) * (255.0f / 2.0f) + 0.5f) << 8u; // the bloom radius
 	tonemap_push.texture_input = device->GetDescriptorIndex(&input, SubresourceType::SRV);
 	tonemap_push.buffer_input_luminance = device->GetDescriptorIndex(buffer_luminance, SubresourceType::SRV);
 	tonemap_push.texture_input_distortion = device->GetDescriptorIndex(texture_distortion, SubresourceType::SRV);
 	tonemap_push.texture_input_distortion_overlay = device->GetDescriptorIndex(texture_distortion_overlay, SubresourceType::SRV);
 	tonemap_push.texture_colorgrade_lookuptable = device->GetDescriptorIndex(texture_colorgradinglut, SubresourceType::SRV);
 	tonemap_push.texture_bloom = device->GetDescriptorIndex(texture_bloom, SubresourceType::SRV);
-	tonemap_push.bloom_strength = bloom_strength;
-	tonemap_push.bloom_radius = bloom_radius;
-	tonemap_push.texture_lensflare = device->GetDescriptorIndex(texture_lensflare, SubresourceType::SRV);
-	tonemap_push.lensflare_intensity = lensflare_intensity;
 	tonemap_push.texture_output = device->GetDescriptorIndex(&output, SubresourceType::UAV);
 	device->PushConstants(&tonemap_push, sizeof(tonemap_push), cmd);
 

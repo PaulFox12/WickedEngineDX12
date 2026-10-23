@@ -110,20 +110,13 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		bloom += texture_bloom.SampleLevel(sampler_linear_clamp, uv, 3.5).rgb;
 		bloom += texture_bloom.SampleLevel(sampler_linear_clamp, uv, 4).rgb; // the last of five mips, as 4.5 read it before the radius's two
 		bloom /= 3.0;
+		const half bloom_radius = ((tonemap_push.flags_hdrcalibration >> 8u) & 0xFF) * (2.0 / 255.0);
 		[branch]
-		if (tonemap_push.bloom_radius > 0)
+		if (bloom_radius > 0)
 		{
-			bloom += tonemap_push.bloom_radius * 0.5 * (texture_bloom.SampleLevel(sampler_linear_clamp, uv, 5).rgb + texture_bloom.SampleLevel(sampler_linear_clamp, uv, 6).rgb);
+			bloom += bloom_radius * 0.5 * (texture_bloom.SampleLevel(sampler_linear_clamp, uv, 5).rgb + texture_bloom.SampleLevel(sampler_linear_clamp, uv, 6).rgb);
 		}
-		result.rgb += bloom * tonemap_push.bloom_strength;
-	}
-
-	[branch]
-	if (tonemap_push.texture_lensflare >= 0)
-	{
-		// the screen lens flare, scaled by the exposure as if added before it, as the DX11 build added it to the HDR image
-		Texture2D<half4> texture_lensflare = bindless_textures_half4[descriptor_index(tonemap_push.texture_lensflare)];
-		result.rgb += texture_lensflare.SampleLevel(sampler_linear_clamp, uv, 0).rgb * (half)(tonemap_push.lensflare_intensity * exposure);
+		result.rgb += bloom;
 	}
 
 	[branch]
