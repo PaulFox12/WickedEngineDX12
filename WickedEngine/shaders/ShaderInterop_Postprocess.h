@@ -40,6 +40,25 @@ struct Bloom
 	float strength;
 };
 
+// the screen flare's bright pass: the bloom texture (as the tonemap takes it) and the exposure it was scaled by, so the
+// pass sees the bloomed image as DX11's did
+struct ScreenLensFlareBrightPush
+{
+	float2 resolution_rcp;
+	float threshold;
+	float cap;
+
+	uint nosky;
+	int texture_input;
+	int texture_depth_buffer;
+	int texture_output;
+
+	int texture_bloom;
+	int buffer_input_luminance;
+	float exposure;
+	float bloom_radius;
+};
+
 // within the default root signature's 12 values, as every push constant struct must be
 struct ScreenLensFlarePush
 {

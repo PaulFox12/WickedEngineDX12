@@ -13841,6 +13841,7 @@ void CreateBloomResources(BloomResources& res, XMUINT2 resolution)
 static_assert(sizeof(Bloom) <= 12 * sizeof(uint32_t), "Bloom is over the 12 root constants");
 static_assert(sizeof(PushConstantsTonemap) <= 12 * sizeof(uint32_t), "PushConstantsTonemap is over the 12 root constants");
 static_assert(sizeof(ScreenLensFlarePush) <= 12 * sizeof(uint32_t), "ScreenLensFlarePush is over the 12 root constants");
+static_assert(sizeof(ScreenLensFlareBrightPush) <= 12 * sizeof(uint32_t), "ScreenLensFlareBrightPush is over the 12 root constants");
 static_assert(sizeof(LensFlarePush) <= 12 * sizeof(uint32_t), "LensFlarePush is over the 12 root constants");
 void ComputeBloom(
 	const BloomResources& res,
@@ -13964,7 +13965,11 @@ void ComputeScreenLensFlare(
 	float cap,
 	float spacing,
 	float halo,
-	bool nosky
+	bool nosky,
+	const Texture* texture_bloom,
+	float exposure,
+	const GPUBuffer* buffer_luminance,
+	float bloom_radius
 )
 {
 	device->EventBegin("Screen Lens Flare", cmd);
@@ -13978,15 +13983,19 @@ void ComputeScreenLensFlare(
 		const TextureDesc& desc = res.texture_bright.GetDesc();
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSFLARE_BRIGHT], cmd);
 
-		ScreenLensFlarePush push = {};
+		ScreenLensFlareBrightPush push = {};
 		push.resolution_rcp.x = 1.0f / desc.width;
 		push.resolution_rcp.y = 1.0f / desc.height;
 		push.threshold = threshold;
 		push.cap = cap;
 		push.nosky = nosky ? 1 : 0;
 		push.texture_input = device->GetDescriptorIndex(&input, SubresourceType::SRV);
-		push.texture_aux = device->GetDescriptorIndex(&depth, SubresourceType::SRV);
+		push.texture_depth_buffer = device->GetDescriptorIndex(&depth, SubresourceType::SRV);
 		push.texture_output = device->GetDescriptorIndex(&res.texture_bright, SubresourceType::UAV);
+		push.texture_bloom = device->GetDescriptorIndex(texture_bloom, SubresourceType::SRV);
+		push.buffer_input_luminance = device->GetDescriptorIndex(buffer_luminance, SubresourceType::SRV);
+		push.exposure = exposure;
+		push.bloom_radius = bloom_radius;
 		device->PushConstants(&push, sizeof(push), cmd);
 
 		device->Dispatch(
