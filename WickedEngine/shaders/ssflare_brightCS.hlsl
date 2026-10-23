@@ -18,9 +18,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	{
 		const float2 tapUV = (uv + float2((i & 1) ? 0.5 : -0.5, (i & 2) ? 0.5 : -0.5)) * push.resolution_rcp;
 		[branch]
-		if (push.nosky && push.depth_index >= 0)
+		if (push.nosky && push.texture_aux >= 0)
 		{
-			if (bindless_textures_float[descriptor_index(push.depth_index)].SampleLevel(sampler_point_clamp, tapUV, 0) == 0)
+			if (bindless_textures_float[descriptor_index(push.texture_aux)].SampleLevel(sampler_point_clamp, tapUV, 0) == 0)
 				continue;
 		}
 		color += min(texture_input.SampleLevel(sampler_linear_clamp, tapUV, 0).rgb, (half)push.cap);

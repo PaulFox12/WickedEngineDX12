@@ -37,8 +37,10 @@ struct Bloom
 	int buffer_input_luminance;
 	float cap;
 	uint before_exposure;
+	float strength;
 };
 
+// within the default root signature's 12 values, as every push constant struct must be
 struct ScreenLensFlarePush
 {
 	float2 resolution_rcp;
@@ -47,14 +49,12 @@ struct ScreenLensFlarePush
 
 	float spacing;
 	float halo;
-	float fringe;
 	float mip;
+	float intensity;
 
-	uint ghosts;
 	uint nosky;
 	int texture_input;
-	int depth_index;
-
+	int texture_aux; // the depth for the bright pass, the flare for the combine
 	int texture_output;
 };
 
@@ -171,12 +171,7 @@ struct PushConstantsTonemap
 	int texture_bloom;
 	int texture_output;
 	int texture_input_distortion_overlay;
-	uint flags_hdrcalibration;
-
-	float bloom_strength;
-	float bloom_radius;
-	int texture_lensflare;
-	float lensflare_intensity;
+	uint flags_hdrcalibration; // bits 8-15: the bloom radius, 0-255 for 0-2
 };
 
 struct PostprocessTileStatistics

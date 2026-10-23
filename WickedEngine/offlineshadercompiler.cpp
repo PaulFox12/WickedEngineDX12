@@ -35,6 +35,7 @@ wi::vector<ShaderEntry> shaders = {
 	{"bloomseparateCS", wi::graphics::ShaderStage::CS},
 	{"ssflare_brightCS", wi::graphics::ShaderStage::CS},
 	{"ssflare_ghostsCS", wi::graphics::ShaderStage::CS},
+	{"ssflare_combineCS", wi::graphics::ShaderStage::CS},
 	{"depthoffield_mainCS", wi::graphics::ShaderStage::CS},
 	{"depthoffield_neighborhoodMaxCOCCS", wi::graphics::ShaderStage::CS},
 	{"depthoffield_prepassCS", wi::graphics::ShaderStage::CS},

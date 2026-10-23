@@ -209,6 +209,9 @@
     <FxCompile Include="$(MSBuildThisFileDirectory)ssflare_ghostsCS.hlsl">
       <Filter>CS</Filter>
     </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)ssflare_combineCS.hlsl">
+      <Filter>CS</Filter>
+    </FxCompile>
     <FxCompile Include="$(MSBuildThisFileDirectory)depthoffield_mainCS.hlsl">
       <Filter>CS</Filter>
     </FxCompile>

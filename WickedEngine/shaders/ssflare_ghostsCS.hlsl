@@ -26,11 +26,11 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	const float2 ghostVec = (0.5 - flipped) * push.spacing;
 	const float ghostLength = length(ghostVec);
 	const float2 dir = ghostLength > 0.0001 ? ghostVec / ghostLength : float2(0, 0);
-	const float2 fringe = dir * push.fringe;
+	const float2 fringe = dir * 0.004; // the colour fringe
 	const float centreDist = length(float2(0.5, 0.5));
 
 	float3 result = 0;
-	for (uint i = 0; i < push.ghosts; ++i)
+	for (uint i = 0; i < 5; ++i) // the ghosts
 	{
 		const float2 ghostUV = frac(flipped + ghostVec * i);
 		float weight = 1.0 - length(0.5 - ghostUV) / centreDist;

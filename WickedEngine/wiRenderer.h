@@ -565,7 +565,8 @@ namespace wi::renderer
 		float exposure = 1.0f,
 		const wi::graphics::GPUBuffer* buffer_luminance = nullptr,
 		float cap = 10.0f, // the brightest a pixel counts for
-		bool before_exposure = false // the threshold and cap taken on the scene's own values, the exposure applied after
+		bool before_exposure = false, // the threshold and cap taken on the scene's own values, the exposure applied after
+		float strength = 1.0f // how strongly the bloom is added, applied here as the blur and the tonemap's taps are linear
 	);
 	// the screen-space lens flare from the image's own bright spots (missiles, explosions, fire): ghosts mirrored through
 	// the centre and a halo ring, from a bright pass with its own threshold and cap at a quarter of the resolution, taken
@@ -587,6 +588,14 @@ namespace wi::renderer
 		float spacing, // how far apart the ghosts are
 		float halo, // the halo ring's radius
 		bool nosky // the sky left out
+	);
+	// adds the flare ComputeScreenLensFlare made to the HDR image, before the bloom and the tone map
+	void Postprocess_ScreenLensFlare(
+		const ScreenLensFlareResources& res,
+		const wi::graphics::Texture& input,
+		const wi::graphics::Texture& output,
+		wi::graphics::CommandList cmd,
+		float intensity
 	);
 
 	void ComputeShadingRateClassification(
@@ -1067,10 +1076,7 @@ namespace wi::renderer
 		Tonemap tonemap = Tonemap::Reinhard,
 		const wi::graphics::Texture* texture_distortion_overlay = nullptr,
 		float hdr_calibration = 1,
-		float bloom_strength = 1, // how strongly the bloom is added
-		float bloom_radius = 0, // how much of the bloom's two widest mips is added, 0 none
-		const wi::graphics::Texture* texture_lensflare = nullptr, // the screen lens flare, added as if before the exposure
-		float lensflare_intensity = 0
+		float bloom_radius = 0 // how much of the bloom's two widest mips is added, 0-2 (0 none), in the flags word
 	);
 	void Postprocess_FSR(
 		const wi::graphics::Texture& input,

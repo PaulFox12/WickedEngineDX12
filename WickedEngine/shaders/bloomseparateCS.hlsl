@@ -52,5 +52,8 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		color = max(color - bloom.threshold, 0);
 	}
 
+	// the bloom's strength: the blur and the tonemap's taps are linear, so this scales what the tonemap adds
+	color *= bloom.strength;
+
 	bindless_rwtextures[descriptor_index(bloom.texture_output)][DTid.xy] = float4(color, 1);
 }
