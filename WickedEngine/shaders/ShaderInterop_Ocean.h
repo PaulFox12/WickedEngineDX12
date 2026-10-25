@@ -34,6 +34,8 @@ CBUFFER(OceanCB, CBSLOT_OTHER_OCEAN)
 	float xOceanWCPad0;
 	float xOceanWCPad1;
 	float xOceanWCPad2;
+
+	float4 xOceanShoreMap;	// GG: terrain height map under the water (Ocean::SetShoreHeightMap): xy world x/z where it starts, z its world size (0 = none), w the water depth at which waves are full
 };
 
 #endif // WI_SHADERINTEROP_OCEAN_H

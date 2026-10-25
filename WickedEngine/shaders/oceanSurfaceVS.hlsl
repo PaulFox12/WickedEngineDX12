@@ -2,6 +2,7 @@
 #include "oceanSurfaceHF.hlsli"
 
 Texture2D<float4> texture_displacementmap : register(t0);
+Texture2D<float> texture_shoreheightmap : register(t2); // GG: Ocean::SetShoreHeightMap
 
 PSIn main(uint vertexID : SV_VertexID)
 {
@@ -34,6 +35,18 @@ PSIn main(uint vertexID : SV_VertexID)
 		float3 displacement = texture_displacementmap.SampleLevel(sampler_linear_wrap, uv, 0).xzy;
 		float dist = length(worldPos - GetCamera().position);
 		displacement *= saturate(1 - saturate(dist / GetCamera().z_far - 0.8) * 5.0); // fade will be on edge and inwards 20%
+
+		// GG: waves fade out as the water gets shallow and stay flat over land (Ocean::SetShoreHeightMap)
+		[branch]
+		if (xOceanShoreMap.z > 0)
+		{
+			float2 shoreUV = (worldPos.xz - xOceanShoreMap.xy) / xOceanShoreMap.z;
+			if (all(shoreUV >= 0) && all(shoreUV <= 1))
+			{
+				float terrainHeight = texture_shoreheightmap.SampleLevel(sampler_linear_clamp, shoreUV, 0);
+				displacement *= smoothstep(0, xOceanShoreMap.w, xOceanWaterHeight - terrainHeight);
+			}
+		}
 		worldPos += displacement;
 	}
 

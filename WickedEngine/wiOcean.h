@@ -77,6 +77,10 @@ namespace wi
 
 		static void Initialize();
 
+		// GG: terrain heights under the water (a single-channel float texture covering size x size world units from minX,
+		// minZ): waves fade out as the water gets shallower than shoreDepth and stay flat over land. nullptr removes it
+		static void SetShoreHeightMap(const wi::graphics::Texture* heightMap, float minX, float minZ, float size, float shoreDepth);
+
 		bool IsValid() const { return displacementMap.IsValid(); }
 
 		// occlusion result history bitfield (32 bit->32 frame history)

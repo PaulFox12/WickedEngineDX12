@@ -19,6 +19,10 @@ namespace wi
 {
 	namespace ocean_internal
 	{
+		// GG: terrain under the water, set by the application (Ocean::SetShoreHeightMap)
+		const Texture* shoreHeightMap = nullptr;
+		XMFLOAT4 shoreMapParams = XMFLOAT4(0, 0, 0, 0);
+
 		Shader		updateSpectrumCS;
 		Shader		updateDisplacementMapCS;
 		Shader		updateGradientFoldingCS;
@@ -341,6 +345,7 @@ namespace wi
 		cb.xOceanSurfaceDisplacementTolerance = std::max(1.0f, params.surfaceDisplacementTolerance);
 		cb.xOceanFoamUnitScale = std::max(0.000001f, params.foam_unit_scale);
 		cb.xOceanFoamAmount = std::max(0.0f, params.foam_amount);
+		cb.xOceanShoreMap = (shoreHeightMap != nullptr && shoreHeightMap->IsValid()) ? shoreMapParams : XMFLOAT4(0, 0, 0, 0);
 
 		return cb;
 	}
@@ -546,6 +551,10 @@ namespace wi
 
 		device->BindResource(&displacementMap, 0, cmd);
 		device->BindResource(&gradientMap, 1, cmd);
+		if (shoreHeightMap != nullptr && shoreHeightMap->IsValid())
+		{
+			device->BindResource(shoreHeightMap, 2, cmd); // GG: Ocean::SetShoreHeightMap
+		}
 
 		device->BindIndexBuffer(&indexBuffer, IndexBufferFormat::UINT32, 0, cmd);
 
@@ -554,6 +563,12 @@ namespace wi
 		device->EventEnd(cmd);
 	}
 
+
+	void Ocean::SetShoreHeightMap(const Texture* heightMap, float minX, float minZ, float size, float shoreDepth)
+	{
+		shoreHeightMap = heightMap;
+		shoreMapParams = XMFLOAT4(minX, minZ, heightMap ? size : 0.0f, std::max(1.0f, shoreDepth));
+	}
 
 	void Ocean::Initialize()
 	{
