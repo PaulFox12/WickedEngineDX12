@@ -80,8 +80,8 @@ namespace wi
 #define GRAV_ACCEL	981.0f	// The acceleration of gravity, cm/s^2
 
 	// GG: the wave pattern from its own generator, seeded the same at each initHeightMap, so the same parameters always make
-	// the same sea. With rand() every rebuild (GameGuru's full visuals refresh did one) made a new pattern, and took about
-	// half a million numbers from the game's rand() sequence
+	// the same sea. With rand() every rebuild (GameGuru's full visuals refresh did one) made a new pattern, and took over a
+	// million numbers from the game's rand() sequence (four for each of the 513 x 513 points of the default map)
 	static std::mt19937 g_OceanRandom;
 	static float OceanRandom01()
 	{
