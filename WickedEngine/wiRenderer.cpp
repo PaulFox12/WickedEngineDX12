@@ -4018,6 +4018,7 @@ void Workaround(const int bug , CommandList cmd)
 // RenderMeshes at all). Read by the harness DUMP_OUTLINE command via the bridge below.
 std::atomic<uint64_t> gg_dbg_userstencil_draws[RENDERPASS_COUNT] = {};
 std::atomic<uint64_t> gg_dbg_total_draws[RENDERPASS_COUNT] = {};
+std::atomic<uint64_t> gg_dbg_transparent_draws = {}; // GG: the main pass's draws of transparent materials
 
 // GGMAX 2.31: per-MESH draw tracer, read back by the harness WHYNOTDRAWN command.
 // Built because a per-object visibility instrument proved insufficient: on the invisible
@@ -4488,6 +4489,8 @@ void RenderMeshes(
 				extern std::atomic<uint64_t> gg_dbg_userstencil_draws[RENDERPASS_COUNT];
 				extern std::atomic<uint64_t> gg_dbg_total_draws[RENDERPASS_COUNT];
 				gg_dbg_total_draws[renderPass].fetch_add(1, std::memory_order_relaxed);
+				extern std::atomic<uint64_t> gg_dbg_transparent_draws;
+				if (renderPass == RENDERPASS_MAIN && (material.GetFilterMask() & FILTER_TRANSPARENT)) gg_dbg_transparent_draws.fetch_add(1, std::memory_order_relaxed);
 				if (userStencilRef != 0) gg_dbg_userstencil_draws[renderPass].fetch_add(1, std::memory_order_relaxed);
 			}
 			if (stencilRef != prev_stencilref)
@@ -22182,4 +22185,10 @@ namespace wi::renderer { extern std::atomic<uint64_t> gg_dbg_total_draws[wi::enu
 std::atomic<uint64_t>* GG_GetTotalDrawCounters(void)
 {
 	return wi::renderer::gg_dbg_total_draws;
+}
+// the main pass's draws of transparent materials, a free-running total as the per-pass counters are
+namespace wi::renderer { extern std::atomic<uint64_t> gg_dbg_transparent_draws; }
+uint64_t GG_GetTransparentDrawCount(void)
+{
+	return wi::renderer::gg_dbg_transparent_draws.load(std::memory_order_relaxed);
 }

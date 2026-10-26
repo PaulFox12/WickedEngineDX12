@@ -121,5 +121,10 @@ namespace wi::profiler
 
 	// Returns GPU frame time in milliseconds (0 if profiler not enabled)
 	float GetGPUFrameTime();
+
+	// GG: the time of the first range with this name ("GPU Frame", "CPU Frame", ...) in ms, averaged over the last frames;
+	// -1 while profiling is off or until the range has been timed for as many frames as the average takes. pStaleFrames,
+	// if given, is set to 0: this profiler keeps no count of frames without a new result
+	float GetRangeTime(const char* name, int* pStaleFrames = nullptr);
 };
 

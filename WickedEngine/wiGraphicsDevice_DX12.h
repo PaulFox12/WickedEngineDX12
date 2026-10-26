@@ -407,9 +407,12 @@ namespace wi::graphics
 		{
 			MemoryUsage retval;
 			D3D12MA::Budget budget;
-			allocationhandler->allocator->GetBudget(&budget, nullptr);
+			D3D12MA::Budget shared;
+			allocationhandler->allocator->GetBudget(&budget, &shared);
 			retval.budget = budget.BudgetBytes;
 			retval.usage = budget.UsageBytes;
+			retval.shared_budget = shared.BudgetBytes;
+			retval.shared_usage = shared.UsageBytes;
 			return retval;
 		}
 

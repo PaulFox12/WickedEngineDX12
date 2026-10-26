@@ -209,6 +209,8 @@ namespace wi::graphics
 		{
 			uint64_t budget = 0ull;		// total video memory available for use by the current application (in bytes)
 			uint64_t usage = 0ull;		// used video memory by the current application (in bytes)
+			uint64_t shared_budget = 0ull;	// GG: system memory the device can use for the application's resources (in bytes)
+			uint64_t shared_usage = 0ull;	// GG: of it, the current application's (in bytes); it grows when the video memory nears its budget
 		};
 		// Returns video memory statistics for the current application
 		virtual MemoryUsage GetMemoryUsage() const = 0;

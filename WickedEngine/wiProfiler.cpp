@@ -1445,4 +1445,21 @@ namespace wi::profiler
 			return 0.0f;
 		return ranges[gpu_frame].time;
 	}
+
+	float GetRangeTime(const char* name, int* pStaleFrames)
+	{
+		if (pStaleFrames) *pStaleFrames = 0;
+		if (!ENABLED || !initialized || !name)
+			return -1;
+
+		float time = -1;
+		lock.lock();
+		auto it = ranges.find(wi::helper::string_hash(name));
+		if (it != ranges.end() && it->second.avg_counter > arraysize(it->second.times))
+		{
+			time = it->second.time;
+		}
+		lock.unlock();
+		return time;
+	}
 }
