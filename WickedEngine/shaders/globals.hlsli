@@ -710,7 +710,9 @@ struct PrimitiveID
 #define FLT_MAX 3.402823466e+38
 #define FLT_EPSILON 1.192092896e-07
 #define GOLDEN_RATIO 1.6180339887
-#define M_TO_SKY_UNIT 0.001
+// GG: GameGuru's world units are inches, as DX11's Wicked has it (0.0000254); 0.001 read them as metres, which put the
+// atmosphere, its haze, the clouds' heights and the cloud shadows on a scale about 39 times off GameGuru's world
+#define M_TO_SKY_UNIT 0.0000254
 #define SKY_UNIT_TO_M rcp(M_TO_SKY_UNIT)
 #define MEDIUMP_FLT_MAX 65504.0
 #define SPHERE_SAMPLING_PDF rcp(4 * PI)
