@@ -1460,6 +1460,9 @@ namespace wi::renderer
 	//atlas contents + frozen matrices. Default off = stock behaviour.
 	void SetDelayedShadowCascadesEnabled(bool value);
 	bool GetDelayedShadowCascadesEnabled();
+	// GG: the directional light's shadow cascades built from a rotation of their own (a light's rotation, world), so a
+	// script can turn the sun's light every frame and its shadows in steps; unset, the light's own
+	void SetSunShadowRotation(bool bSet, const XMFLOAT4& rotation);
 	void InvalidateDelayedShadowCascades(); // force a full refresh (sun moved, cascade splits changed, level load)
 	void SetDelayedShadowCascadeInterval(int frames); // GG: far-cascade (1..N) refresh period in frames — 2=default delayed shadows, 4="Laptop" (twice as aggressive); clamped >=2
 	int GetDelayedShadowCascadeInterval();
