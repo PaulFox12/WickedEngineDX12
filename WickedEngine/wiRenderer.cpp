@@ -125,6 +125,7 @@ bool debugPartitionTree = false;
 bool debugEmitters = false;
 bool freezeCullingCamera = false;
 bool debugEnvProbes = false;
+float GAMMA = -1; // GG: SetGamma's output curve; below 0 the sRGB curve
 bool debugForceFields = false;
 bool debugCameras = false;
 bool debugColliders = false;
@@ -19889,6 +19890,16 @@ void Postprocess_Tonemap(
 	if (display_colorspace == ColorSpace::SRGB)
 	{
 		tonemap_push.flags_hdrcalibration |= TONEMAP_FLAG_SRGB;
+		if (GAMMA >= 0)
+		{
+			// GG: the sRGB output doesn't read the hdr calibration, so its half carries the gamma (no room for another
+			// push constant: the root signature takes 12)
+			tonemap_push.flags_hdrcalibration |= TONEMAP_FLAG_GAMMA;
+			// GG: drawn 1.054 times the set gamma, so a gamma looks here as it does on DX11: at the same 2.4 this build's
+			// picture was 2-7 levels darker (its sky a little darker, its sunlit ground a little brighter); 2.53 for 2.4
+			// fitted nine sky and ground measures to DX11's within 2.3 levels, the terrain from above 4.7 brighter
+			hdr_calibration = GAMMA * (2.53f / 2.4f);
+		}
 	}
 	tonemap_push.flags_hdrcalibration |= XMConvertFloatToHalf(hdr_calibration) << 16u;
 	tonemap_push.flags_hdrcalibration |= uint32_t(std::max(0.0f, std::min(2.0f, bloom_radius)) * (255.0f / 2.0f) + 0.5f) << 8u; // the bloom radius
@@ -21864,6 +21875,8 @@ void SetToDrawDebugPartitionTree(bool param) { debugPartitionTree = param; }
 bool GetToDrawDebugPartitionTree() { return debugPartitionTree; }
 bool GetToDrawDebugEnvProbes() { return debugEnvProbes; }
 void SetToDrawDebugEnvProbes(bool value) { debugEnvProbes = value; }
+void SetGamma(float value) { GAMMA = value; }
+float GetGamma() { return GAMMA; }
 // GGMAX 2.75 (#155): see wiRenderer.h — game-set scale for the debug probe mirror spheres
 float gg_debugprobe_sphere_scale = 1.0f;
 void SetDebugEnvProbeSphereScale(float value) { gg_debugprobe_sphere_scale = value; }

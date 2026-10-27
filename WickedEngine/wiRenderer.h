@@ -1389,6 +1389,10 @@ namespace wi::renderer
 	bool GetToDrawDebugPartitionTree();
 	bool GetToDrawDebugEnvProbes();
 	void SetToDrawDebugEnvProbes(bool value);
+	// GG: the sRGB output drawn as a 1/gamma power, as DX11's Wicked does (GameGuru's level gamma and fade-in); below 0
+	// (the default) the sRGB curve
+	void SetGamma(float value);
+	float GetGamma();
 	// GGMAX 2.75 (#155): scale for the debug env-probe mirror spheres (default 1 = stock unit
 	// sphere). The game sets this so a picked probe marker shows a LARGE accurate preview of
 	// the captured cube (the legacy %probe marker ball's own PBR shading is misleading).

@@ -130,7 +130,17 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		{
 			result.rgb = tonemap(result.rgb);
 		}
-		result.rgb = ApplySRGBCurve_Fast(result.rgb);
+		[branch]
+		if (flags & TONEMAP_FLAG_GAMMA)
+		{
+			// GG: SetGamma's curve, as DX11's Wicked draws it (GameGuru's levels and the game's brightness setting were tuned
+			// on it); the sRGB curve's linear foot left the dark tones (shade, dusk, the far hillsides) up to three times darker
+			result.rgb = pow(abs(result.rgb), 1.0 / max(hdr_calibration, 0.05));
+		}
+		else
+		{
+			result.rgb = ApplySRGBCurve_Fast(result.rgb);
+		}
 	}
 	else
 	{

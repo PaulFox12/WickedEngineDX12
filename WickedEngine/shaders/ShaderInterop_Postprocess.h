@@ -176,6 +176,7 @@ enum TONEMAP_FLAGS
 	TONEMAP_FLAG_DITHER = 1 << 0,
 	TONEMAP_FLAG_ACES = 1 << 1,
 	TONEMAP_FLAG_SRGB = 1 << 2,
+	TONEMAP_FLAG_GAMMA = 1 << 3, // GG: the sRGB output as a 1/gamma power, the gamma in the hdr calibration's half
 };
 struct PushConstantsTonemap
 {
