@@ -24,7 +24,7 @@ float4 main(PSIn input) : SV_TARGET
 	
 	uint2 pixel = input.pos.xy;
 
-	const half gradient_fade = saturate(dist * 0.001);
+	const half gradient_fade = saturate(dist * 0.001 / OCEAN_M_TO_UNITS); // GG: over 1,000 m as DX11's, the distance in inches
 	const half4 gradientNear = texture_gradientmap.Sample(sampler_aniso_wrap, input.uv);
 	const half4 gradientFar = texture_gradientmap.Sample(sampler_aniso_wrap, input.uv * 0.125);
 	half4 gradient = lerp(gradientNear, gradientFar, gradient_fade);
@@ -77,10 +77,10 @@ float4 main(PSIn input) : SV_TARGET
 			float reflectiveDepth = bindless_textures[descriptor_index(GetCamera().texture_reflection_depth_index)].SampleLevel(sampler_linear_clamp, reflectionUV, 0).r;
 			float3 reflectivePosition = reconstruct_position(reflectionUV, reflectiveDepth, GetCamera().reflection_inverse_view_projection);
 			float water_depth = -dot(float4(reflectivePosition, 1), water_plane);
-			water_depth += texture_ocean_displacementmap.SampleLevel(sampler_linear_wrap, reflectivePosition.xz * xOceanPatchSizeRecip, 0).z; // texture contains xzy!
+			water_depth += texture_ocean_displacementmap.SampleLevel(sampler_linear_wrap, reflectivePosition.xz * xOceanPatchSizeRecip, 0).z * OCEAN_M_TO_UNITS; // texture contains xzy!
 			reflectiveColor.rgb = lerp(color.rgb, reflectiveColor.rgb, saturate(exp(-water_depth * color.a)));
 		}
-		lighting.indirect.specular = reflectiveColor.rgb * surface.F * saturate(dist * 0.1); // fade out very close to camera, doesn't look good
+		lighting.indirect.specular = reflectiveColor.rgb * surface.F * saturate(dist * 0.1 / OCEAN_M_TO_UNITS); // fade out very close to camera, doesn't look good (GG: 10 m, the distance in inches)
 	}
 	else
 	{
@@ -100,7 +100,7 @@ float4 main(PSIn input) : SV_TARGET
 		float refraction_depth = find_max_depth(refraction_uv, 2, 2);
 		float3 refraction_position = reconstruct_position(refraction_uv, refraction_depth);
 		water_depth = -dot(float4(refraction_position, 1), water_plane);
-		water_depth += texture_ocean_displacementmap.SampleLevel(sampler_linear_wrap, refraction_position.xz * xOceanPatchSizeRecip, 0).z; // texture contains xzy!
+		water_depth += texture_ocean_displacementmap.SampleLevel(sampler_linear_wrap, refraction_position.xz * xOceanPatchSizeRecip, 0).z * OCEAN_M_TO_UNITS; // texture contains xzy!
 		if (camera_above_water && V.y < 0)
 			water_depth = -water_depth;
 		if (water_depth <= 0)
@@ -111,14 +111,14 @@ float4 main(PSIn input) : SV_TARGET
 		else
 		{
 			// Below water, compute perturbation according to first sample water depth:
-			refraction_uv = ScreenCoord.xy + surface.N.xz * bump_strength * saturate(1 - exp(-water_depth));
+			refraction_uv = ScreenCoord.xy + surface.N.xz * bump_strength * saturate(1 - exp(-water_depth / OCEAN_M_TO_UNITS)); // GG: the depth in metres
 		}
 		surface.refraction.rgb = texture_refraction.SampleLevel(sampler_linear_mirror, refraction_uv, 0).rgb;
 		// Recompute depth params again with actual perturbation:
 		refraction_depth = texture_depth.SampleLevel(sampler_point_clamp, refraction_uv, 0);
 		refraction_position = reconstruct_position(refraction_uv, refraction_depth);
 		water_depth = max(water_depth, -dot(float4(refraction_position, 1), water_plane));
-		water_depth += texture_ocean_displacementmap.SampleLevel(sampler_linear_wrap, refraction_position.xz * xOceanPatchSizeRecip, 0).z; // texture contains xzy!
+		water_depth += texture_ocean_displacementmap.SampleLevel(sampler_linear_wrap, refraction_position.xz * xOceanPatchSizeRecip, 0).z * OCEAN_M_TO_UNITS; // texture contains xzy!
 		if (camera_above_water && V.y < 0)
 			water_depth = -water_depth;
 		// Water fog computation:

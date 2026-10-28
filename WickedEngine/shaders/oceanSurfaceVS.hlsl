@@ -32,9 +32,12 @@ PSIn main(uint vertexID : SV_VertexID)
 	if (grid_coord.x > 0 && grid_coord.x < dim.x - 1 && grid_coord.y > 0 && grid_coord.y < dim.y - 1) // don't displace the side edges, to avoid holes
 	{
 		// Displace surface:
-		float3 displacement = texture_displacementmap.SampleLevel(sampler_linear_wrap, uv, 0).xzy;
+		float3 displacement = texture_displacementmap.SampleLevel(sampler_linear_wrap, uv, 0).xzy * OCEAN_M_TO_UNITS;
 		float dist = length(worldPos - GetCamera().position);
 		displacement *= saturate(1 - saturate(dist / GetCamera().z_far - 0.8) * 5.0); // fade will be on edge and inwards 20%
+		// GG: and with distance in metres, as DX11's Wicked fades them (gone by 400 m): further out the projected grid is too
+		// coarse for a wave's height, which lifted the far water over low ground
+		displacement *= 1 - saturate(dist * 0.0025 / OCEAN_M_TO_UNITS);
 
 		// GG: waves fade out as the water gets shallow and stay flat over land (Ocean::SetShoreHeightMap)
 		[branch]

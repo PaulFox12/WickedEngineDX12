@@ -1126,7 +1126,7 @@ namespace wi::scene
 		shaderscene.weather.ocean.water_color = weather.oceanParameters.waterColor;
 		shaderscene.weather.ocean.extinction_color = XMFLOAT4(1 - weather.oceanParameters.extinctionColor.x, 1 - weather.oceanParameters.extinctionColor.y, 1 - weather.oceanParameters.extinctionColor.z, 1);
 		shaderscene.weather.ocean.water_height = weather.oceanParameters.waterHeight;
-		shaderscene.weather.ocean.patch_size_rcp = 1.0f / weather.oceanParameters.patch_length;
+		shaderscene.weather.ocean.patch_size_rcp = 0.0254f / weather.oceanParameters.patch_length; // GG: per world unit (an inch), as the ocean's
 		shaderscene.weather.ocean.caustic_scale = weather.oceanParameters.caustic_scale;
 		shaderscene.weather.ocean.underwater_fog_density = weather.oceanParameters.underwater_fog_density;
 		shaderscene.weather.ocean.underwater_color = weather.oceanParameters.underwater_color;

@@ -714,6 +714,9 @@ struct PrimitiveID
 // atmosphere, its haze, the clouds' heights and the cloud shadows on a scale about 39 times off GameGuru's world
 #define M_TO_SKY_UNIT 0.0000254
 #define SKY_UNIT_TO_M rcp(M_TO_SKY_UNIT)
+// GG: the ocean's simulation works in metres and GameGuru's world in inches, as DX11's Wicked converts them: the patch's
+// reciprocal is handed over per world unit (Ocean, Scene), and a displacement read back is put into world units with this
+#define OCEAN_M_TO_UNITS 39.37
 #define MEDIUMP_FLT_MAX 65504.0
 #define SPHERE_SAMPLING_PDF rcp(4 * PI)
 #define HEMISPHERE_SAMPLING_PDF rcp(2 * PI)

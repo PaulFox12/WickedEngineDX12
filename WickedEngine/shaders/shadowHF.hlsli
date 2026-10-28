@@ -494,7 +494,7 @@ inline bool rain_blocker_check(in float3 P)
 	{
 		Texture2D displacementmap = bindless_textures[descriptor_index(ocean.texture_displacementmap)];
 		float2 ocean_uv = P.xz * ocean.patch_size_rcp;
-		float3 displacement = displacementmap.SampleLevel(sampler_linear_wrap, ocean_uv, 0).xzy;
+		float3 displacement = displacementmap.SampleLevel(sampler_linear_wrap, ocean_uv, 0).xzy * OCEAN_M_TO_UNITS;
 		float water_height = ocean.water_height + displacement.y;
 		if (P.y < water_height)
 		{
@@ -541,7 +541,7 @@ inline bool rain_blocker_check_prev(in float3 P)
 	{
 		Texture2D displacementmap = bindless_textures[descriptor_index(ocean.texture_displacementmap)];
 		float2 ocean_uv = P.xz * ocean.patch_size_rcp;
-		float3 displacement = displacementmap.SampleLevel(sampler_linear_wrap, ocean_uv, 0).xzy;
+		float3 displacement = displacementmap.SampleLevel(sampler_linear_wrap, ocean_uv, 0).xzy * OCEAN_M_TO_UNITS;
 		float water_height = ocean.water_height + displacement.y;
 		if (P.y < water_height)
 		{

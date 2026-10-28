@@ -200,7 +200,7 @@ inline void light_directional(in ShaderEntity light, in Surface surface, inout L
 	{
 		Texture2D displacementmap = bindless_textures[descriptor_index(ocean.texture_displacementmap)];
 		float2 ocean_uv = surface.P.xz * ocean.patch_size_rcp;
-		float3 displacement = displacementmap.SampleLevel(sampler_linear_wrap, ocean_uv, 0).xzy;
+		float3 displacement = displacementmap.SampleLevel(sampler_linear_wrap, ocean_uv, 0).xzy * OCEAN_M_TO_UNITS;
 		float water_height = ocean.water_height + displacement.y;
 		if (surface.P.y < water_height)
 		{
@@ -208,7 +208,9 @@ inline void light_directional(in ShaderEntity light, in Surface surface, inout L
 			// be tuned WITHOUT changing wave size (patch_size otherwise drives both). The
 			// displacement/water_height lookup above deliberately keeps the unscaled ocean_uv.
 			// ocean.caustic_scale == 1 reproduces stock behaviour exactly.
-			half3 caustic = texture_caustics.SampleLevel(sampler_linear_mirror, ocean_uv * ocean.caustic_scale, 0).rgb;
+			// GG: x OCEAN_M_TO_UNITS keeps the caustics at the size the Caustic Size slider was tuned at, before the ocean's
+			// units were fixed (DX11 has no caustics to match)
+			half3 caustic = texture_caustics.SampleLevel(sampler_linear_mirror, ocean_uv * (OCEAN_M_TO_UNITS * ocean.caustic_scale), 0).rgb;
 			caustic *= sqr(saturate((water_height - surface.P.y) * 0.5)); // fade out at shoreline
 			caustic *= light_color;
 			lighting.indirect.diffuse += caustic;

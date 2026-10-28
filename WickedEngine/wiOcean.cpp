@@ -233,7 +233,7 @@ namespace wi
 			const uint8_t* bytedata = (const uint8_t*)tex.mapped_data;
 			if (bytedata != nullptr)
 			{
-				const float patch_size_rcp = 1.0f / params.patch_length;
+				const float patch_size_rcp = 0.0254f / params.patch_length; // GG: per world unit (an inch), as the shaders take it
 				const XMFLOAT2 uv = XMFLOAT2(frac(ocean_pos.x * patch_size_rcp), frac(ocean_pos.z * patch_size_rcp));
 				const XMFLOAT2 fpixel = XMFLOAT2(uv.x * (tex.desc.width - 1), uv.y * (tex.desc.height - 1));
 				const XMFLOAT2 pixel_frac = XMFLOAT2(frac(fpixel.x), frac(fpixel.y));
@@ -256,9 +256,10 @@ namespace wi
 					bilinear(wwww, pixel_frac)
 				);
 				// xzy swizzle is on purpose, that's how the data is generated on GPU:
-				ocean_pos.x += displacement.x;
-				ocean_pos.y += displacement.z;
-				ocean_pos.z += displacement.y;
+				// GG: the displacement is in metres, GameGuru's world in inches
+				ocean_pos.x += displacement.x * 39.37f;
+				ocean_pos.y += displacement.z * 39.37f;
+				ocean_pos.z += displacement.y * 39.37f;
 			}
 		}
 		return ocean_pos;
@@ -339,7 +340,7 @@ namespace wi
 		cb.xOceanScreenSpaceParams.y = (float)dim.y;
 		cb.xOceanScreenSpaceParams.z = 1.0f / cb.xOceanScreenSpaceParams.x;
 		cb.xOceanScreenSpaceParams.w = 1.0f / cb.xOceanScreenSpaceParams.y;
-		cb.xOceanPatchSizeRecip = 1.0f / params.patch_length;
+		cb.xOceanPatchSizeRecip = 0.0254f / params.patch_length; // GG: per world unit (GameGuru's inch), the patch length in metres, as DX11's Wicked
 		cb.xOceanMapHalfTexel = 0.5f / params.dmap_dim;
 		cb.xOceanWaterHeight = params.waterHeight;
 		cb.xOceanSurfaceDisplacementTolerance = std::max(1.0f, params.surfaceDisplacementTolerance);

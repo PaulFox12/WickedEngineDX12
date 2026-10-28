@@ -51,7 +51,7 @@ void main(uint DTid : SV_DispatchThreadID)
 	{
 		const float2 ocean_uv = ocean_pos.xz * ocean.patch_size_rcp;
 		Texture2D texture_displacementmap = bindless_textures[descriptor_index(ocean.texture_displacementmap)];
-		const float3 displacement = texture_displacementmap.SampleLevel(sampler_linear_wrap, ocean_uv, 0).xzy;
+		const float3 displacement = texture_displacementmap.SampleLevel(sampler_linear_wrap, ocean_uv, 0).xzy * OCEAN_M_TO_UNITS;
 		ocean_pos += displacement;
 		float water_depth = ocean_pos.y - world_pos.y;
 		if (water_depth > 0)
