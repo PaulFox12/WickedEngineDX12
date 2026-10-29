@@ -30,7 +30,8 @@ struct ParticleCounters
 };
 static const uint PARTICLECOUNTER_OFFSET_ALIVECOUNT = 0;
 static const uint PARTICLECOUNTER_OFFSET_DEADCOUNT = PARTICLECOUNTER_OFFSET_ALIVECOUNT + 4;
-static const uint PARTICLECOUNTER_OFFSET_ALIVECOUNT_AFTERSIMULATION = PARTICLECOUNTER_OFFSET_DEADCOUNT + 4;
+static const uint PARTICLECOUNTER_OFFSET_REALEMITCOUNT = PARTICLECOUNTER_OFFSET_DEADCOUNT + 4; // GG: the struct's realEmitCount, so the read-back statistics line up with the counters
+static const uint PARTICLECOUNTER_OFFSET_ALIVECOUNT_AFTERSIMULATION = PARTICLECOUNTER_OFFSET_REALEMITCOUNT + 4;
 static const uint PARTICLECOUNTER_OFFSET_CULLEDCOUNT = PARTICLECOUNTER_OFFSET_ALIVECOUNT_AFTERSIMULATION + 4;
 static const uint PARTICLECOUNTER_OFFSET_CELLALLOCATOR = PARTICLECOUNTER_OFFSET_CULLEDCOUNT + 4;
 
@@ -142,6 +143,8 @@ CBUFFER(EmittedParticleCB, CBSLOT_OTHER_EMITTEDPARTICLE)
 
 	float4		xEmitterKillBoxMin[EMITTER_KILLBOX_COUNT];
 	float4		xEmitterKillBoxMax[EMITTER_KILLBOX_COUNT];
+
+	ShaderTransform xEmitterWorld;		// GG: the emitter's world matrix (its instance's transform is left unset, as particles are written in world space)
 };
 
 struct EmitLocation

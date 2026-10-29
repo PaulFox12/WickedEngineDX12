@@ -680,6 +680,7 @@ namespace wi
 				cb.xEmitterKillBoxMax[i] = killbox_max[i];
 			}
 			cb.xParticleSpreadScale = spread_scale; // GG: the wrapping volume's box widened as the emit volume
+			cb.xEmitterWorld.Create(worldMatrix); // GG: the wrapping volume's box and a streak's emitter motion
 			cb.xParticleScatter = wi::renderer::GetParticleScatter(); // GG: the sun's forward scattering on the lit layers (0 off)
 
 			cb.xEmitterOptions = 0;

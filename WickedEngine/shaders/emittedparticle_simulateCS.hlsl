@@ -65,7 +65,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 	[branch]
 	if (xParticleLocalOptions & 64)
 	{
-		const float4x4 emitterWorld = EmitterGetInstance().transform.GetMatrix();
+		const float4x4 emitterWorld = xEmitterWorld.GetMatrix();
 		const float3x3 box = (float3x3)emitterWorld * xParticleSpreadScale; // GG: widened by the layer's spread, as the emit volume
 		const float3 c0 = cross(box[1], box[2]), c1 = cross(box[2], box[0]), c2 = cross(box[0], box[1]);
 		const float det = dot(box[0], c0);
@@ -427,7 +427,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 			[branch]
 			if ((xParticleLocalOptions & 64) && (xEmitterWrapMotionSet > 0 || (xEmitterPrevValid > 0 && GetFrame().delta_time > 0)))
 			{
-				const float3 emitterNow = mul(EmitterGetInstance().transform.GetMatrix(), float4(0, 0, 0, 1)).xyz;
+				const float3 emitterNow = mul(xEmitterWorld.GetMatrix(), float4(0, 0, 0, 1)).xyz;
 				const float3 emitterVelocity = xEmitterWrapMotionSet > 0 ? xEmitterWrapMotion : (emitterNow - xEmitterPrevPos) / GetFrame().delta_time;
 				const float3 relative = particle.velocity - emitterVelocity;
 				const float relativeSpeed = length(relative);
