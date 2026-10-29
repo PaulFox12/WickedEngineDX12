@@ -9018,6 +9018,9 @@ void DrawShadowmaps(
 						// Determine which cascades the object is contained in:
 						uint8_t camera_mask = 0;
 						uint8_t shadow_lod = 0xFF;
+						// GG: a terrain chunk casts from the mesh it is drawn with: a coarser LOD (the shadow LOD override, Shadows Use
+						// Fastest LOD) stood above the drawn ground in places and darkened it in blocky patches with long streaks
+						const bool gg_terrain_chunk = (object.GetFilterMask() & wi::enums::FILTER_TERRAIN) != 0;
 						for (uint32_t cascade = 0; cascade < cascade_count; ++cascade)
 						{
 							//GGMAX delayed cascades: no instances for skipped cascades
@@ -9043,7 +9046,7 @@ void DrawShadowmaps(
 							if ((cascade < (cascade_count - object.cascadeMask)) && shcams[cascade].frustum.CheckBoxFast(aabb))
 							{
 								camera_mask |= 1 << cascade;
-								if (shadow_lod_override)
+								if (shadow_lod_override && !gg_terrain_chunk)
 								{
 									const uint8_t candidate_lod = (uint8_t)vis.scene->ComputeObjectLODForView(object, aabb, vis.scene->meshes[object.mesh_index], shcams[cascade].view_projection);
 									shadow_lod = std::min(shadow_lod, candidate_lod);
@@ -9078,7 +9081,7 @@ void DrawShadowmaps(
 						gg_dbg_shadow_casters.fetch_add(1, std::memory_order_relaxed);
 
 						// GG: the shadow at the last LOD when the level asks (Shadows Use Fastest LOD)
-						if (gg_shadow_lowest_lod != 0) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
+						if (gg_shadow_lowest_lod != 0 && !gg_terrain_chunk) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
 						RenderBatch batch;
 						batch.Create(object.mesh_index, uint32_t(i), gg_shadowBatchDist, object.sort_bits, camera_mask, shadow_lod);
 
@@ -9237,7 +9240,8 @@ void DrawShadowmaps(
 							continue;
 
 						uint8_t shadow_lod = 0xFF;
-						if (shadow_lod_override)
+						const bool gg_terrain_chunk = (object.GetFilterMask() & wi::enums::FILTER_TERRAIN) != 0;
+						if (shadow_lod_override && !gg_terrain_chunk)
 						{
 							const uint8_t candidate_lod = (uint8_t)vis.scene->ComputeObjectLODForView(object, aabb, vis.scene->meshes[object.mesh_index], shcam.view_projection);
 							shadow_lod = std::min(shadow_lod, candidate_lod);
@@ -9250,7 +9254,7 @@ void DrawShadowmaps(
 							continue;
 
 						// GG: the shadow at the last LOD when the level asks (Shadows Use Fastest LOD)
-						if (gg_shadow_lowest_lod != 0) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
+						if (gg_shadow_lowest_lod != 0 && !gg_terrain_chunk) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
 						RenderBatch batch;
 						batch.Create(object.mesh_index, uint32_t(i), gg_shadowBatchDist, object.sort_bits, 0xFF, shadow_lod);
 
@@ -9405,12 +9409,13 @@ void DrawShadowmaps(
 						// Check for each frustum, if object is visible from it:
 						uint8_t camera_mask = 0;
 						uint8_t shadow_lod = 0xFF;
+						const bool gg_terrain_chunk = (object.GetFilterMask() & wi::enums::FILTER_TERRAIN) != 0;
 						for (uint32_t camera_index = 0; camera_index < camera_count; ++camera_index)
 						{
 							if (frusta[camera_index].CheckBoxFast(aabb))
 							{
 								camera_mask |= 1 << camera_index;
-								if (shadow_lod_override)
+								if (shadow_lod_override && !gg_terrain_chunk)
 								{
 									const uint8_t candidate_lod = (uint8_t)vis.scene->ComputeObjectLODForView(object, aabb, vis.scene->meshes[object.mesh_index], cameras[camera_index].view_projection);
 									shadow_lod = std::min(shadow_lod, candidate_lod);
@@ -9426,7 +9431,7 @@ void DrawShadowmaps(
 							continue;
 
 						// GG: the shadow at the last LOD when the level asks (Shadows Use Fastest LOD)
-						if (gg_shadow_lowest_lod != 0) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
+						if (gg_shadow_lowest_lod != 0 && !gg_terrain_chunk) shadow_lod = (uint8_t)(vis.scene->meshes[object.mesh_index].GetLODCount() - 1);
 						RenderBatch batch;
 						batch.Create(object.mesh_index, uint32_t(i), gg_shadowBatchDist, object.sort_bits, camera_mask, shadow_lod);
 
