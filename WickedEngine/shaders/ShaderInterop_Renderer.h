@@ -900,6 +900,8 @@ enum SHADER_ENTITY_FLAGS
 	ENTITY_FLAG_LIGHT_VOLUMETRICCLOUDS = 1 << 2,
 	ENTITY_FLAG_DECAL_BASECOLOR_ONLY_ALPHA = 1 << 3,
 	ENTITY_FLAG_CAPSULE_SHADOW_COLLIDER = 1 << 4,
+	ENTITY_FLAG_DECAL_GG_FACING = 1 << 5, // GG: a GameGuru decal's facing cutoff (GGDecalHF.hlsli)
+	ENTITY_FLAG_DECAL_GG_BLAST = 1 << 6, // GG: a GameGuru blast decal (GGDecalHF.hlsli)
 };
 
 struct alignas(16) ShaderEntity

@@ -7,6 +7,7 @@
 #include "ShaderInterop_SurfelGI.h"
 #include "ShaderInterop_DDGI.h"
 #include "capsuleShadowHF.hlsli"
+#include "GGDecalHF.hlsli" // GG: GameGuru's projected decals
 
 inline void LightMapping(in int lightmap, in float2 ATLAS, inout Lighting lighting, inout Surface surface)
 {
@@ -223,6 +224,10 @@ inline void ForwardDecals(inout Surface surface, inout half4 surfaceMap, Sampler
 
 		// under here will be VGPR!
 		if ((decal.layerMask & surface.layerMask) == 0)
+			continue;
+		// GG: GameGuru's projected decals are drawn by TiledDecals only (GGDecalHF.hlsli); this loop would draw a blast
+		// as a flat box projection
+		if (decal.GetFlags() & (ENTITY_FLAG_DECAL_GG_FACING | ENTITY_FLAG_DECAL_GG_BLAST))
 			continue;
 		const float3 clipSpacePos = mul(decalProjection, float4(surface.P, 1)).xyz;
 		float3 uvw = box_to_uv(clipSpacePos.xyz);
@@ -656,6 +661,7 @@ inline void TiledDecals(inout Surface surface, uint flatTileIndex, inout half4 s
 	half4 decalBumpAccumulation = 0;
 	half4 decalSurfaceAccumulation = 0;
 	half decalSurfaceAccumulationAlpha = 0;
+	half ggDecalCoverage = 0; // GG: how much GameGuru's decals cover, for their matte coat
 
 #ifdef SURFACE_LOAD_QUAD_DERIVATIVES
 	const float3 P_dx = surface.P_dx;
@@ -698,6 +704,19 @@ inline void TiledDecals(inout Surface surface, uint flatTileIndex, inout half4 s
 			if ((decal.layerMask & surface.layerMask) == 0)
 				continue;
 			const float3 clipSpacePos = mul(decalProjection, float4(surface.P, 1)).xyz;
+			// GG: GameGuru's projected decals (GGDecalHF.hlsli): their own facing, blast and blend; only the colour
+			[branch]
+			if (decal.GetFlags() & (ENTITY_FLAG_DECAL_GG_FACING | ENTITY_FLAG_DECAL_GG_BLAST))
+			{
+				const half4 ggColor = GGDecalColor(decal, decalProjection, decalTexture, clipSpacePos, surface.P, surface.facenormal, P_dx, P_dy, sam);
+				if (ggColor.a > 0)
+				{
+					decalAccumulation.rgb = mad(1 - decalAccumulation.a, ggColor.a * ggColor.rgb, decalAccumulation.rgb);
+					decalAccumulation.a = mad(1 - ggColor.a, decalAccumulation.a, ggColor.a);
+					ggDecalCoverage = mad(1 - ggColor.a, ggDecalCoverage, ggColor.a);
+				}
+				continue;
+			}
 			float3 uvw = box_to_uv(clipSpacePos.xyz);
 			[branch]
 			if (is_saturated(uvw))
@@ -768,6 +787,9 @@ inline void TiledDecals(inout Surface surface, uint flatTileIndex, inout half4 s
 	surface.baseColor.rgb = mad(surface.baseColor.rgb, 1 - decalAccumulation.a, decalAccumulation.rgb);
 	surface.bumpColor.rgb = mad(surface.bumpColor.rgb, 1 - decalBumpAccumulation.a, decalBumpAccumulation.rgb);
 	surfaceMap = mad(surfaceMap, 1 - decalSurfaceAccumulationAlpha, decalSurfaceAccumulation);
+	// GG: under GameGuru's decals a matte, non-metal coat (roughness 1, metalness 0, reflectance an f0 of 0.04), or a dark one
+	// would not show on metal
+	surfaceMap = lerp(surfaceMap, half4(surfaceMap.r, 1, 0, 0.04), ggDecalCoverage);
 #endif // DISABLE_DECALS
 }
 

@@ -1702,6 +1702,18 @@ namespace wi::scene
 
 		float slopeBlendPower = 0;
 
+		// GG: GameGuru's projected decals (shaders/GGDecalHF.hlsli; not saved): the facing cutoff, a cosine (below -1 the decal
+		// is Wicked's own), and the width it fades in over past it; a blast decal's power sharpening its triplanar blend, how far
+		// the first surface lies along each of its box's six axes (5 bits each from +x, in 30ths of its radius, 31 for none),
+		// the direction into the face it hit (0 +x to 5 -z, -1 for none) and how far along it a point may lie
+		float gg_facing = -2.0f;
+		float gg_facing_fade = 0.1f;
+		bool gg_blast = false;
+		float gg_blend_sharpness = 8.0f;
+		uint32_t gg_occlusion = ~0u;
+		int gg_hit_direction = -1;
+		float gg_hit_clip = 0.0f;
+
 		// Set decal to only use alpha from base color texture. Useful for blending normalmap-only decals
 		constexpr void SetBaseColorOnlyAlpha(bool value) { if (value) { _flags |= BASECOLOR_ONLY_ALPHA; } else { _flags &= ~BASECOLOR_ONLY_ALPHA; } }
 

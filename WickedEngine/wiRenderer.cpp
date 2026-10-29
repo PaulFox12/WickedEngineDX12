@@ -126,6 +126,8 @@ bool debugEmitters = false;
 bool freezeCullingCamera = false;
 bool debugEnvProbes = false;
 float GAMMA = -1; // GG: SetGamma's output curve; below 0 the sRGB curve
+uint32_t gg_frame_visible_decals = 0; // GG: decals the last frame's visibility gathered, and packed
+uint32_t gg_frame_packed_decals = 0;
 bool debugForceFields = false;
 bool debugCameras = false;
 bool debugColliders = false;
@@ -6209,10 +6211,31 @@ void UpdatePerFrameData(
 			float emissive_mul = 1 + decal.emissive;
 			shaderentity.SetColor(float4(decal.color.x * emissive_mul, decal.color.y * emissive_mul, decal.color.z * emissive_mul, decal.color.w));
 			shaderentity.shadowAtlasMulAdd = decal.texMulAdd;
-			shaderentity.SetConeAngleCos(decal.slopeBlendPower);
-			shaderentity.SetDirection(decal.front);
-			shaderentity.SetAngleScale(decal.normal_strength);
-			shaderentity.SetLength(decal.displacement_strength);
+			if (decal.gg_blast)
+			{
+				// GG: a GameGuru blast decal (GGDecalHF.hlsli): its facing cutoff in the cone slot and the fade width in the radius,
+				// the triplanar sharpness, the face hit and its clip in the direction slot, the first surfaces along its axes in remap
+				shaderentity.SetFlags(ENTITY_FLAG_DECAL_GG_BLAST);
+				shaderentity.SetConeAngleCos(decal.gg_facing);
+				shaderentity.SetRadius(decal.gg_facing_fade);
+				shaderentity.SetDirection(XMFLOAT3(decal.gg_blend_sharpness, (float)decal.gg_hit_direction, decal.gg_hit_clip));
+				shaderentity.remap = decal.gg_occlusion;
+			}
+			else if (decal.gg_facing >= -1.0f)
+			{
+				// GG: a GameGuru decal's facing cutoff in the cone slot, in place of the slope blend, and its fade width in the radius
+				shaderentity.SetFlags(ENTITY_FLAG_DECAL_GG_FACING);
+				shaderentity.SetConeAngleCos(decal.gg_facing);
+				shaderentity.SetRadius(decal.gg_facing_fade);
+				shaderentity.SetDirection(decal.front);
+			}
+			else
+			{
+				shaderentity.SetConeAngleCos(decal.slopeBlendPower);
+				shaderentity.SetDirection(decal.front);
+				shaderentity.SetAngleScale(decal.normal_strength);
+				shaderentity.SetLength(decal.displacement_strength);
+			}
 
 			shaderentity.SetIndices(matrixCounter, 0);
 			shadermatrix = XMMatrixInverse(nullptr, XMLoadFloat4x4(&decal.world));
@@ -6250,6 +6273,9 @@ void UpdatePerFrameData(
 			entityCounter++;
 			decalarray_count++;
 		}
+		// GG: what the last frame gathered and packed, for GameGuru's DUMP_PROJECTEDDECALS
+		gg_frame_visible_decals = (uint32_t)vis.visibleDecals.size();
+		gg_frame_packed_decals = decalarray_count;
 
 		// Write environment probes into entity array:
 		envprobearray_offset = entityCounter;
