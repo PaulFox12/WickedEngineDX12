@@ -24,8 +24,15 @@
 #include <algorithm>
 #include <cmath>     // GGMAX 3.19: std::abs
 #include <thread>   // GGMAX 3.13: main-thread identification for CPU nesting
+#include <chrono>
+#include <unordered_map>
 
 using namespace wi::graphics;
+
+void (*g_pfnWickedProfilerQueries)(uint32_t queries) = nullptr;
+void (*g_pfnWickedProfilerLockWait)(double dMilliseconds) = nullptr;
+void (*g_pfnWickedProfilerLockHold)(double dMilliseconds) = nullptr;
+void (*g_pfnWickedFramePhase)(const char* name, const char* parents, double dMilliseconds) = nullptr;
 
 // GGMAX wall-gap tracer: creation counters defined in wiGraphicsDevice_DX12.cpp (global namespace)
 extern std::atomic<unsigned long long> gg_dbg_pso_compiles, gg_dbg_pso_compile_us, gg_dbg_tex_creates;
@@ -40,6 +47,153 @@ namespace wi::profiler
 	bool ENABLED_REQUEST = false;
 	bool initialized = false;
 	std::mutex lock;
+
+	// GG: the ranges' lock, its waits and holds reported for the stall probes (the hold after the release, on the holder's
+	// thread, so a probe can take its stack)
+	std::chrono::high_resolution_clock::time_point lockHeldSince;
+	void LockRanges()
+	{
+		if (!g_pfnWickedProfilerLockWait)
+		{
+			lock.lock();
+		}
+		else
+		{
+			auto start = std::chrono::high_resolution_clock::now();
+			lock.lock();
+			g_pfnWickedProfilerLockWait(std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - start).count());
+		}
+		if (g_pfnWickedProfilerLockHold)
+			lockHeldSince = std::chrono::high_resolution_clock::now();
+	}
+	void UnlockRanges()
+	{
+		double held = -1;
+		if (g_pfnWickedProfilerLockHold)
+			held = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - lockHeldSince).count();
+		lock.unlock();
+		if (held >= 0)
+			g_pfnWickedProfilerLockHold(held);
+	}
+
+	// GG: the ids BeginRangeGPU gives for a span of the game's own GPU timing while profiling is off; the frame phases' ids
+	// (CPU ranges while profiling is off) never have this bit
+	static constexpr range_id GG_SPAN_TAG = range_id(1) << 63;
+
+	// GG: the main thread's CPU ranges timed whether or not profiling is on, without the lock (that thread only): each range's
+	// own time goes to g_pfnWickedFramePhase, and its whole time to an average by name, which GetRangeTime answers while
+	// profiling is off
+	struct PhaseRange
+	{
+		range_id id = 0;
+		char name[64] = "";
+		double begin = 0;
+		double inner = 0; // the time of the ranges inside it
+	};
+	struct PhaseTime
+	{
+		double frame = 0;
+		float times[20] = {};
+		int avg_counter = 0;
+		float time = 0;
+	};
+	thread_local bool phaseThread = false; // the thread that calls BeginFrame
+	PhaseRange phaseStack[32];
+	int phaseDepth = 0;
+	double phaseFrameBegin = 0;
+	double phaseOutermost = 0; // this frame's ranges with no parent
+	bool phaseOutsideValid = false;
+	std::unordered_map<size_t, PhaseTime> phaseTimes;
+
+	range_id PhaseId(const char* name)
+	{
+		range_id id = wi::helper::string_hash(name) & ~GG_SPAN_TAG;
+		return id != 0 ? id : 1;
+	}
+	double PhaseNow()
+	{
+		return std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+	}
+	void PhaseBegin(range_id id, const char* name)
+	{
+		if (phaseDepth >= (int)arraysize(phaseStack))
+			return;
+		PhaseRange& phase = phaseStack[phaseDepth++];
+		phase.id = id;
+		strncpy_s(phase.name, name, _TRUNCATE);
+		phase.inner = 0;
+		phase.begin = PhaseNow();
+	}
+	void PhaseEnd(range_id id)
+	{
+		double now = PhaseNow();
+		int i = phaseDepth - 1;
+		while (i >= 0 && phaseStack[i].id != id)
+			i--;
+		if (i < 0)
+			return; // not a CPU range timed here (a GPU range, or one begun before the first frame)
+		PhaseRange& phase = phaseStack[i];
+		double total = now - phase.begin;
+		if (i > 0)
+			phaseStack[i - 1].inner += total;
+		else
+			phaseOutermost += total;
+		phaseTimes[wi::helper::string_hash(phase.name)].frame += total;
+		if (g_pfnWickedFramePhase)
+		{
+			char parents[200] = "";
+			for (int p = i - 1; p >= 0 && p >= i - 3; p--)
+			{
+				if (p < i - 1)
+					strncat_s(parents, " < ", _TRUNCATE);
+				strncat_s(parents, phaseStack[p].name, _TRUNCATE);
+			}
+			g_pfnWickedFramePhase(phase.name, parents, total - phase.inner);
+		}
+		phaseDepth = i; // a range left open inside it is dropped
+	}
+	void PhaseFrame()
+	{
+		phaseThread = true;
+		double now = PhaseNow();
+		if (g_pfnWickedFramePhase && phaseFrameBegin > 0)
+		{
+			// once a frame, which also closes the frame for the game's frame records: the time outside every range, or 0
+			// when the frame began inside ranges (a Run called from inside one, or a range never ended), named as parents
+			if (phaseOutsideValid && phaseDepth == 0)
+			{
+				g_pfnWickedFramePhase("outside ranges", "", now - phaseFrameBegin - phaseOutermost);
+			}
+			else
+			{
+				char open[200] = "";
+				for (int p = phaseDepth - 1; p >= 0 && p >= phaseDepth - 3; p--)
+				{
+					if (p < phaseDepth - 1)
+						strncat_s(open, " < ", _TRUNCATE);
+					strncat_s(open, phaseStack[p].name, _TRUNCATE);
+				}
+				g_pfnWickedFramePhase("outside ranges", open[0] ? open : "(a range begun before the last frame)", 0.0);
+			}
+		}
+		phaseFrameBegin = now;
+		phaseOutermost = 0;
+		phaseOutsideValid = phaseDepth == 0; // a frame begun inside a range (a nested Run) has no outside time
+		for (auto& it : phaseTimes)
+		{
+			PhaseTime& phaseTime = it.second;
+			phaseTime.times[phaseTime.avg_counter++ % arraysize(phaseTime.times)] = (float)phaseTime.frame;
+			phaseTime.frame = 0;
+			if (phaseTime.avg_counter > arraysize(phaseTime.times))
+			{
+				float sum = 0;
+				for (int t = 0; t < arraysize(phaseTime.times); ++t)
+					sum += phaseTime.times[t];
+				phaseTime.time = sum / arraysize(phaseTime.times);
+			}
+		}
+	}
+
 	range_id cpu_frame;
 	range_id gpu_frame;
 	GPUQueryHeap queryHeap;
@@ -77,6 +231,7 @@ namespace wi::profiler
 
 		int gpuBegin[arraysize(queryResultBuffer)];
 		int gpuEnd[arraysize(queryResultBuffer)];
+		int gg_span = -1; // GG: the game's GPU timing span of the same range, -1 for none
 
 		bool IsCPURange() const { return !cmd.IsValid(); }
 	};
@@ -275,6 +430,7 @@ namespace wi::profiler
 	void BeginFrame()
 	{
 		gg_trace_frame_boundary(); // GGMAX wall-gap tracer — must run even when profiler disabled
+		PhaseFrame(); // GG: the frame phases, whether or not profiling is on
 
 		if (ENABLED_REQUEST != ENABLED)
 		{
@@ -284,7 +440,12 @@ namespace wi::profiler
 		}
 
 		if (!ENABLED)
+		{
+			// GG: with profiling off "CPU Frame" is a frame phase begun here and ended at EndFrame, so its own time (the
+			// frame's time between them outside the ranges) is told as when profiling is on
+			PhaseBegin(PhaseId("CPU Frame"), "CPU Frame");
 			return;
+		}
 
 		if (!initialized)
 		{
@@ -471,7 +632,11 @@ namespace wi::profiler
 	void EndFrame(CommandList cmd)
 	{
 		if (!ENABLED || !initialized)
+		{
+			if (phaseThread)
+				PhaseEnd(PhaseId("CPU Frame")); // GG: the frame phase BeginFrame began
 			return;
+		}
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
 
@@ -491,13 +656,24 @@ namespace wi::profiler
 			cmd
 		);
 
+		if (g_pfnWickedProfilerQueries)
+			g_pfnWickedProfilerQueries(nextQuery.load());
 		nextQuery.store(0);
 	}
 
 	range_id BeginRangeCPU(const char* name)
 	{
 		if (!ENABLED || !initialized)
+		{
+			// GG: the main thread's ranges are frame phases with profiling off too
+			if (phaseThread && name)
+			{
+				range_id id = PhaseId(name);
+				PhaseBegin(id, name);
+				return id;
+			}
 			return 0;
+		}
 
 #if PERFORMANCEAPI_ENABLED
 		if (superluminal_handle)
@@ -508,7 +684,7 @@ namespace wi::profiler
 
 		range_id id = wi::helper::string_hash(name);
 
-		lock.lock();
+		LockRanges();
 
 		// If one range name is hit multiple times, differentiate between them!
 		size_t differentiator = 0;
@@ -526,18 +702,27 @@ namespace wi::profiler
 		gg_cpu_stack.push_back(ranges[id].name);
 		gg_cpu_stack_ids.push_back(id);
 
-		lock.unlock();
+		UnlockRanges();
+
+		if (phaseThread)
+			PhaseBegin(id, name); // GG
 
 		return id;
 	}
 	range_id BeginRangeGPU(const char* name, CommandList cmd)
 	{
+		// GG: the game's own GPU timing takes the span too, whether or not profiling is on ("GPU Frame" is the profiler's own,
+		// its end written by hand at EndFrame)
+		int gg_span = -1;
+		if (g_pfnWickedGpuRangeBegin && name && strcmp(name, "GPU Frame") != 0)
+			gg_span = g_pfnWickedGpuRangeBegin(cmd, name);
+
 		if (!ENABLED || !initialized)
-			return 0;
+			return gg_span >= 0 ? (GG_SPAN_TAG | (range_id)gg_span) : 0;
 
 		range_id id = wi::helper::string_hash(name);
 
-		lock.lock();
+		LockRanges();
 
 		// If one range name is hit multiple times, differentiate between them!
 		size_t differentiator = 0;
@@ -548,21 +733,31 @@ namespace wi::profiler
 		ranges[id].in_use = true;
 		ranges[id].name = name;
 		ranges[id].cmd = cmd;
+		ranges[id].gg_span = gg_span;
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		ranges[id].gpuBegin[queryheap_idx] = nextQuery.fetch_add(1);
 		device->QueryEnd(&queryHeap, ranges[id].gpuBegin[queryheap_idx], cmd);
 
-		lock.unlock();
+		UnlockRanges();
 
 		return id;
 	}
 	void EndRange(range_id id)
 	{
-		if (!ENABLED || !initialized)
-			return;
+		if (phaseThread && id != 0)
+			PhaseEnd(id); // GG
 
-		lock.lock();
+		if (!ENABLED || !initialized)
+		{
+			// GG: a span of the game's own GPU timing, with profiling off
+			if ((id & GG_SPAN_TAG) && g_pfnWickedGpuRangeEnd)
+				g_pfnWickedGpuRangeEnd((int)(id & ~GG_SPAN_TAG));
+			return;
+		}
+
+		int gg_span = -1;
+		LockRanges();
 
 		auto it = ranges.find(id);
 		if (it != ranges.end())
@@ -591,6 +786,8 @@ namespace wi::profiler
 				GraphicsDevice* device = wi::graphics::GetDevice();
 				ranges[id].gpuEnd[queryheap_idx] = nextQuery.fetch_add(1);
 				device->QueryEnd(&queryHeap, it->second.gpuEnd[queryheap_idx], it->second.cmd);
+				gg_span = it->second.gg_span;
+				it->second.gg_span = -1;
 			}
 		}
 		else
@@ -598,7 +795,10 @@ namespace wi::profiler
 			assert(0);
 		}
 
-		lock.unlock();
+		UnlockRanges();
+
+		if (gg_span >= 0 && g_pfnWickedGpuRangeEnd)
+			g_pfnWickedGpuRangeEnd(gg_span); // GG
 	}
 
 
@@ -1449,6 +1649,15 @@ namespace wi::profiler
 	float GetRangeTime(const char* name, int* pStaleFrames)
 	{
 		if (pStaleFrames) *pStaleFrames = 0;
+		if ((!ENABLED || !initialized) && name && phaseThread)
+		{
+			// GG: while profiling is off, a CPU range on the main thread is answered from the frame phases: all of the
+			// frame's ranges with that name, averaged over the last frames (GPU ranges -1)
+			auto it = phaseTimes.find(wi::helper::string_hash(name));
+			if (it != phaseTimes.end() && it->second.avg_counter > arraysize(it->second.times))
+				return it->second.time;
+			return -1;
+		}
 		if (!ENABLED || !initialized || !name)
 			return -1;
 

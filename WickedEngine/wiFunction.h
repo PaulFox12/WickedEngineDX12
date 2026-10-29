@@ -4,6 +4,7 @@
 #include <type_traits>
 #include <utility>
 #include <cstring>
+#include <typeinfo>
 
 namespace wi
 {
@@ -23,6 +24,7 @@ namespace wi
 			virtual R call(Args... args) = 0;
 			virtual void copy_to(Storage& dest) const = 0;
 			virtual void move_to(Storage& dest) noexcept = 0;
+			virtual const char* type_name() const = 0;
 			virtual ~callable_base() = default;
 		};
 
@@ -47,6 +49,11 @@ namespace wi
 			void move_to(Storage& dest) noexcept override
 			{
 				new (&dest.bytes) callable_impl(std::move(*this));
+			}
+
+			const char* type_name() const override
+			{
+				return typeid(F).name();
 			}
 		};
 
@@ -123,6 +130,9 @@ namespace wi
 		{
 			return ptr->call(std::forward<Args>(args)...);
 		}
+
+		// GG: the callable's type name (for a lambda, MSVC's names the function it was written in), "" if empty
+		const char* type_name() const { return ptr ? ptr->type_name() : ""; }
 
 		constexpr bool operator==(void* a) const { return ptr == a; }
 		constexpr bool operator!=(void* a) const { return ptr != a; }

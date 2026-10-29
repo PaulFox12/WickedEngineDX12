@@ -82,3 +82,19 @@ namespace wi::jobsystem
 	// Returns the number of remaining jobs
 	uint32_t GetRemainingJobCount(const context& ctx);
 }
+
+// GG: a high priority job that ran for g_dWickedJobStallMilliseconds or more, told to g_pfnWickedJobStall by the thread that
+// ran it: what queued it (the job's function, for a lambda its type name, which names the function it was written in), how
+// long it ran, and whether that thread was waiting on a context (Wait runs queued jobs of any context). The time it queued
+// is not measured here: a job is kept in 128 bytes, with no room for it
+struct WickedJobStallInfo
+{
+	const char* name;
+	const void* context;			// the job's own
+	const void* waitingFor;			// the context the running thread was waiting on, or null for a worker's own loop
+	double runMilliseconds;
+	uint32_t jobs;					// jobs in its group, run one after the other
+	uint32_t coreStart, coreEnd;	// GetCurrentProcessorNumber when it started and ended
+};
+extern void (*g_pfnWickedJobStall)(const WickedJobStallInfo& info);
+extern double g_dWickedJobStallMilliseconds; // 20 by default

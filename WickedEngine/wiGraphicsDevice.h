@@ -494,3 +494,25 @@ namespace wi::graphics
 	}
 
 }
+
+// GG: a device call reported to g_pfnWickedDeviceCall (set by the game, for its stall probes), on whichever thread made it:
+// call 0 a buffer or texture made, 2 a present or the end of frame wait for the GPU, 3 a shader, pipeline state or sampler
+// made, or a pipeline compiled at its first draw (1, a map or buffer update, has no driver call on this device)
+struct WickedDeviceCallInfo
+{
+	int call = 0;
+	const char* op = "";
+	uint64_t bytes = 0;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	uint32_t format = 0;
+};
+extern void (*g_pfnWickedDeviceCall)(double dMilliseconds, const WickedDeviceCallInfo& info);
+// GG: hooks for the game's own GPU timing (set by the game, null for none): a graphics command list begun, on the thread
+// that begins it; each one just before the submit closes it (bLast for the frame's last), and the submit's end, on the main
+// thread; and a named span inside a list (the profiler's GPU ranges, wiProfiler.cpp), its begin giving an id (-1 for none)
+extern void (*g_pfnWickedListBegin)(wi::graphics::CommandList cmd);
+extern void (*g_pfnWickedListFinish)(wi::graphics::CommandList cmd, bool bLast);
+extern void (*g_pfnWickedSubmitEnd)(void);
+extern int (*g_pfnWickedGpuRangeBegin)(wi::graphics::CommandList cmd, const char* name);
+extern void (*g_pfnWickedGpuRangeEnd)(int range);

@@ -18,6 +18,15 @@
 #define WI_PROFILER_CONCAT(x,y) WI_PROFILER_CONCAT_INDIRECT(x,y)
 #define WI_PROFILER_CONCAT_INDIRECT(x,y) x##y
 
+// GG: told to the game for its stall probes (null for none): the GPU queries the profiler issued in a frame, how long a
+// thread waited for the ranges' lock and how long a holder kept it, and each main thread range's own time (the time of the
+// ranges inside it taken off) whether or not profiling is on, with its parents innermost first; "outside ranges", once a
+// frame at the next frame's start, is the frame's time outside every range and closes the frame
+extern void (*g_pfnWickedProfilerQueries)(uint32_t queries);
+extern void (*g_pfnWickedProfilerLockWait)(double dMilliseconds);
+extern void (*g_pfnWickedProfilerLockHold)(double dMilliseconds);
+extern void (*g_pfnWickedFramePhase)(const char* name, const char* parents, double dMilliseconds);
+
 namespace wi::profiler
 {
 	typedef size_t range_id;

@@ -54,6 +54,30 @@ std::atomic<unsigned long long> gg_dbg_copywait_us{ 0 };
 std::atomic<unsigned long long> gg_dbg_copywait_events{ 0 };
 std::atomic<unsigned long long> gg_dbg_pso_creates{ 0 }; // GGMAX 1.70: pipeline states created (each costs driver-side video memory the resource census cannot see)
 
+// GG: when set, told how long each buffer, texture, shader, pipeline state or sampler creation, pipeline compile, present
+// and end of frame wait took, in milliseconds, on whichever thread made it (a probe for frame stalls inside the driver)
+void (*g_pfnWickedDeviceCall)(double dMilliseconds, const WickedDeviceCallInfo& info) = nullptr;
+void (*g_pfnWickedListBegin)(wi::graphics::CommandList cmd) = nullptr;
+void (*g_pfnWickedListFinish)(wi::graphics::CommandList cmd, bool bLast) = nullptr;
+void (*g_pfnWickedSubmitEnd)(void) = nullptr;
+int (*g_pfnWickedGpuRangeBegin)(wi::graphics::CommandList cmd, const char* name) = nullptr;
+void (*g_pfnWickedGpuRangeEnd)(int range) = nullptr;
+struct WickedDeviceCallTimer
+{
+	LARGE_INTEGER start;
+	WickedDeviceCallInfo info;
+	WickedDeviceCallTimer(int call, const char* op) { info.call = call; info.op = op; QueryPerformanceCounter(&start); }
+	~WickedDeviceCallTimer()
+	{
+		if (!g_pfnWickedDeviceCall) return;
+		static LARGE_INTEGER freq = {};
+		if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+		LARGE_INTEGER end;
+		QueryPerformanceCounter(&end);
+		g_pfnWickedDeviceCall((double)(end.QuadPart - start.QuadPart) * 1000.0 / (double)freq.QuadPart, info);
+	}
+};
+
 // GGMAX 1.77: the other two things that consume video memory without ever appearing in the
 // resource census — descriptor heaps (allocated bytes, not descriptor count) and command
 // allocators (which retain their recorded command memory for the life of the process).
@@ -2906,6 +2930,15 @@ std::mutex queue_locker;
 						!gg_dbg_pso_compile_max_us.compare_exchange_weak(gg_prev, gg_compile_us, std::memory_order_relaxed)) {}
 				}
 
+				if (g_pfnWickedDeviceCall)
+				{
+					// GG: the compile at a pipeline's first draw, where this device makes its pipeline states
+					WickedDeviceCallInfo gg_info;
+					gg_info.call = 3;
+					gg_info.op = "pipeline compiled at its first draw";
+					g_pfnWickedDeviceCall((double)gg_compile_us / 1000.0, gg_info);
+				}
+
 				commandlist.pipelines_worker.push_back(std::make_pair(pipeline_hash, newpso));
 				pipeline = newpso.Get();
 			}
@@ -4163,6 +4196,8 @@ std::mutex queue_locker;
 	}
 	bool GraphicsDevice_DX12::CreateBuffer2(const GPUBufferDesc* desc, const std::function<void(void*)>& init_callback, GPUBuffer* buffer, const GPUResource* alias, uint64_t alias_offset) const
 	{
+		WickedDeviceCallTimer callTimer(0, "CreateBuffer");
+		callTimer.info.bytes = desc->size;
 		auto internal_state = wi::allocator::make_shared<Resource_DX12>();
 		internal_state->allocationhandler = allocationhandler;
 		buffer->internal_state = internal_state;
@@ -4411,6 +4446,10 @@ std::mutex queue_locker;
 	bool GraphicsDevice_DX12::CreateTexture(const TextureDesc* desc, const SubresourceData* initial_data, Texture* texture, const GPUResource* alias, uint64_t alias_offset) const
 	{
 		gg_dbg_tex_creates.fetch_add(1, std::memory_order_relaxed); // GGMAX wall-gap tracer
+		WickedDeviceCallTimer callTimer(0, "CreateTexture");
+		callTimer.info.width = desc->width;
+		callTimer.info.height = desc->height;
+		callTimer.info.format = (uint32_t)desc->format;
 		auto internal_state = wi::allocator::make_shared<Texture_DX12>();
 		internal_state->allocationhandler = allocationhandler;
 		texture->internal_state = internal_state;
@@ -4902,6 +4941,7 @@ std::mutex queue_locker;
 	}
 	bool GraphicsDevice_DX12::CreateShader(ShaderStage stage, const void* shadercode, size_t shadercode_size, Shader* shader) const
 	{
+		WickedDeviceCallTimer callTimer(3, "CreateShader");
 		auto internal_state = wi::allocator::make_shared<PipelineState_DX12>();
 		internal_state->allocationhandler = allocationhandler;
 		shader->internal_state = internal_state;
@@ -4967,6 +5007,7 @@ std::mutex queue_locker;
 	}
 	bool GraphicsDevice_DX12::CreateSampler(const SamplerDesc* desc, Sampler* sampler) const
 	{
+		WickedDeviceCallTimer callTimer(3, "CreateSampler");
 		auto internal_state = wi::allocator::make_shared<Sampler_DX12>();
 		internal_state->allocationhandler = allocationhandler;
 		sampler->internal_state = internal_state;
@@ -5039,6 +5080,7 @@ std::mutex queue_locker;
 	}
 	bool GraphicsDevice_DX12::CreatePipelineState(const PipelineStateDesc* desc, PipelineState* pso, const RenderPassInfo* renderpass_info) const
 	{
+		WickedDeviceCallTimer callTimer(3, "CreatePipelineState");
 		::gg_dbg_pso_creates.fetch_add(1, std::memory_order_relaxed); // GGMAX 1.70: PSO count (driver-side VRAM the census can't see)
 		auto internal_state = wi::allocator::make_shared<PipelineState_DX12>();
 		internal_state->allocationhandler = allocationhandler;
@@ -6376,6 +6418,9 @@ std::mutex queue_locker;
 			commandlist.GetGraphicsCommandList()->RSSetScissorRects(arraysize(pRects), pRects);
 		}
 
+		if (queue == QUEUE_GRAPHICS && g_pfnWickedListBegin)
+			g_pfnWickedListBegin(cmd);
+
 		return cmd;
 	}
 	// ★★ GGMAX 3.26a: pull whatever the debug layer has to say into the log, in ANY build.
@@ -6495,6 +6540,12 @@ std::mutex queue_locker;
 			uint32_t gg_closeFailed = 0;
 			HRESULT gg_firstCloseFail = S_OK;
 			std::string gg_closeFailList;
+			uint32_t gg_last_graphics = UINT32_MAX; // GG: the frame's last graphics list, for the game's GPU timing
+			for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
+			{
+				if (commandlists[cmd]->queue == QUEUE_GRAPHICS)
+					gg_last_graphics = cmd;
+			}
 			for (uint32_t cmd = 0; cmd < cmd_last; ++cmd)
 			{
 				CommandList_DX12& commandlist = *commandlists[cmd].get();
@@ -6516,6 +6567,16 @@ std::mutex queue_locker;
 				// Close() returns this same HRESULT on this driver, so the log alone could not say
 				// whether the six failures caused the removal or merely followed it. If the device
 				// stops dying now, they were the cause.
+				// GG: the game's GPU timing ends the list's span before it closes, and resolves the frame's in its last list
+				// (graphics lists only: the copy queue takes no timestamp of this heap's type, and another queue's would be
+				// resolved out of order)
+				if (g_pfnWickedListFinish && commandlist.queue == QUEUE_GRAPHICS)
+				{
+					CommandList gg_cmd;
+					gg_cmd.internal_state = &commandlist;
+					g_pfnWickedListFinish(gg_cmd, cmd == gg_last_graphics);
+				}
+
 				HRESULT gg_closeResult;
 				if (commandlist.queue == QUEUE_VIDEO_DECODE)
 				{
@@ -6674,6 +6735,7 @@ std::mutex queue_locker;
 						presentFlags = DXGI_PRESENT_ALLOW_TEARING;
 					}
 
+					WickedDeviceCallTimer gg_presentTimer(2, "Present");
 					HRESULT hr = dx12_check(swapchain_internal->swapChain->Present(swapchain->desc.vsync, presentFlags));
 
 					// If the device was reset we must completely reinitialize the renderer.
@@ -6742,6 +6804,7 @@ std::mutex queue_locker;
 			{
 				// nullptr event handle will simply wait immediately:
 				//	https://docs.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12fence-seteventoncompletion#remarks
+				WickedDeviceCallTimer gg_waitTimer(2, "end of frame wait for the GPU"); // GG: the GPU behind, as a present's wait
 				gg_MainWaitBegin("end-of-frame wait for the GPU (frame fence)"); // GGMAX 3.141
 				dx12_check(fence->SetEventOnCompletion(1, nullptr));
 				gg_MainWaitEnd(fence->GetCompletedValue() == UINT64_MAX);
@@ -6769,6 +6832,8 @@ std::mutex queue_locker;
 
 		allocationhandler->Update(FRAMECOUNT, BUFFERCOUNT);
 		copyAllocator.trim(FRAMECOUNT); // GGMAX: age out oversized staging buffers
+		if (g_pfnWickedSubmitEnd)
+			g_pfnWickedSubmitEnd(); // GG: the game's GPU timing reads back an older frame's times
 
 		{
 			// GGMAX 1.48a: publish the frame's counters

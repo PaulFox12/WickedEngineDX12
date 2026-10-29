@@ -11,6 +11,7 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
+#include <chrono>
 
 #ifdef PLATFORM_LINUX
 #include <pthread.h>
@@ -24,8 +25,18 @@
 #include "wiJobSystem_PS5.h"
 #endif // PLATFORM_PS5
 
+void (*g_pfnWickedJobStall)(const WickedJobStallInfo& info) = nullptr;
+double g_dWickedJobStallMilliseconds = 20.0;
+
 namespace wi::jobsystem
 {
+	// GG: for the job stall report
+	static inline double JobNow()
+	{
+		return std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now().time_since_epoch()).count();
+	}
+	thread_local const void* waitingFor = nullptr; // the context this thread is in Wait for, if any
+
 	struct alignas(64) Job
 	{
 		job_function_type task;
@@ -166,13 +177,32 @@ namespace wi::jobsystem
 				JobQueue& job_queue = jobQueuePerThread[constrain_queue_index(startingQueue)];
 				while (job_queue.pop_front(job))
 				{
+					// GG: a high priority job's run timed for the stall report (its context read first, as the waiter may
+					// let it go once the job is done)
+					const bool timed = g_pfnWickedJobStall && job.ctx->priority == Priority::High;
+					const void* jobContext = job.ctx;
+					const double start = timed ? JobNow() : 0;
+					const uint32_t coreStart = timed ? GetCurrentProcessorNumber() : 0;
 					uint32_t progress_before = job.execute();
+					const double end = timed ? JobNow() : 0;
 					if (progress_before == 1)
 					{
 						// This is likely the last job because the counter was 1 before it was decremented in execute()
 						//	So wake up the waiting threads here
 						std::unique_lock<std::mutex> lock(waitingMutex);
 						waitingCondition.notify_all();
+					}
+					if (timed && end - start >= g_dWickedJobStallMilliseconds)
+					{
+						WickedJobStallInfo info;
+						info.name = job.task.type_name();
+						info.context = jobContext;
+						info.waitingFor = waitingFor;
+						info.runMilliseconds = end - start;
+						info.jobs = job.groupJobEnd - job.groupJobOffset;
+						info.coreStart = coreStart;
+						info.coreEnd = GetCurrentProcessorNumber();
+						g_pfnWickedJobStall(info);
 					}
 				}
 				startingQueue++; // go to next queue
@@ -529,7 +559,10 @@ namespace wi::jobsystem
 			res.sleepingCondition.notify_all();
 
 			// work() will pick up any jobs that are on standby and execute them on this thread:
+			const void* outer = waitingFor;
+			waitingFor = &ctx;
 			res.work(res.next_queue_index());
+			waitingFor = outer;
 
 			while (IsBusy(ctx))
 			{

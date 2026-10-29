@@ -534,7 +534,10 @@ namespace wi
 			// if this is large, the frame is present/swapchain-bound, not CPU/GPU-work-bound.
 			// Plain timer into a global (profiler ranges reset across EndFrame/BeginFrame).
 			wi::Timer gg_submit_timer;
+			// GG: a CPU range too, so the frame phases name it ("Submit"; after EndFrame, so in the next frame's times)
+			auto gg_r_submit = wi::profiler::BeginRangeCPU("Submit");
 			graphicsDevice->SubmitCommandLists();
+			wi::profiler::EndRange(gg_r_submit);
 			gg_app_submit_present_ms = (float)gg_submit_timer.elapsed_milliseconds();
 		}
 		wi::profiler::gg_trace_mark("submit-present");
