@@ -513,7 +513,14 @@ StructuredBuffer<DDGIProbe> bindless_structured_ddi_probes[] : register(space208
 // GGMAX: the entity and matrix arrays are raw buffers of the view's own (FrameCB descriptors), not the frame constant buffer's
 // inline arrays, so SHADER_ENTITY_COUNT can be 1024; a ShaderEntity is 64 bytes (static_assert in ShaderInterop_Renderer.h)
 #define load_entity(entityIndex) (bindless_buffers[GetFrame().entityarray_descriptor].Load<ShaderEntity>((entityIndex) * 64))
-#define load_entitymatrix(matrixIndex) (bindless_buffers[GetFrame().matrixarray_descriptor].Load<float4x4>((matrixIndex) * 64))
+// GG: read as the frame constant buffer's column-major float4x4 read it (each stored row a column), which every user of the
+// matrix expects; Load<float4x4> reads the rows as rows, the transpose, which lost a decal's translation (none drew)
+inline float4x4 load_entitymatrix(uint matrixIndex)
+{
+	ByteAddressBuffer matrices = bindless_buffers[GetFrame().matrixarray_descriptor];
+	const uint address = matrixIndex * 64;
+	return transpose(float4x4(matrices.Load<float4>(address), matrices.Load<float4>(address + 16), matrices.Load<float4>(address + 32), matrices.Load<float4>(address + 48)));
+}
 #ifdef TRANSPARENT
 #define load_entitytile(tileIndex) (bindless_structured_uint[GetCamera().buffer_entitytiles_index][GetCamera().entity_culling_tile_bucket_count_flat + tileIndex])
 #else
