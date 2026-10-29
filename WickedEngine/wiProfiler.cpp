@@ -735,11 +735,14 @@ namespace wi::profiler
 		ranges[id].cmd = cmd;
 		ranges[id].gg_span = gg_span;
 
-		GraphicsDevice* device = wi::graphics::GetDevice();
-		ranges[id].gpuBegin[queryheap_idx] = nextQuery.fetch_add(1);
-		device->QueryEnd(&queryHeap, ranges[id].gpuBegin[queryheap_idx], cmd);
+		const uint32_t query = nextQuery.fetch_add(1);
+		ranges[id].gpuBegin[queryheap_idx] = query;
 
 		UnlockRanges();
+
+		// GG: the driver call after the lock, which every thread's ranges share: a driver call that stalled held up every
+		// range on every thread. The command list is this thread's own
+		wi::graphics::GetDevice()->QueryEnd(&queryHeap, query, cmd);
 
 		return id;
 	}
@@ -757,6 +760,9 @@ namespace wi::profiler
 		}
 
 		int gg_span = -1;
+		bool gpu = false;
+		uint32_t query = 0;
+		CommandList cmd;
 		LockRanges();
 
 		auto it = ranges.find(id);
@@ -783,9 +789,10 @@ namespace wi::profiler
 			}
 			else
 			{
-				GraphicsDevice* device = wi::graphics::GetDevice();
-				ranges[id].gpuEnd[queryheap_idx] = nextQuery.fetch_add(1);
-				device->QueryEnd(&queryHeap, it->second.gpuEnd[queryheap_idx], it->second.cmd);
+				query = nextQuery.fetch_add(1);
+				it->second.gpuEnd[queryheap_idx] = query;
+				cmd = it->second.cmd;
+				gpu = true;
 				gg_span = it->second.gg_span;
 				it->second.gg_span = -1;
 			}
@@ -796,6 +803,10 @@ namespace wi::profiler
 		}
 
 		UnlockRanges();
+
+		// GG: the driver call after the lock (BeginRangeGPU)
+		if (gpu)
+			wi::graphics::GetDevice()->QueryEnd(&queryHeap, query, cmd);
 
 		if (gg_span >= 0 && g_pfnWickedGpuRangeEnd)
 			g_pfnWickedGpuRangeEnd(gg_span); // GG
