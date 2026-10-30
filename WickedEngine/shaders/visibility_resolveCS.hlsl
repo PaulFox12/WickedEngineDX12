@@ -68,6 +68,14 @@ void main(uint2 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 	uint bin = ~0u; // invalid
 	if (pixel_valid)
 	{
+		// GG: the GG draws' depth (prepass RT1, 0 where none drew) is read for every pixel, not only where no ID was written:
+		// their prepass writes no ID, so a GG tree in front of the terrain left the terrain's ID there, and texture_depth and
+		// the linear depth had the terrain behind the tree (the half resolution smoke drew over the trunks)
+		#ifdef VISIBILITY_MSAA
+		const float ggDepth = input_customDepth.Load(pixel, 0);
+		#else
+		const float ggDepth = input_customDepth[pixel];
+		#endif // VISIBILITY_MSAA
 		[branch]
 		if (any(primitiveID))
 		{
@@ -87,6 +95,14 @@ void main(uint2 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 
 				bin = surface.material.GetShaderType();
 			}
+			// GG: a GG draw nearer than the mesh (reversed Z: the greater is nearer) is what the pixel shows; the GG draws come
+			// last in the prepass and are depth tested, so a depth there is always the nearest surface (depth 1: the mesh's
+			// surface did not load)
+			if (ggDepth > 0 && (ggDepth > depth || depth == 1))
+			{
+				depth = ggDepth;
+				bin = SHADERTYPE_BIN_COUNT;
+			}
 		}
 		else
 		{
@@ -96,13 +112,8 @@ void main(uint2 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 			// and everything else that samples texture_depth, which IS the texture this shader
 			// writes. Those draws have no meshlet so they cannot pack an id; they write their
 			// real post-projection depth into prepass RT1 instead, cleared to 0 for "nobody here".
-			#ifdef VISIBILITY_MSAA
-			const float customDepth = input_customDepth.Load(pixel, 0);
-			#else
-			const float customDepth = input_customDepth[pixel];
-			#endif // VISIBILITY_MSAA
 			// reversed Z: 0 is the far plane, so >0 is a real surface someone rendered.
-			depth = customDepth;
+			depth = ggDepth;
 			bin = SHADERTYPE_BIN_COUNT;
 		}
 		if (groupIndex < 32)
