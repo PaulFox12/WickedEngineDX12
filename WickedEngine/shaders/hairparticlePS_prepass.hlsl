@@ -30,7 +30,19 @@ uint main(VertexToPixel input, out uint coverage : SV_Coverage) : SV_Target
 		alpha = material.textures[BASECOLORMAP].Sample(sampler_linear_clamp, input.tex.xyxy).a;
 	}
 	
-	coverage = AlphaToCoverage(alpha, material.GetAlphaTest(), input.GetDither(), input.pos);
+	// GG grass: the blade is solid where its alpha passes the cutout, with a one-pixel edge, as DX11's grass cut its cards
+	// (GGGrassPrepassPS). AlphaToCoverage takes the raw alpha as the MSAA sample mask and dithers it under TAA, so every
+	// blade's soft parts drew half see-through and the water and the sky showed through the grass in front of them
+	const half alphaWidth = max(fwidth(alpha), 0.0001);
+	if (input.grasstype != 0)
+	{
+		const half cut = material.GetAlphaTest() > 0 ? material.GetAlphaTest() : 0.5;
+		coverage = AlphaToCoverage((alpha - cut) / alphaWidth + 0.5, 0.5, input.GetDither(), input.pos);
+	}
+	else
+	{
+		coverage = AlphaToCoverage(alpha, material.GetAlphaTest(), input.GetDither(), input.pos);
+	}
 
 	PrimitiveID prim;
 	prim.init();

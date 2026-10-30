@@ -5101,9 +5101,17 @@ void UpdateVisibility(Visibility& vis)
 				}
 				if (!hair.regenerate_frame)
 				{
-					const float dist = wi::math::Distance(vis.camera->Eye, hair.aabb.getCenter());
-					const float radius = hair.aabb.getRadius();
-					if (dist - radius > hair.viewDistance)
+					// GG: the distance to the nearest point of the bounds rather than of the sphere round them, so a
+					// system whose every strand is past its view distance is dropped (a terrain chunk's sphere reaches
+					// ~40% past its box at the corners, so from high above chunks whose strands were all culled were
+					// still simulated and drawn)
+					const XMFLOAT3 mn = hair.aabb.getMin();
+					const XMFLOAT3 mx = hair.aabb.getMax();
+					const XMFLOAT3 eye = vis.camera->Eye;
+					const float dx = std::max(std::max(mn.x - eye.x, eye.x - mx.x), 0.0f);
+					const float dy = std::max(std::max(mn.y - eye.y, eye.y - mx.y), 0.0f);
+					const float dz = std::max(std::max(mn.z - eye.z, eye.z - mx.z), 0.0f);
+					if (dx * dx + dy * dy + dz * dz > hair.viewDistance * hair.viewDistance)
 						continue;
 				}
 				if (hair.meshID == INVALID_ENTITY || !vis.frustum.CheckBoxFast(hair.aabb))

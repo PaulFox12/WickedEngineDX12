@@ -33,6 +33,17 @@ namespace wi
 	// so we need this placeholder to keep non-GG hair systems happy.
 	static wi::graphics::Texture grass_visibility_placeholder;
 
+	// GG kill shapes: every visible system's shapes for the frame, packed into gg_shape_buffer (simulate CS t5) by
+	// UpdateGPU, and a 1x1 zero edge map (t6) for systems without one
+	static wi::graphics::GPUBuffer gg_shape_buffer;
+	static wi::vector<XMFLOAT4> gg_frame_shapes;
+	static wi::graphics::Texture grass_edge_placeholder;
+	// GG (SetGrassShade): the GG grass blades' light at the root and at the tip, set by the game
+	float gg_grass_shade_root = 1.0f;
+	float gg_grass_shade_tip = 1.0f;
+	// GG: draw strands of no length as empty quads, as stock Wicked does (HAIR_FLAG_GG_DRAW_EMPTY); for measuring only
+	bool gg_grass_draw_empty = false;
+
 	// GGMAX 1.49b: grass strand LOD (GG grass systems only; character hair untouched).
 	// DEFAULT ON since 2026-07-27 — user-confirmed in a game-mode walk (with the game-side
 	// tier AUTO coupling: no square pops, no flicker) and explicitly requested as default.
@@ -529,6 +540,7 @@ namespace wi
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		device->EventBegin("HairParticleSystem - UpdateGPU", cmd);
+		gg_frame_shapes.clear();
 
 		for (uint32_t i = 0; i < itemCount; ++i)
 		{
@@ -673,6 +685,16 @@ namespace wi
 			hcb.xHairGrassMinHeightUnderwater = hair.grass_min_height_underwater;
 			hcb.xHairGrassMaxHeightUnderwater = hair.grass_max_height_underwater;
 
+			// GG kill shapes and flat areas: this system's, at the end of the frame's shape list
+			hcb.xHairGGShapeOffset = (uint32_t)(gg_frame_shapes.size() / GG_HAIR_SHAPE_FLOAT4S);
+			hcb.xHairGGKillCount = (uint32_t)(hair.gg_kill_shapes.size() / GG_HAIR_SHAPE_FLOAT4S);
+			hcb.xHairGGAreaCount = (uint32_t)(hair.gg_area_shapes.size() / GG_HAIR_SHAPE_FLOAT4S);
+			gg_frame_shapes.insert(gg_frame_shapes.end(), hair.gg_kill_shapes.begin(), hair.gg_kill_shapes.begin() + hcb.xHairGGKillCount * GG_HAIR_SHAPE_FLOAT4S);
+			gg_frame_shapes.insert(gg_frame_shapes.end(), hair.gg_area_shapes.begin(), hair.gg_area_shapes.begin() + hcb.xHairGGAreaCount * GG_HAIR_SHAPE_FLOAT4S);
+			hcb.xHairGGShadeRoot = hair.grass_type != 0 ? gg_grass_shade_root : 1.0f;
+			hcb.xHairGGShadeTip = hair.grass_type != 0 ? gg_grass_shade_tip : 1.0f;
+			if (gg_grass_draw_empty) hcb.xHairFlags |= HAIR_FLAG_GG_DRAW_EMPTY;
+
 			// GGMAX 1.49b: grass strand LOD. Zeroed hcb (= disabled) unless the knob is on
 			// AND this is a GG grass system — upstream/character hair never decimates.
 			// GGMAX 3.117: the DX11 far field (gg_grass_dx11_falloff, set by the game every frame, default
@@ -711,6 +733,24 @@ namespace wi
 			{
 				hair.regenerate_frame = false;
 			}
+		}
+
+		// GG kill shapes: the frame's list to the GPU, the buffer grown when it is too small
+		if (!gg_frame_shapes.empty())
+		{
+			const uint64_t size = gg_frame_shapes.size() * sizeof(XMFLOAT4);
+			if (!gg_shape_buffer.IsValid() || gg_shape_buffer.GetDesc().size < size)
+			{
+				GPUBufferDesc bd;
+				bd.size = std::max(size * 2, (uint64_t)(256 * GG_HAIR_SHAPE_FLOAT4S * sizeof(XMFLOAT4)));
+				bd.stride = sizeof(XMFLOAT4);
+				bd.bind_flags = BindFlag::SHADER_RESOURCE;
+				bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
+				device->CreateBuffer(&bd, nullptr, &gg_shape_buffer);
+				device->SetName(&gg_shape_buffer, "HairParticleSystem::gg_shape_buffer");
+			}
+			device->UpdateBuffer(&gg_shape_buffer, gg_frame_shapes.data(), cmd, size);
+			wi::renderer::PushBarrier(GPUBarrier::Buffer(&gg_shape_buffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE_COMPUTE));
 		}
 
 		wi::renderer::FlushBarriers(cmd);
@@ -765,6 +805,11 @@ namespace wi
 					? hair.grass_visibility_texture
 					: &grass_visibility_placeholder;
 				device->BindResource(grassTex, 4, cmd);
+				const Texture* edgeTex = (hair.grass_edge_texture && hair.grass_edge_texture->IsValid())
+					? hair.grass_edge_texture
+					: &grass_edge_placeholder;
+				device->BindResource(&gg_shape_buffer, 5, cmd);
+				device->BindResource(edgeTex, 6, cmd);
 			}
 
 			device->Dispatch((hair.strandCount + THREADCOUNT_SIMULATEHAIR - 1) / THREADCOUNT_SIMULATEHAIR, 1, 1, cmd);
@@ -1118,6 +1163,23 @@ namespace wi
 			initdata.row_pitch = 1;
 			device->CreateTexture(&td, &initdata, &grass_visibility_placeholder);
 			device->SetName(&grass_visibility_placeholder, "grass_visibility_placeholder");
+
+			// GG kill shapes: the edge map placeholder (no cell is an edge) and the shape buffer, so t5 and t6 are
+			// always bound; the buffer grows in UpdateGPU when a frame has more shapes
+			td.format = Format::R32_UINT;
+			const uint32_t zeroWord = 0;
+			initdata.data_ptr = &zeroWord;
+			initdata.row_pitch = sizeof(zeroWord);
+			device->CreateTexture(&td, &initdata, &grass_edge_placeholder);
+			device->SetName(&grass_edge_placeholder, "grass_edge_placeholder");
+
+			GPUBufferDesc bd;
+			bd.size = 256 * GG_HAIR_SHAPE_FLOAT4S * sizeof(XMFLOAT4);
+			bd.stride = sizeof(XMFLOAT4);
+			bd.bind_flags = BindFlag::SHADER_RESOURCE;
+			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
+			device->CreateBuffer(&bd, nullptr, &gg_shape_buffer);
+			device->SetName(&gg_shape_buffer, "HairParticleSystem::gg_shape_buffer");
 		}
 
 		wilog("wi::HairParticleSystem Initialized (%d ms)", (int)std::round(timer.elapsed()));

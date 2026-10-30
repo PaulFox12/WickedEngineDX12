@@ -22,6 +22,32 @@ Buffer<half> meshVertexBuffer_length : register(t3);
 // strand-position-driven sample happens inside main() (added in B.3).
 Texture2D<float> texHairGrassMap : register(t4);
 
+// GG kill shapes and flat area edges (xHairGGShapeOffset in ShaderInterop_HairParticle.h): the frame's shapes, and one
+// bit per grass-map cell that a flat area cleared but only partly covers, 32 cells a texel along x
+StructuredBuffer<float4> hairGGShapes : register(t5);
+Texture2D<uint> texHairGrassEdge : register(t6);
+
+// true when p lies inside one of count shapes from shape first on
+bool GGInShape(float3 p, uint first, uint count)
+{
+	for (uint i = 0; i < count; ++i)
+	{
+		const float4 c = hairGGShapes[(first + i) * GG_HAIR_SHAPE_FLOAT4S];
+		const float4 h = hairGGShapes[(first + i) * GG_HAIR_SHAPE_FLOAT4S + 1];
+		const float3 d = p - c.xyz;
+		if (h.x < 0)
+		{
+			if (dot(d.xz, d.xz) <= h.x * h.x && abs(d.y) <= h.y)
+				return true;
+			continue;
+		}
+		const float3 local = float3(d.x * c.w - d.z * h.w, d.y, d.x * h.w + d.z * c.w);
+		if (all(abs(local) <= h.xyz))
+			return true;
+	}
+	return false;
+}
+
 RWStructuredBuffer<PatchSimulationData> simulationBuffer : register(u0);
 RWBuffer<float4> vertexBuffer_POS : register(u1);
 RWBuffer<float4> vertexBuffer_UVS : register(u2);
@@ -147,6 +173,18 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 			uint2 px = uint2(uv * float2(dim));
 			float sample = texHairGrassMap.Load(int3(px, 0));
 			uint byteVal = uint(sample * 255.0 + 0.5);
+			// GG: a cell a flat area cleared but only partly covers keeps its grass for a strand outside every area
+			// crossing this chunk, so the grass grows to the area's edge; a cell wholly inside has no edge bit
+			[branch]
+			if ((byteVal & 0x80u) != 0u && (byteVal & 0x7Fu) != 0u && xHairGGAreaCount > 0u)
+			{
+				const uint edgeWord = texHairGrassEdge.Load(int3(px.x >> 5u, px.y, 0));
+				if (((edgeWord >> (px.x & 31u)) & 1u) != 0u
+					&& !GGInShape(base, xHairGGShapeOffset + xHairGGKillCount, xHairGGAreaCount))
+				{
+					byteVal &= 0x7Fu;
+				}
+			}
 			if ((byteVal & 0x80u) != 0u)
 			{
 				strand_length = 0; // flattened
@@ -231,6 +269,14 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 			{
 				strand_length = 0;
 			}
+		}
+
+		// GG kill shapes (SetGrassKillBox, SetProjectedDecalGrass): a strand rooted inside one is not drawn, and
+		// neither is its shadow
+		[branch]
+		if (strand_length > 0 && xHairGGKillCount > 0u && GGInShape(base, xHairGGShapeOffset, xHairGGKillCount))
+		{
+			strand_length = 0;
 		}
 	}
 
@@ -325,7 +371,9 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint groupIn
 	sphere.center = base;
 	sphere.radius = gg_length; // GGMAX 1.74: cull radius must follow the strand's own type length
 	//draw_sphere(sphere.center, sphere.radius);
-	const bool visible = !distance_culled && !gg_lod_dropped && GetCamera().frustum.intersects(sphere);
+	// GG: a strand of no length (a cell without grass, flattened, too steep, out of its height band or killed) is
+	// left out of the draw rather than drawn as empty quads in every pass
+	const bool visible = (strand_length > 0 || (xHairFlags & HAIR_FLAG_GG_DRAW_EMPTY)) && !distance_culled && !gg_lod_dropped && GetCamera().frustum.intersects(sphere);
 		
 	// Optimization: reduce to 1 atomic operation per wave
 	const uint waveAppendCount = WaveActiveCountBits(visible);

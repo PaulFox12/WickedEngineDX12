@@ -128,6 +128,15 @@ namespace wi
 		float grass_map_origin_z = 0.0f;
 		const wi::graphics::Texture* grass_visibility_texture = nullptr;
 
+		// GG kill shapes (non-serialized), GG_HAIR_SHAPE_FLOAT4S XMFLOAT4s each (ShaderInterop_HairParticle.h): the
+		// game's kill shapes that reach this system, set every frame, and the flat areas crossing its chunk, set when
+		// the areas change (gg_area_version is the game's count of flat area changes they were gathered at).
+		// grass_edge_texture holds a bit per grass-map cell an area only partly covers (R32_UINT, 32 cells a texel)
+		wi::vector<XMFLOAT4> gg_kill_shapes;
+		wi::vector<XMFLOAT4> gg_area_shapes;
+		uint32_t gg_area_version = ~0u;
+		const wi::graphics::Texture* grass_edge_texture = nullptr;
+
 		// GGMAX 1.74 MERGED GRASS (non-serialized). Set grass_type = GG_HAIR_GRASS_MERGED and fill
 		// grass_types[] to have ONE system represent every painted type in a terrain chunk: the
 		// simulate CS resolves each strand's type from the paint mask and indexes this table

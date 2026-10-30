@@ -25,5 +25,15 @@ void main(VertexToPixel input, out uint coverage : SV_Coverage)
 		alpha = material.textures[BASECOLORMAP].Sample(sampler_linear_clamp, input.tex.xyxy).a;
 	}
 
-	coverage = AlphaToCoverage(alpha, material.GetAlphaTest(), input.GetDither(), input.pos);
+	// GG grass: solid blades with a one-pixel edge, as the prepass (hairparticlePS_prepass.hlsl)
+	const float alphaWidth = max(fwidth(alpha), 0.0001);
+	if (input.grasstype != 0)
+	{
+		const float cut = material.GetAlphaTest() > 0 ? material.GetAlphaTest() : 0.5;
+		coverage = AlphaToCoverage((alpha - cut) / alphaWidth + 0.5, 0.5, input.GetDither(), input.pos);
+	}
+	else
+	{
+		coverage = AlphaToCoverage(alpha, material.GetAlphaTest(), input.GetDither(), input.pos);
+	}
 }

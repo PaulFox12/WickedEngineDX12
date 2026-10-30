@@ -51,6 +51,8 @@ float4 main(VertexToPixel input) : SV_Target
 		color = material.textures[BASECOLORMAP].Sample(sampler_linear_wrap, input.tex.xyxy);
 	}
 	color *= material.GetBaseColor();
+	// GG (SetGrassShade): the blade's light from its root (tex.y 1) to its tip (0), 1 both unless a script sets them
+	color.rgb *= lerp(xHairGGShadeTip, xHairGGShadeRoot, saturate(input.tex.y));
 
 	float3 V = input.GetViewVector();
 	float dist = length(V);

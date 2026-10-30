@@ -67,6 +67,9 @@ enum HAIR_FLAGS
 	// mean of three hashed uniforms - DX11 GGGrassPS discarded a pixel when dist > noise*2500 + L with a
 	// bilinear-filtered noise (effective sd ~0.17, 50% at L+1250); Irwin-Hall n=3 has sd 0.167. No widening.
 	HAIR_FLAG_GG_DX11_FALLOFF = 1 << 11,
+	// GG: strands of no length drawn too, as empty quads, as stock Wicked does; without it they are left out of the draw.
+	// For measuring only: harness SET_GRASSEMPTY 1
+	HAIR_FLAG_GG_DRAW_EMPTY = 1 << 12,
 	// GGMAX 1.95b: bits 16-23 of xHairFlags carry (forcedType+1); non-zero forces EVERY pixel's
 	// texture lookup to that type — a "FREEZE_TEXTURE for each k". The bisector for the two
 	// worlds above: if some forced type k churns while the others are clean, type k's texture
@@ -98,6 +101,11 @@ struct HairParticleAtlasRect
 // strand i sits on the same triangle with the same barycentrics in every type's system, a
 // paint cell holds exactly one type, and the surviving sets are disjoint with union exactly
 // "strands on painted cells".
+// GG kill shape, two float4: centre.xyz and the cos of its yaw, then half.xyz along its own axes and the sin of its
+// yaw; half.x below 0 is a circle of radius -half.x and half height half.y. A local point is (d.x c - d.z s, d.y,
+// d.x s + d.z c) for d = p - centre, the turn GameGuru's flat areas and an object's angle Y use
+#define GG_HAIR_SHAPE_FLOAT4S 2
+
 #define GG_HAIR_MAX_GRASS_TYPES 88
 #define GG_HAIR_GRASS_MERGED 0xFFFFFFFFu   // xHairGrassType sentinel meaning "this system owns every type"
 
@@ -183,7 +191,18 @@ CBUFFER(HairParticleCB, CBSLOT_OTHER_HAIRPARTICLE)
 	// GGMAX 1.95: number of live entries in xHairGrassTypes[] (0 outside merged mode), so the
 	// uniform-index resolve loop is bounded by the ~7-8 painted types instead of all 88 slots.
 	uint xHairGrassTypeCount;
-	float xHair_padding_alt2;
+	// GG kill shapes: no strand rooted inside one is drawn. This system's shapes start at xHairGGShapeOffset in
+	// hairGGShapes (simulate CS t5), GG_HAIR_SHAPE_FLOAT4S float4 each (above): its xHairGGKillCount kill shapes (the game's
+	// boxes under vehicles, the circles under blast decals), then its xHairGGAreaCount flat areas, the pads and Clear
+	// Grass and Trees areas crossing its chunk. The areas are read only for a strand in a grass-map cell they cleared
+	// but only partly cover (its bit in the edge map, t6), which keeps its grass outside every area, so the grass
+	// grows to an area's edge and never inside it
+	uint xHairGGShapeOffset;
+
+	uint xHairGGKillCount;
+	uint xHairGGAreaCount;
+	float xHairGGShadeRoot; // GG (SetGrassShade): the blade's light at its root and at its tip, multipliers (1 as lit)
+	float xHairGGShadeTip;
 
 	HairParticleAtlasRect xHairAtlasRects[64];
 
