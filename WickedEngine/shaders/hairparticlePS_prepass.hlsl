@@ -32,12 +32,15 @@ uint main(VertexToPixel input, out uint coverage : SV_Coverage) : SV_Target
 	
 	// GG grass: the blade is solid where its alpha passes the cutout, with a one-pixel edge, as DX11's grass cut its cards
 	// (GGGrassPrepassPS). AlphaToCoverage takes the raw alpha as the MSAA sample mask and dithers it under TAA, so every
-	// blade's soft parts drew half see-through and the water and the sky showed through the grass in front of them
-	const half alphaWidth = max(fwidth(alpha), 0.0001);
+	// blade's soft parts drew half see-through and the water and the sky showed through the grass in front of them.
+	// In full precision and clamped to 1: a magnified blade's edge is steep, and AlphaToCoverage's sample mask shift wraps
+	// for an alpha past 8 (only its low five bits count), which left a close blade's middle uncovered
+	const float alphaF = alpha;
+	const float alphaWidth = max(fwidth(alphaF), 0.0001);
 	if (input.grasstype != 0)
 	{
-		const half cut = material.GetAlphaTest() > 0 ? material.GetAlphaTest() : 0.5;
-		coverage = AlphaToCoverage((alpha - cut) / alphaWidth + 0.5, 0.5, input.GetDither(), input.pos);
+		const float cut = material.GetAlphaTest() > 0 ? material.GetAlphaTest() : 0.5;
+		coverage = AlphaToCoverage((half)saturate((alphaF - cut) / alphaWidth + 0.5), 0.5, input.GetDither(), input.pos);
 	}
 	else
 	{
