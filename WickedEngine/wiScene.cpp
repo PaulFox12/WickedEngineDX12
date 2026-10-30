@@ -5803,7 +5803,12 @@ namespace wi::scene
 				// LOD select:
 				if (mesh.subsets_per_lod > 0)
 				{
-					if (gg_lod_step >= 0)
+					if (object.gg_forcelod > 0)
+					{
+						// GG: a forced LOD, whatever the distance; past the mesh's last it draws the last
+						object.lod = std::min((uint32_t)object.gg_forcelod - 1, mesh.GetLODCount() - 1);
+					}
+					else if (gg_lod_step >= 0)
 					{
 						const float dist = wi::math::Distance(camera.Eye, object.center);
 						uint32_t lod = 0;

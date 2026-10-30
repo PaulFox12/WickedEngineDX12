@@ -1259,6 +1259,7 @@ namespace wi::scene
 		float gg_shadow_fade_start = std::numeric_limits<float>::max();
 
 		uint16_t lod = 0;
+		uint16_t gg_forcelod = 0; // GG: the LOD forced plus one (GameGuru's SetEntityLOD), 0 to choose by distance
 		mutable bool wetmap_cleared = false;
 		bool mesh_blend_required = false;
 
