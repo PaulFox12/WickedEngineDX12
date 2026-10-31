@@ -93,9 +93,26 @@ GGTerrainPaint gg_terrain_paint(ByteAddressBuffer buf, uint block, float2 uv, fl
 	float4 wx = lerp(float4(0, 1 - f.x, f.x, 0), gg_BSplineWeights(f.x), smoothing);
 	float4 wy = lerp(float4(0, 1 - f.y, f.y, 0), gg_BSplineWeights(f.y), smoothing);
 
-	// each cell's paint value, 0 where unpainted, off the map or a value with no texture
+	// each cell's paint value, 0 where unpainted or off the map: the 4 x 4 cells in four gathers of 2 x 2 (a gather's
+	// w, z, x, y are its top left, top right, bottom left, bottom right texels), all in registers (the loops unrolled)
+	const int2 base = int2(cellBase) - 1;
 	uint cellMat[16];
 	float cellWeight[16];
+	[unroll]
+	for (uint gy = 0; gy < 2; gy++)
+	{
+		[unroll]
+		for (uint gx = 0; gx < 2; gx++)
+		{
+			const float4 g = paintmap.GatherRed(sampler_point_clamp, (float2(base + int2(gx * 2 + 1, gy * 2 + 1))) / map_res);
+			const uint4 v = (uint4)(g * 255 + 0.5);
+			const uint i = gy * 8 + gx * 2;
+			cellMat[i] = v.w;
+			cellMat[i + 1] = v.z;
+			cellMat[i + 4] = v.x;
+			cellMat[i + 5] = v.y;
+		}
+	}
 	bool alike = true;
 	[unroll]
 	for (uint cy = 0; cy < 4; cy++)
@@ -103,24 +120,19 @@ GGTerrainPaint gg_terrain_paint(ByteAddressBuffer buf, uint block, float2 uv, fl
 		[unroll]
 		for (uint cx = 0; cx < 4; cx++)
 		{
-			int2 cellPos = int2(cellBase) + int2(cx, cy) - 1;
-			uint value = 0;
-			if (all(cellPos >= 0) && all(cellPos < map_res))
-			{
-				value = (uint)(paintmap.Load(int3(cellPos, 0)) * 255 + 0.5);
-				if (value > 32 || (value > 0 && buf.Load(block + (9 + value) * 4) == 0xFFFFFFFF))
-					value = 0;
-			}
-			cellMat[cy * 4 + cx] = value;
+			const int2 cellPos = base + int2(cx, cy);
+			if (any(cellPos < 0) || any(cellPos >= map_res) || cellMat[cy * 4 + cx] > 32)
+				cellMat[cy * 4 + cx] = 0;
 			cellWeight[cy * 4 + cx] = wx[cx] * wy[cy];
-			alike = alike && value == cellMat[0];
+			alike = alike && cellMat[cy * 4 + cx] == cellMat[0];
 		}
 	}
 	if (alike)
 	{
-		if (cellMat[0] > 0)
+		const uint mi = cellMat[0] > 0 ? buf.Load(block + (9 + cellMat[0]) * 4) : 0xFFFFFFFF;
+		if (mi != 0xFFFFFFFF)
 		{
-			o.material[0] = buf.Load(block + (9 + cellMat[0]) * 4);
+			o.material[0] = mi;
 			o.weight[0] = 1;
 			o.auto_share = 0;
 		}
@@ -128,11 +140,13 @@ GGTerrainPaint gg_terrain_paint(ByteAddressBuffer buf, uint block, float2 uv, fl
 	}
 
 	float share[16];
-	[loop]
+	[unroll]
 	for (uint a = 0; a < 16; a++)
 	{
-		share[a] = 0;
-		for (uint b = 0; b < 16; b++) if (cellMat[b] == cellMat[a]) share[a] += cellWeight[b];
+		float s = 0;
+		[unroll]
+		for (uint b = 0; b < 16; b++) s += cellMat[b] == cellMat[a] ? cellWeight[b] : 0;
+		share[a] = s;
 	}
 	uint blendMat[4];
 	float4 pickShare = float4(0, 0, 0, 0);
@@ -140,11 +154,12 @@ GGTerrainPaint gg_terrain_paint(ByteAddressBuffer buf, uint block, float2 uv, fl
 	for (uint k = 0; k < 4; k++)
 	{
 		blendMat[k] = 0;
-		[loop]
+		[unroll]
 		for (uint c = 0; c < 16; c++)
 		{
 			bool taken = false;
-			for (uint q = 0; q < k; q++) if (pickShare[q] > 0 && blendMat[q] == cellMat[c]) taken = true;
+			[unroll]
+			for (uint q = 0; q < k; q++) taken = taken || (pickShare[q] > 0 && blendMat[q] == cellMat[c]);
 			if (!taken && share[c] > pickShare[k])
 			{
 				pickShare[k] = share[c];
@@ -189,12 +204,13 @@ GGTerrainPaint gg_terrain_paint(ByteAddressBuffer buf, uint block, float2 uv, fl
 	{
 		if (blendWeight[r] == 0)
 			continue;
-		if (blendMat[r] == 0)
+		const uint mi = blendMat[r] > 0 ? buf.Load(block + (9 + blendMat[r]) * 4) : 0xFFFFFFFF;
+		if (mi == 0xFFFFFFFF) // unpainted, or a value with no texture
 		{
 			o.auto_share += blendWeight[r];
 			continue;
 		}
-		o.material[r] = buf.Load(block + (9 + blendMat[r]) * 4);
+		o.material[r] = mi;
 		o.weight[r] = blendWeight[r];
 	}
 	return o;
