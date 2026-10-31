@@ -3046,11 +3046,15 @@ namespace wi::terrain
 			// Note: instead of ClearUAV, we use copies from default initialized resources
 			//	With this it can be put on the async copy queue
 			//	Also, using the ClearUAV was having a very bad performance especially with DX12
+			// GGMAX: sized by the residency's own resolution, not the VT's: a VT invalidated after this frame's list was
+			// built (GameGuru's bulk re-blend) reads resolution 0 while keeping its residency, and the clear for 0 was
+			// never created - a null source copy (two crashes in a 2026-10-31 A/B, every chunk re-blended in flight)
 			static wi::unordered_map<uint32_t, VirtualTextureAtlas::Residency> clear_residencies;
-			VirtualTextureAtlas::Residency& clear = clear_residencies[vt->resolution];
-			if (clear.resolution != vt->resolution)
+			const uint32_t gg_clear_resolution = vt->residency->resolution;
+			VirtualTextureAtlas::Residency& clear = clear_residencies[gg_clear_resolution];
+			if (clear.resolution != gg_clear_resolution)
 			{
-				clear.init(vt->resolution);
+				clear.init(gg_clear_resolution);
 			}
 			device->CopyResource(&vt->residency->feedbackMap, &clear.feedbackMap, cmd);
 			device->CopyResource(&vt->residency->requestBuffer, &clear.requestBuffer, cmd);
