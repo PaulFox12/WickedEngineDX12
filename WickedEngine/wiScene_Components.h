@@ -146,7 +146,9 @@ namespace wi::scene
 			// editor grid plane, exactly as FORCEDEPTH did on DX11.
 			// GGMAX-added bits live in the RESERVED 24-31 range, never the next sequential slot:
 			// upstream grows this enum by append and would silently collide (see engine 2.02).
-			GG_FORCEDEPTH = 1 << 24
+			GG_FORCEDEPTH = 1 << 24,
+			// GGMAX: a terrain chunk's material (wiTerrain), for GameGuru's wet ground in the object shader
+			GG_TERRAIN = 1 << 25
 		};
 		uint32_t _flags = CAST_SHADOW;
 

@@ -1143,6 +1143,47 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	}
 #endif // OBJECTSHADER_USE_COMMON
 
+	// GGMAX: GameGuru's wet ground (SetTerrainWetness) on the terrain's chunks, as its DX11 terrain did: by the paint map's
+	// value (the four nearest cells blended), each painted texture glossier and darker by its own amounts (the table in
+	// gg_wet_buffer) and its bumps smoothed as water fills them; dry inside the dry boxes. Only where the colour is lit (not
+	// the depth prepass)
+#if defined(OBJECTSHADER_USE_NORMAL) && !defined(PREPASS)
+	[branch]
+	if (GetScene().terrain.gg_wetness > 0 && material.IsGGTerrain())
+	{
+		const ShaderTerrain gg_t = GetScene().terrain;
+		ByteAddressBuffer gg_wet = bindless_buffers[descriptor_index(gg_t.gg_wet_buffer)];
+		float gg_amount = gg_t.gg_wetness;
+		for (uint gg_b = 0; gg_b < gg_t.gg_dry_boxes; gg_b++)
+		{
+			const float3 gg_min = asfloat(gg_wet.Load3((66 + gg_b * 6) * 4));
+			const float3 gg_max = asfloat(gg_wet.Load3((66 + gg_b * 6 + 3) * 4));
+			if (all(surface.P >= gg_min) && all(surface.P <= gg_max))
+				gg_amount = 0;
+		}
+		[branch]
+		if (gg_amount > 0)
+		{
+			Texture2D<float> gg_paint = bindless_textures_float[descriptor_index(gg_t.gg_paintmap)];
+			const float2 gg_p = (surface.P.xz * gg_t.gg_map_scale + 0.5) * gg_t.gg_map_resolution - 0.5;
+			const int2 gg_cell = (int2)floor(gg_p);
+			const float2 gg_f = gg_p - gg_cell;
+			float2 gg_r[4];
+			[unroll]
+			for (uint gg_i = 0; gg_i < 4; gg_i++)
+			{
+				const int2 gg_c = clamp(gg_cell + int2(gg_i & 1, gg_i >> 1), 0, (int)gg_t.gg_map_resolution - 1);
+				const uint gg_m = min((uint)(gg_paint.Load(int3(gg_c, 0)) * 255 + 0.5), 32u);
+				gg_r[gg_i] = asfloat(gg_wet.Load2(gg_m * 8));
+			}
+			const float2 gg_wetresp = lerp(lerp(gg_r[0], gg_r[1], gg_f.x), lerp(gg_r[2], gg_r[3], gg_f.x), gg_f.y) * gg_amount;
+			surface.roughness = lerp(surface.roughness, 0.05, gg_wetresp.x);
+			surface.N = normalize(lerp(surface.N, normalize(input.nor), gg_wetresp.x * 0.5));
+			surface.albedo *= 1 - gg_wetresp.y;
+		}
+	}
+#endif // OBJECTSHADER_USE_NORMAL && !PREPASS
+
 
 #if defined(OBJECTSHADER_USE_UVSETS) && !defined(GG_SUPERQUICK) // GGMAX 3.34
 	// Secondary occlusion map:

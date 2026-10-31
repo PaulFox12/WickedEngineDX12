@@ -68,6 +68,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 	Texture2DArray blendmap = bindless_textures2DArray[descriptor_index(push.blendmap_texture)];
 	ByteAddressBuffer blendmap_buffer = bindless_buffers[descriptor_index(push.blendmap_buffer)];
+	const GGTiling gg_tiling = gg_terrain_tiling(blendmap_buffer, push.blendmap_buffer_offset + push.blendmap_layers * sizeof(uint)); // GGMAX
 	
 #if defined(UPDATE_BASECOLORMAP) || defined(UPDATE_EMISSIVEMAP)
 	RWTexture2D<uint2> output = bindless_rwtextures_uint2[descriptor_index(push.output_texture)];
@@ -121,6 +122,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		{
 			float weight;
 			uint materialIndex;
+			bool gg_full = true; // GGMAX: turned right round by the rotation mask
 			if (blendmap_index >= (int)push.blendmap_layers) // GGMAX: a painted texture
 			{
 				weight = gg_paint.weight[blendmap_index - push.blendmap_layers];
@@ -134,6 +136,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 				if(weight == 0)
 					continue;
 				materialIndex = blendmap_buffer.Load(push.blendmap_buffer_offset + blendmap_index * sizeof(uint));
+				gg_full = ((gg_tiling.rotate_layers >> blendmap_index) & 1u) != 0;
 			}
 			ShaderMaterial material = load_material(materialIndex);
 
@@ -146,7 +149,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 				float2 dim = 0;
 				tex.GetDimensions(dim.x, dim.y);
 				float3 ts = gg_tile_uv_scale_lod(dim); // GGMAX 1.53
-				half4 baseColorMap = tex.SampleLevel(sampler_linear_wrap, uv2 * ts.xy, ts.z);
+				half4 baseColorMap = gg_terrain_sample(tex, gg_tiling, uv, ts, gg_full, false); // GGMAX: the rotation mask
 				baseColor *= baseColorMap;
 			}
 			[branch]
@@ -174,7 +177,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 					float2 dim = 0;
 					tex.GetDimensions(dim.x, dim.y);
 					float3 ts = gg_tile_uv_scale_lod(dim);
-					normalMap = tex.SampleLevel(sampler_linear_wrap, uv2 * ts.xy, ts.z).rg;
+					normalMap = gg_terrain_sample(tex, gg_tiling, uv, ts, gg_full, true).rg;
 				}
 				total_color.rg += weight * normalMap;
 				gg_splat_weight += weight;
@@ -187,7 +190,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 				float2 dim = 0;
 				tex.GetDimensions(dim.x, dim.y);
 				float3 ts = gg_tile_uv_scale_lod(dim); // GGMAX 1.53
-				half2 normalMap = tex.SampleLevel(sampler_linear_wrap, uv2 * ts.xy, ts.z).rg;
+				half2 normalMap = gg_terrain_sample(tex, gg_tiling, uv, ts, gg_full, true).rg; // GGMAX: the rotation mask
 				total_color.rg = mad(1 - accumulation, weight * normalMap, total_color.rg);
 				accumulation = mad(1 - weight, accumulation, weight);
 				if(accumulation >= 1)
@@ -204,7 +207,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 				float2 dim = 0;
 				tex.GetDimensions(dim.x, dim.y);
 				float3 ts = gg_tile_uv_scale_lod(dim); // GGMAX 1.53
-				half4 surfaceMap = tex.SampleLevel(sampler_linear_wrap, uv2 * ts.xy, ts.z);
+				half4 surfaceMap = gg_terrain_sample(tex, gg_tiling, uv, ts, gg_full, false); // GGMAX: the rotation mask
 				surface *= surfaceMap;
 			}
 			[branch]
@@ -229,7 +232,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 				float2 dim = 0;
 				tex.GetDimensions(dim.x, dim.y);
 				float3 ts = gg_tile_uv_scale_lod(dim); // GGMAX 1.53
-				half4 emissiveMap = tex.SampleLevel(sampler_linear_wrap, uv2 * ts.xy, ts.z);
+				half4 emissiveMap = gg_terrain_sample(tex, gg_tiling, uv, ts, gg_full, false); // GGMAX: the rotation mask
 				emissiveColor.rgb = emissiveMap.rgb * emissiveMap.a;
 				emissiveColor.a = emissiveMap.a;
 			}

@@ -500,6 +500,10 @@ namespace wi::scene
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_GG_WEAPON_SHADOW;
 		}
+		if (_flags & GG_TERRAIN) // GGMAX: GameGuru's wet ground
+		{
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_GG_TERRAIN;
+		}
 
 		material.options_stencilref |= wi::renderer::CombineStencilrefs(engineStencilRef, userStencilRef) << 24u;
 

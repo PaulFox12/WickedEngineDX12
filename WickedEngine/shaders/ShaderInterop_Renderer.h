@@ -105,6 +105,8 @@ enum SHADERMATERIAL_OPTIONS
 	// so GGMAX takes bit 23 — the top of the free window 12-23, furthest from the next
 	// upstream slot.
 	SHADERMATERIAL_OPTION_BIT_GG_WEAPON_SHADOW = 1 << 23,
+	// GGMAX: a terrain chunk (MaterialComponent::GG_TERRAIN), for GameGuru's wet ground; the next bit down from the weapon's
+	SHADERMATERIAL_OPTION_BIT_GG_TERRAIN = 1 << 22,
 };
 
 #ifndef __cplusplus
@@ -524,6 +526,7 @@ struct alignas(32) ShaderMaterial
 	inline bool IsDoubleSided() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_DOUBLE_SIDED; }
 	inline bool IsCapsuleShadowDisabled() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_CAPSULE_SHADOW_DISABLED; }
 	inline bool IsWeaponShadow() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_GG_WEAPON_SHADOW; } // GGMAX 2.14
+	inline bool IsGGTerrain() { return GetOptions() & SHADERMATERIAL_OPTION_BIT_GG_TERRAIN; } // GGMAX: wet ground
 	inline bool IsUnlit() { return GetShaderType() == SHADERTYPE_UNLIT; }
 
 #endif // __cplusplus
@@ -1834,8 +1837,8 @@ struct TerrainVirtualTexturePush
 	int output_texture;
 	uint gg_tile_share;	// GGMAX 1.53 (was padding0): bits 24..31 = tiling repeat cap, 16..23 = ladder hold; GGMAX 3.113: bit 0 = SPLAT blend
 };
-// GGMAX: the uints of GameGuru's paint block after blendmap_buffer's material table (ggTerrainPaintHF.hlsli)
-static const uint GG_TERRAIN_PAINT_BLOCK = 42u;
+// GGMAX: the uints of GameGuru's paint and tiling block after blendmap_buffer's material table (ggTerrainPaintHF.hlsli)
+static const uint GG_TERRAIN_PAINT_BLOCK = 46u;
 struct VirtualTextureResidencyUpdateCB
 {
 	uint lodCount;

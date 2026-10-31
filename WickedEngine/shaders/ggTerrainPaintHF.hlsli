@@ -14,7 +14,16 @@
 // (wi::terrain::gg_WritePaintBlock), GG_TERRAIN_PAINT_BLOCK uints:
 //	0 flags (bit 0 on), 1 paint map descriptor, 2 paint map resolution, 3 world to paint map scale (uv = world * scale + 0.5),
 //	4-5 the tile's world x and z at uv 0.5, 6 the world size of uv 0 to 1, 7 smoothing, 8 softness, 9 breakup,
-//	10-41 the material index for paint values 1-32 (0xFFFFFFFF none: the cell counts as unpainted)
+//	10-41 the material index for paint values 1-32 (0xFFFFFFFF none: the cell counts as unpainted),
+//	42 tiling flags (bit 0 on), 43 the rotation mask's descriptor, 44 mask texels per texture repeat, 45 the blendmap layers
+//	turned right round (a bit per layer)
+//
+// Tiling (gg_terrain_sample): GameGuru's DX11 page shader turns each terrain texture sample by a 1024 x 1024 fractal mask
+// (values 0-31) laid over the texture's repeats, a little (up to 9 degrees) or right round (32 steps; painted textures and
+// the layers flagged to rotate), blending the four cells round the point over the middle 40% of each border, so the
+// texture's repeats never line up into a visible grid. Done the same here: the mask and the turns are the level's, not the
+// chunk's (each chunk's offset taken in), each cell turned round its own centre so neighbouring chunks agree, and the
+// normal map's direction turned back with it.
 
 struct GGTerrainPaint
 {
@@ -214,6 +223,74 @@ GGTerrainPaint gg_terrain_paint(ByteAddressBuffer buf, uint block, float2 uv, fl
 		o.weight[r] = blendWeight[r];
 	}
 	return o;
+}
+
+struct GGTiling
+{
+	uint on;
+	uint maskmap;
+	float cells;		// mask texels per texture repeat
+	uint rotate_layers;
+	float2 origin;
+	float size;
+};
+
+GGTiling gg_terrain_tiling(ByteAddressBuffer buf, uint block)
+{
+	GGTiling t;
+	t.on = buf.Load(block + 42 * 4) & 1u;
+	t.maskmap = buf.Load(block + 43 * 4);
+	t.cells = asfloat(buf.Load(block + 44 * 4));
+	t.rotate_layers = buf.Load(block + 45 * 4);
+	t.origin = asfloat(buf.Load2(block + 16));
+	t.size = asfloat(buf.Load(block + 24));
+	return t;
+}
+
+// a terrain texture at the tile texel uv, ts = (repeats across the chunk, mip) from gg_tile_uv_scale_lod: as stock (uv2 * repeats)
+// with the tiling off, else turned by the rotation mask; full: right round; normalmap: rg is a normal's direction (0.5 flat)
+half4 gg_terrain_sample(Texture2D tex, GGTiling t, float2 uv, float3 ts, bool full, bool normalmap)
+{
+	const float2 s = float2(uv.x, 1 - uv.y) * ts.xy;
+	[branch]
+	if (t.on == 0 || t.cells <= 0 || t.size <= 0)
+		return tex.SampleLevel(sampler_linear_wrap, s, ts.z);
+
+	// the chunk's offset in the level's texture coordinates (u along x, v against z): s plus it is the level's coordinate;
+	// its whole part is left out of the sampling (the texture wraps) and out of the mask (it wraps at 1024)
+	const float2 n = float2(t.origin.x / t.size - 0.5, -t.origin.y / t.size - 0.5) * ts.xy;
+	const float2 ul = s + frac(n);
+	const float2 nk = n * t.cells;
+	const float2 mT = nk - 1024 * floor(nk / 1024) + s * t.cells - 0.5; // mask texel coordinate, a cell's centre at its whole number
+	const float2 c0 = floor(mT);
+	const float2 f = smoothstep(0.3, 0.7, mT - c0);
+	Texture2D<float> mask = bindless_textures_float[descriptor_index(t.maskmap)];
+
+	half4 acc = 0;
+	[unroll]
+	for (uint q = 0; q < 4; q++)
+	{
+		const float2 d = float2(q & 1, q >> 1);
+		const float w = (d.x > 0 ? f.x : 1 - f.x) * (d.y > 0 ? f.y : 1 - f.y);
+		[branch]
+		if (w <= 0)
+			continue;
+		const float m = floor(mask.Load(int3(int2(c0 + d) & 1023, 0)) * 255 + 0.5);
+		const float a = full ? m * 0.19634954 : (m - 16) * 0.0098174770; // DX11's terrain_maskRotMat
+		float sn, cs;
+		sincos(a, sn, cs);
+		const float2 rel = (mT - c0 - d) / t.cells; // from the cell's centre, in texture repeats
+		const float2 r = ul - rel + float2(cs * rel.x - sn * rel.y, sn * rel.x + cs * rel.y);
+		half4 v = tex.SampleLevel(sampler_linear_wrap, r, ts.z);
+		[branch]
+		if (normalmap)
+		{
+			const float2 nn = v.rg * 2 - 1;
+			v.rg = half2(float2(nn.x * cs + nn.y * sn, -nn.x * sn + nn.y * cs) * 0.5 + 0.5);
+		}
+		acc += (half)w * v;
+	}
+	return acc;
 }
 
 #endif // GG_TERRAIN_PAINT_HF

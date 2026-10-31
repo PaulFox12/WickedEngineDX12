@@ -477,20 +477,29 @@ namespace wi::terrain
 	bool gg_splat_blend = false;
 	GGPaintBlend gg_paint_blend;
 
-	// GGMAX: the paint block the tile shaders read after blendmap_buffer's material table (shaders/ggTerrainPaintHF.hlsli),
-	// for a chunk at origin (world x and z at uv 0.5) whose uv 0 to 1 spans size; all zero (off) without paint
+	// GGMAX: the paint and tiling block the tile shaders read after blendmap_buffer's material table
+	// (shaders/ggTerrainPaintHF.hlsli), for a chunk at origin (world x and z at uv 0.5) whose uv 0 to 1 spans size; all zero
+	// (off) without paint or tiling
 	static void gg_WritePaintBlock(void* dst, const wi::scene::Scene* scene, const XMFLOAT2& origin, float size)
 	{
 		uint32_t block[GG_TERRAIN_PAINT_BLOCK] = {};
 		const GGPaintBlend& pb = gg_paint_blend;
+		const float values[7] = { pb.map_scale, origin.x, origin.y, size, pb.smoothing, pb.softness, pb.breakup };
+		std::memcpy(&block[3], values, sizeof(values));
+		const int mask_srv = (pb.tiling && pb.maskmap != nullptr && pb.maskmap->IsValid()) ? GetDevice()->GetDescriptorIndex(pb.maskmap, SubresourceType::SRV) : -1;
+		if (mask_srv >= 0 && size > 0 && pb.mask_cells > 0)
+		{
+			block[42] = 1;
+			block[43] = (uint32_t)mask_srv;
+			std::memcpy(&block[44], &pb.mask_cells, sizeof(float));
+			block[45] = pb.rotate_layers;
+		}
 		const int srv = (pb.enabled && gg_splat_blend && pb.paintmap != nullptr && pb.paintmap->IsValid()) ? GetDevice()->GetDescriptorIndex(pb.paintmap, SubresourceType::SRV) : -1;
 		if (srv >= 0 && size > 0 && pb.map_resolution > 0 && scene != nullptr)
 		{
-			const float values[7] = { pb.map_scale, origin.x, origin.y, size, pb.smoothing, pb.softness, pb.breakup };
 			block[0] = 1;
 			block[1] = (uint32_t)srv;
 			block[2] = pb.map_resolution;
-			std::memcpy(&block[3], values, sizeof(values));
 			const size_t material_count = scene->materials.GetCount();
 			for (uint32_t i = 0; i < 32; ++i)
 			{
@@ -1285,6 +1294,7 @@ namespace wi::terrain
 					// material params will be 1 because they will be created from only texture maps
 					//	because region materials are blended together into one texture
 					material.SetInternal();
+					material._flags |= MaterialComponent::GG_TERRAIN; // GGMAX: GameGuru's wet ground (objectHF.hlsli)
 					material.SetRoughness(1);
 					material.SetMetalness(1);
 					material.SetReflectance(1);
@@ -3086,6 +3096,42 @@ namespace wi::terrain
 			shader_terrain.chunk_buffer_range = chunk_buffer_range;
 			shader_terrain.min_height = bottomLevel;
 			shader_terrain.max_height = topLevel;
+		}
+
+		// GGMAX: GameGuru's wet ground: its table and boxes in a small buffer, made again when GameGuru changes them
+		const GGPaintBlend& pb = gg_paint_blend;
+		static GPUBuffer gg_wet_buffer;
+		static uint32_t gg_wet_buffer_version = ~0u;
+		if (pb.wetness > 0 && (gg_wet_buffer_version != pb.wet_version || !gg_wet_buffer.IsValid()))
+		{
+			float data[33 * 2 + 8 * 6] = {};
+			std::memcpy(data, pb.wet_material, sizeof(pb.wet_material));
+			for (uint32_t i = 0; i < 8; ++i)
+			{
+				float* box = data + 33 * 2 + i * 6;
+				box[0] = pb.dry_min[i].x; box[1] = pb.dry_min[i].y; box[2] = pb.dry_min[i].z;
+				box[3] = pb.dry_max[i].x; box[4] = pb.dry_max[i].y; box[5] = pb.dry_max[i].z;
+			}
+			GPUBufferDesc desc;
+			desc.size = sizeof(data);
+			desc.bind_flags = BindFlag::SHADER_RESOURCE;
+			desc.misc_flags = ResourceMiscFlag::BUFFER_RAW;
+			if (device->CreateBuffer(&desc, data, &gg_wet_buffer))
+			{
+				device->SetName(&gg_wet_buffer, "GGMAX::TerrainWet");
+				gg_wet_buffer_version = pb.wet_version;
+			}
+		}
+		const int gg_paint_srv = (pb.paintmap != nullptr && pb.paintmap->IsValid()) ? device->GetDescriptorIndex(pb.paintmap, SubresourceType::SRV) : -1;
+		const int gg_wet_srv = gg_wet_buffer.IsValid() ? device->GetDescriptorIndex(&gg_wet_buffer, SubresourceType::SRV) : -1;
+		if (pb.wetness > 0 && gg_paint_srv >= 0 && gg_wet_srv >= 0 && pb.map_resolution > 0)
+		{
+			shader_terrain.gg_paintmap = gg_paint_srv;
+			shader_terrain.gg_map_scale = pb.map_scale;
+			shader_terrain.gg_map_resolution = pb.map_resolution;
+			shader_terrain.gg_wetness = pb.wetness;
+			shader_terrain.gg_wet_buffer = gg_wet_srv;
+			shader_terrain.gg_dry_boxes = std::min(pb.dry_boxes, 8u);
 		}
 
 		return shader_terrain;

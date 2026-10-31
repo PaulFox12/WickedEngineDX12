@@ -125,6 +125,24 @@ namespace wi::terrain
 		float softness = 0.5f;
 		float breakup = 0;
 		wi::ecs::Entity materials[32] = {};	// the material for paint values 1-32, INVALID_ENTITY for none
+
+		// GameGuru's rotation mask against visible tiling, as its DX11 page shader: each terrain texture sample turned by
+		// the mask cell it falls in (DX11's 1024 x 1024 fractal mask, 32 values), a little or right round, and blended
+		// into the next cell's over the middle of the border. Independent of the paint
+		bool tiling = false;
+		const wi::graphics::Texture* maskmap = nullptr;	// R8_UNORM, value / 255 = 0-31
+		float mask_cells = 0;		// mask texels per texture repeat (DX11: 390 * maskScale / 50000 * 1024)
+		uint32_t rotate_layers = 0;	// blendmap layers turned right round (bit per layer); the rest by up to 9 degrees; painted always right round
+
+		// GameGuru's wet ground (SetTerrainWetness), drawn on the chunks by the object shader as its DX11 terrain did: by the
+		// paint map's value, each painted texture glossier and darker by its own amounts, its bumps smoothed; none in the
+		// dry boxes. wet_version: GameGuru counts it up when the table or the boxes change
+		float wetness = 0;
+		float wet_material[33][2] = {};	// paint value 0 (unpainted) to 32: how much glossier, how much darker (0-1)
+		uint32_t dry_boxes = 0;
+		XMFLOAT3 dry_min[8] = {};
+		XMFLOAT3 dry_max[8] = {};
+		uint32_t wet_version = 0;
 	};
 	extern GGPaintBlend gg_paint_blend;
 	// Frees the shared uncompressed bake scratch - ~340 MB at 8192 with mips, so call it once

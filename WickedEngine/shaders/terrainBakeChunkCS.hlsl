@@ -68,6 +68,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 	Texture2DArray blendmap = bindless_textures2DArray[descriptor_index(push.blendmap_texture)];
 	ByteAddressBuffer blendmap_buffer = bindless_buffers[descriptor_index(push.blendmap_buffer)];
+	const GGTiling gg_tiling = gg_terrain_tiling(blendmap_buffer, push.blendmap_buffer_offset + push.blendmap_layers * sizeof(uint)); // GGMAX
 	RWTexture2D<float4> output = bindless_rwtextures[descriptor_index(push.output_texture)];
 
 	const int2 pixel = push.offset + int2(DTid.xy);
@@ -94,6 +95,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	{
 		float weight;
 		uint materialIndex;
+		bool gg_full = true; // GGMAX: turned right round by the rotation mask
 		if (blendmap_index >= (int)push.blendmap_layers) // GGMAX: a painted texture
 		{
 			weight = gg_paint.weight[blendmap_index - push.blendmap_layers];
@@ -107,6 +109,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			if (weight == 0)
 				continue;
 			materialIndex = blendmap_buffer.Load(push.blendmap_buffer_offset + blendmap_index * sizeof(uint));
+			gg_full = ((gg_tiling.rotate_layers >> blendmap_index) & 1u) != 0;
 		}
 		ShaderMaterial material = load_material(materialIndex);
 
@@ -118,7 +121,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 			float2 dim = 0;
 			tex.GetDimensions(dim.x, dim.y);
 			float3 ts = gg_tile_uv_scale_lod(dim);
-			half4 baseColorMap = tex.SampleLevel(sampler_linear_wrap, uv2 * ts.xy, ts.z);
+			half4 baseColorMap = gg_terrain_sample(tex, gg_tiling, uv, ts, gg_full, false); // GGMAX: the rotation mask
 			baseColor *= baseColorMap;
 		}
 		[branch]
