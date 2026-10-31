@@ -43,10 +43,26 @@ inline half4 GGBlastDecalSample(in int texture, in SamplerState sam, in float2 p
 	return bindless_textures_half4[descriptor_index(texture)].SampleGrad(sam, (planePos * float2(0.5, -0.5) + 0.5) * texMulAdd.xy + texMulAdd.zw, planeDX * uvScale, planeDY * uvScale);
 }
 
-// a blast decal's colour at P, boxPos being P in its box (-1 to 1 across it)
-inline half4 GGBlastDecalColor(in ShaderEntity decal, in float4x4 decalProjection, in int texture, in float3 boxPos, in float3 P, in half3 faceN, in float3 P_dx, in float3 P_dy, in SamplerState sam)
+// a decal's normal map sample turned into a world space normal: its red along T (the texture's u in the world), its green
+// along B (its v; DirectX normal maps, as the models'), both laid on the surface round N; strength scales the tilt.
+// Built from the decal's own axes, so it needs no tangents on the surface (the terrain has none) and stays right on every
+// face a blast's triplanar planes cover
+inline float3 GGDecalNormalWorld(in half4 normalSample, in float3 T, in float3 B, in float3 N, in float strength)
+{
+	const float2 tilt = ((float2)normalSample.rg * 2 - 1) * strength;
+	float3 Ts = T - N * dot(T, N);
+	float3 Bs = B - N * dot(B, N);
+	Ts /= max(length(Ts), 0.0001);
+	Bs /= max(length(Bs), 0.0001);
+	return normalize(tilt.x * Ts + tilt.y * Bs + N);
+}
+
+// a blast decal's colour at P, boxPos being P in its box (-1 to 1 across it); with a normal map, decalN its normal there
+// (0 without one), each plane's sample laid on that plane's axes and weighted as the colour
+inline half4 GGBlastDecalColor(in ShaderEntity decal, in float4x4 decalProjection, in int texture, in int normalTexture, in float3 boxPos, in float3 P, in half3 faceN, in float3 N, in float3 P_dx, in float3 P_dy, in SamplerState sam, out float3 decalN)
 {
 	half4 decalColor = 0;
+	decalN = 0;
 
 	// the sphere, fading out over its outer quarter (none from its edge out), on surfaces facing the centre, fading in past
 	// the cutoff
@@ -85,26 +101,39 @@ inline half4 GGBlastDecalColor(in ShaderEntity decal, in float4x4 decalProjectio
 		weights /= weights.x + weights.y + weights.z;
 		const float3 boxDX = mul((float3x3)decalProjection, P_dx);
 		const float3 boxDY = mul((float3x3)decalProjection, P_dy);
+		// the box's axes in the world (its rows are the gradients of its x, y and z), for the normal map: a plane's u runs
+		// along its first axis and its v against its second, as GGBlastDecalSample reads it
+		const float3 axisX = normalize(decalProjection[0].xyz);
+		const float3 axisY = normalize(decalProjection[1].xyz);
+		const float3 axisZ = normalize(decalProjection[2].xyz);
+		const float strength = decal.GetLength(); // the normal map's strength (remap, Wicked's slot for it, holds the occlusion)
 		float weightSum = 0;
 		[branch]
 		if (weights.x > 0.01)
 		{
 			decalColor += (half)weights.x * GGBlastDecalSample(texture, sam, boxPos.zy, boxDX.zy, boxDY.zy, texMulAdd);
+			if (normalTexture >= 0)
+				decalN += weights.x * GGDecalNormalWorld(GGBlastDecalSample(normalTexture, sam, boxPos.zy, boxDX.zy, boxDY.zy, texMulAdd), axisZ, -axisY, N, strength);
 			weightSum += weights.x;
 		}
 		[branch]
 		if (weights.y > 0.01)
 		{
 			decalColor += (half)weights.y * GGBlastDecalSample(texture, sam, boxPos.xz, boxDX.xz, boxDY.xz, texMulAdd);
+			if (normalTexture >= 0)
+				decalN += weights.y * GGDecalNormalWorld(GGBlastDecalSample(normalTexture, sam, boxPos.xz, boxDX.xz, boxDY.xz, texMulAdd), axisX, -axisZ, N, strength);
 			weightSum += weights.y;
 		}
 		[branch]
 		if (weights.z > 0.01)
 		{
 			decalColor += (half)weights.z * GGBlastDecalSample(texture, sam, boxPos.xy, boxDX.xy, boxDY.xy, texMulAdd);
+			if (normalTexture >= 0)
+				decalN += weights.z * GGDecalNormalWorld(GGBlastDecalSample(normalTexture, sam, boxPos.xy, boxDX.xy, boxDY.xy, texMulAdd), axisX, -axisY, N, strength);
 			weightSum += weights.z;
 		}
 		decalColor /= (half)max(weightSum, 0.0001);
+		if (normalTexture >= 0) decalN = normalize(decalN);
 		decalColor *= decal.GetColor();
 		decalColor.a *= blend;
 	}
@@ -112,14 +141,16 @@ inline half4 GGBlastDecalColor(in ShaderEntity decal, in float4x4 decalProjectio
 }
 
 // a GameGuru decal's colour at P (its alpha how much of it applies there, 0 where it paints nothing); clipSpacePos is P in
-// its box, decalProjection with its texture row cleared
-inline half4 GGDecalColor(in ShaderEntity decal, in float4x4 decalProjection, in int texture, in float3 clipSpacePos, in float3 P, in half3 faceN, in float3 P_dx, in float3 P_dy, in SamplerState sam)
+// its box, decalProjection with its texture row cleared; with a normal map (normalTexture), decalN the decal's normal at P
+// in the world, from N, the surface's (0 without one)
+inline half4 GGDecalColor(in ShaderEntity decal, in float4x4 decalProjection, in int texture, in int normalTexture, in float3 clipSpacePos, in float3 P, in half3 faceN, in float3 N, in float3 P_dx, in float3 P_dy, in SamplerState sam, out float3 decalN)
 {
 	[branch]
 	if (decal.GetFlags() & ENTITY_FLAG_DECAL_GG_BLAST)
-		return GGBlastDecalColor(decal, decalProjection, texture, clipSpacePos, P, faceN, P_dx, P_dy, sam);
+		return GGBlastDecalColor(decal, decalProjection, texture, normalTexture, clipSpacePos, P, faceN, N, P_dx, P_dy, sam, decalN);
 
 	half4 decalColor = 0;
+	decalN = 0;
 	const float3 uvw = box_to_uv(clipSpacePos);
 	// the decal's Z in world space is the gradient of its box's z
 	const half facingBlend = GGDecalFacingBlend(decal, (half)dot((float3)faceN, normalize(decalProjection[2].xyz)));
@@ -131,6 +162,13 @@ inline half4 GGDecalColor(in ShaderEntity decal, in float4x4 decalProjection, in
 		const float2 decalDX = mul(P_dx, (float3x3)decalProjection).xy * texMulAdd.xy;
 		const float2 decalDY = mul(P_dy, (float3x3)decalProjection).xy * texMulAdd.xy;
 		decalColor = bindless_textures_half4[descriptor_index(texture)].SampleGrad(sam, mad(uvw.xy, texMulAdd.xy, texMulAdd.zw), decalDX, decalDY);
+		[branch]
+		if (normalTexture >= 0)
+		{
+			// u along the box's x, v against its y (box_to_uv)
+			const half4 normalSample = bindless_textures_half4[descriptor_index(normalTexture)].SampleGrad(sam, mad(uvw.xy, texMulAdd.xy, texMulAdd.zw), decalDX, decalDY);
+			decalN = GGDecalNormalWorld(normalSample, normalize(decalProjection[0].xyz), -normalize(decalProjection[1].xyz), N, decal.GetLength());
+		}
 		decalColor *= decal.GetColor();
 		// blend out if close to cube Z:
 		decalColor.a *= (1 - pow8(saturate(abs((half)clipSpacePos.z)))) * facingBlend;

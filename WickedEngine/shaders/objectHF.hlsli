@@ -1073,6 +1073,13 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 #endif // OBJECTSHADER_USE_TANGENT
 #endif // WATER
 
+#if defined(TILEDFORWARD) && !defined(GG_SUPERQUICK) && !defined(PREPASS) && !defined(WATER)
+	// GG: GameGuru's decals' normal maps (TiledDecals, in the world), laid over the surface's normal and its own bump
+	[branch]
+	if (gg_decal_normal.a > 0)
+		surface.N = normalize(surface.N * (1 - gg_decal_normal.a) + gg_decal_normal.rgb);
+#endif // TILEDFORWARD && !GG_SUPERQUICK && !PREPASS && !WATER
+
 
 	half4 specularMap = 1;
 

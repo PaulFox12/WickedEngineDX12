@@ -6228,6 +6228,7 @@ void UpdatePerFrameData(
 				shaderentity.SetRadius(decal.gg_facing_fade);
 				shaderentity.SetDirection(XMFLOAT3(decal.gg_blend_sharpness, (float)decal.gg_hit_direction, decal.gg_hit_clip));
 				shaderentity.remap = decal.gg_occlusion;
+				shaderentity.SetLength(decal.normal_strength); // its normal map's strength (remap holds the occlusion)
 			}
 			else if (decal.gg_facing >= -1.0f)
 			{
@@ -6236,6 +6237,7 @@ void UpdatePerFrameData(
 				shaderentity.SetConeAngleCos(decal.gg_facing);
 				shaderentity.SetRadius(decal.gg_facing_fade);
 				shaderentity.SetDirection(decal.front);
+				shaderentity.SetLength(decal.normal_strength); // its normal map's strength, as the blast's
 			}
 			else
 			{

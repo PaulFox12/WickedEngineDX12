@@ -649,6 +649,11 @@ inline void TiledLighting(inout Surface surface, inout Lighting lighting, uint f
 
 }
 
+// GG: GameGuru's decals' normal maps, as a world space normal premultiplied by their coverage (in a), from TiledDecals; the
+// object shader lays it over the surface's normal after the surface's own bump (objectHF.hlsli), so it needs no tangents and
+// stands in for the surface's detail under a decal
+static float4 gg_decal_normal = 0;
+
 inline void TiledDecals(inout Surface surface, uint flatTileIndex, inout half4 surfaceMap, SamplerState sam)
 {
 #ifndef DISABLE_DECALS
@@ -708,12 +713,20 @@ inline void TiledDecals(inout Surface surface, uint flatTileIndex, inout half4 s
 			[branch]
 			if (decal.GetFlags() & (ENTITY_FLAG_DECAL_GG_FACING | ENTITY_FLAG_DECAL_GG_BLAST))
 			{
-				const half4 ggColor = GGDecalColor(decal, decalProjection, decalTexture, clipSpacePos, surface.P, surface.facenormal, P_dx, P_dy, sam);
+				float3 ggN;
+				const half4 ggColor = GGDecalColor(decal, decalProjection, decalTexture, decalNormal, clipSpacePos, surface.P, surface.facenormal, surface.N, P_dx, P_dy, sam, ggN);
 				if (ggColor.a > 0)
 				{
 					decalAccumulation.rgb = mad(1 - decalAccumulation.a, ggColor.a * ggColor.rgb, decalAccumulation.rgb);
 					decalAccumulation.a = mad(1 - ggColor.a, decalAccumulation.a, ggColor.a);
 					ggDecalCoverage = mad(1 - ggColor.a, ggDecalCoverage, ggColor.a);
+					// and its normal map's normal, in the world, laid over the surface's after its own bump (gg_decal_normal)
+					[branch]
+					if (any(ggN))
+					{
+						gg_decal_normal.rgb = mad(1 - gg_decal_normal.a, ggColor.a * ggN, gg_decal_normal.rgb);
+						gg_decal_normal.a = mad(1 - ggColor.a, gg_decal_normal.a, ggColor.a);
+					}
 				}
 				continue;
 			}
