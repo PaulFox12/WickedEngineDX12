@@ -34,6 +34,7 @@
     <None Include="$(MSBuildThisFileDirectory)icosphere.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)imageHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)lensrainHF.hlsli" />
+    <None Include="$(MSBuildThisFileDirectory)ggTerrainPaintHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)impostorHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)lightingHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)objectHF.hlsli" />

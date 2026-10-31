@@ -110,6 +110,23 @@ namespace wi::terrain
 	uint32_t gg_BakeMipCount(uint32_t resolution);
 	// GGMAX 3.113: terrain compositor SPLAT blend - weights are averaged, not stacked as opacities.
 	extern bool gg_splat_blend;
+	// GGMAX: GameGuru's painted textures, drawn by the terrain tile shaders from GameGuru's paint map (a value a cell, 0
+	// unpainted) instead of the per-vertex blendmap: a texel blends the 4 x 4 cells round it as GameGuru's DX11 page
+	// shader does, with its painted edge smoothing, softness and breakup (shaders/ggTerrainPaintHF.hlsli). The blendmap
+	// then holds only the height and slope layers, which take the unpainted share. GameGuru sets it each frame; it needs
+	// gg_splat_blend.
+	struct GGPaintBlend
+	{
+		bool enabled = false;
+		const wi::graphics::Texture* paintmap = nullptr;	// R8_UNORM, value / 255: GameGuru's own, read at the dispatch
+		uint32_t map_resolution = 0;
+		float map_scale = 0;			// world x and z to paint map uv: uv = world * map_scale + 0.5 (map row = z)
+		float smoothing = 0;
+		float softness = 0.5f;
+		float breakup = 0;
+		wi::ecs::Entity materials[32] = {};	// the material for paint values 1-32, INVALID_ENTITY for none
+	};
+	extern GGPaintBlend gg_paint_blend;
 	// Frees the shared uncompressed bake scratch - ~340 MB at 8192 with mips, so call it once
 	// the bake has finished rather than leaving it resident.
 	void gg_ReleaseBakeScratch();
@@ -328,6 +345,10 @@ namespace wi::terrain
 		mutable bool gg_page_dirty = true;
 		mutable bool gg_page_upload_pending = false;
 		mutable bool gg_residency_update_pending = false;
+
+		// GGMAX: the chunk's world x and z at uv 0.5 and the world size of uv 0 to 1, for the paint block (gg_paint_blend)
+		XMFLOAT2 gg_origin = XMFLOAT2(0, 0);
+		float gg_size = 0;
 
 		struct AllocationRequest
 		{

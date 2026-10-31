@@ -1,5 +1,6 @@
 #include "globals.hlsli"
 #include "ColorSpaceUtility.hlsli"
+#include "ggTerrainPaintHF.hlsli"
 
 // =============================================================================================
 // GGMAX 3.25 - TERRAIN BAKE, per-chunk basecolour.
@@ -85,14 +86,28 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	const bool gg_splat = (push.gg_tile_share & 1u) != 0;
 	float gg_splat_weight = 0;
 
-	// front-to-back with early exit, like decals - same as the stock tile bake
-	for (int blendmap_index = push.blendmap_layers - 1; blendmap_index >= 0; blendmap_index--)
-	{
-		float weight = blendmap.SampleLevel(sampler_linear_clamp, float3(uv, blendmap_index), 0).r;
-		if (weight == 0)
-			continue;
+	// GGMAX: GameGuru's painted textures from its paint map, as terrainVirtualTextureUpdateCS.hlsl
+	const GGTerrainPaint gg_paint = gg_terrain_paint(blendmap_buffer, push.blendmap_buffer_offset + push.blendmap_layers * sizeof(uint), uv, push.resolution_rcp);
 
-		uint materialIndex = blendmap_buffer.Load(push.blendmap_buffer_offset + blendmap_index * sizeof(uint));
+	// front-to-back with early exit, like decals - same as the stock tile bake
+	for (int blendmap_index = push.blendmap_layers + 3; blendmap_index >= 0; blendmap_index--)
+	{
+		float weight;
+		uint materialIndex;
+		if (blendmap_index >= (int)push.blendmap_layers) // GGMAX: a painted texture
+		{
+			weight = gg_paint.weight[blendmap_index - push.blendmap_layers];
+			if (weight == 0)
+				continue;
+			materialIndex = gg_paint.material[blendmap_index - push.blendmap_layers];
+		}
+		else
+		{
+			weight = blendmap.SampleLevel(sampler_linear_clamp, float3(uv, blendmap_index), 0).r * gg_paint.auto_share;
+			if (weight == 0)
+				continue;
+			materialIndex = blendmap_buffer.Load(push.blendmap_buffer_offset + blendmap_index * sizeof(uint));
+		}
 		ShaderMaterial material = load_material(materialIndex);
 
 		float4 baseColor = material.GetBaseColor();

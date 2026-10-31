@@ -475,6 +475,32 @@ namespace wi::terrain
 	// push.gg_tile_share bit 0): blendmap weights are splat weights summing to 1 and are AVERAGED, instead of
 	// the stock front-to-back opacity stack. GameGuru sets it (its auto-blend writes DX11 splat weights).
 	bool gg_splat_blend = false;
+	GGPaintBlend gg_paint_blend;
+
+	// GGMAX: the paint block the tile shaders read after blendmap_buffer's material table (shaders/ggTerrainPaintHF.hlsli),
+	// for a chunk at origin (world x and z at uv 0.5) whose uv 0 to 1 spans size; all zero (off) without paint
+	static void gg_WritePaintBlock(void* dst, const wi::scene::Scene* scene, const XMFLOAT2& origin, float size)
+	{
+		uint32_t block[GG_TERRAIN_PAINT_BLOCK] = {};
+		const GGPaintBlend& pb = gg_paint_blend;
+		const int srv = (pb.enabled && gg_splat_blend && pb.paintmap != nullptr && pb.paintmap->IsValid()) ? GetDevice()->GetDescriptorIndex(pb.paintmap, SubresourceType::SRV) : -1;
+		if (srv >= 0 && size > 0 && pb.map_resolution > 0 && scene != nullptr)
+		{
+			const float values[7] = { pb.map_scale, origin.x, origin.y, size, pb.smoothing, pb.softness, pb.breakup };
+			block[0] = 1;
+			block[1] = (uint32_t)srv;
+			block[2] = pb.map_resolution;
+			std::memcpy(&block[3], values, sizeof(values));
+			const size_t material_count = scene->materials.GetCount();
+			for (uint32_t i = 0; i < 32; ++i)
+			{
+				const size_t idx = pb.materials[i] == INVALID_ENTITY ? ~0ull : scene->materials.GetIndex(pb.materials[i]);
+				block[10 + i] = idx < material_count ? (uint32_t)idx : 0xFFFFFFFFu;
+			}
+		}
+		std::memcpy(dst, block, sizeof(block)); // memcpy: no uncached read back from a GPU pointer
+	}
+
 	uint32_t gg_terrain_tile_share_mips = 32; // USER-TUNED 2026-07-28: "human scaled" underfoot detail (~4m repeat)
 	// GGMAX 1.53c: hold — delays the halving ladder by this many rungs before it descends from
 	// the cap, pushing the FIRST visible scale cross-fade ~1.4x further out per +1 while the
@@ -2189,6 +2215,8 @@ namespace wi::terrain
 				vt.blendmap = chunk_data.blendmap;
 			}
 
+			vt.gg_origin = XMFLOAT2(chunk_data.position.x, chunk_data.position.z); // GGMAX: for the paint block
+			vt.gg_size = (chunk_width - 1) * chunk_scale;
 			virtual_textures_in_use.push_back(&vt);
 
 			if (vt.residency == nullptr)
@@ -2587,9 +2615,10 @@ namespace wi::terrain
 		// would turn into an out-of-bounds ShaderMaterial read, a garbage texture descriptor and
 		// a GPU page fault. That exact path was the 2.04 Aztec DEVICE_HUNG, so it is clamped here
 		// too rather than assumed impossible on the bake path.
-		auto mem = device->AllocateGPU(sizeof(uint32_t) * push.blendmap_layers, cmd);
+		auto mem = device->AllocateGPU(sizeof(uint32_t) * (push.blendmap_layers + GG_TERRAIN_PAINT_BLOCK), cmd); // GGMAX: + the paint block
 		if (mem.data == nullptr)
 			return false;
+		gg_WritePaintBlock((uint32_t*)mem.data + push.blendmap_layers, scene, XMFLOAT2(chunk_data.position.x, chunk_data.position.z), (chunk_width - 1) * chunk_scale);
 		const uint32_t splineMaterialCount = (uint32_t)splineMaterialEntities.size();
 		const uint32_t baseMaterialCount = (push.blendmap_layers > splineMaterialCount)
 			? (push.blendmap_layers - splineMaterialCount) : 0u;
@@ -2746,7 +2775,8 @@ namespace wi::terrain
 				if (push.blendmap_texture < 0)
 					continue;
 
-				auto mem = device->AllocateGPU(sizeof(uint) * push.blendmap_layers, cmd);
+				auto mem = device->AllocateGPU(sizeof(uint) * (push.blendmap_layers + GG_TERRAIN_PAINT_BLOCK), cmd); // GGMAX: + the paint block
+				gg_WritePaintBlock((uint*)mem.data + push.blendmap_layers, scene, vt->gg_origin, vt->gg_size);
 				const uint splineMaterialCount = (uint)splineMaterialEntities.size();
 				const uint baseMaterialCount = push.blendmap_layers - splineMaterialCount;
 				// GGMAX 2.04: an entity in these lists without a live MaterialComponent makes

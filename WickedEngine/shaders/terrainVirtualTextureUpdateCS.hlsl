@@ -1,6 +1,7 @@
 #include "globals.hlsli"
 #include "BlockCompress.hlsli"
 #include "ColorSpaceUtility.hlsli"
+#include "ggTerrainPaintHF.hlsli"
 
 PUSHCONSTANT(push, TerrainVirtualTexturePush);
 
@@ -111,14 +112,29 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		const bool gg_splat = (push.gg_tile_share & 1u) != 0;
 		float gg_splat_weight = 0;
 
-		// Note: blending is front-to back with early exit like decals
-		for(int blendmap_index = push.blendmap_layers - 1; blendmap_index >= 0; blendmap_index--)
-		{
-			float weight = blendmap.SampleLevel(sampler_linear_clamp, float3(uv, blendmap_index), 0).r;
-			if(weight == 0)
-				continue;
+		// GGMAX: GameGuru's painted textures from its paint map (ggTerrainPaintHF.hlsli), after the blendmap's layers in
+		// the loop; the layers take the unpainted share. Without paint (the block's flag off) the layers' weights are as stock
+		const GGTerrainPaint gg_paint = gg_terrain_paint(blendmap_buffer, push.blendmap_buffer_offset + push.blendmap_layers * sizeof(uint), uv, push.resolution_rcp);
 
-			uint materialIndex = blendmap_buffer.Load(push.blendmap_buffer_offset + blendmap_index * sizeof(uint));
+		// Note: blending is front-to back with early exit like decals
+		for(int blendmap_index = push.blendmap_layers + 3; blendmap_index >= 0; blendmap_index--)
+		{
+			float weight;
+			uint materialIndex;
+			if (blendmap_index >= (int)push.blendmap_layers) // GGMAX: a painted texture
+			{
+				weight = gg_paint.weight[blendmap_index - push.blendmap_layers];
+				if(weight == 0)
+					continue;
+				materialIndex = gg_paint.material[blendmap_index - push.blendmap_layers];
+			}
+			else
+			{
+				weight = blendmap.SampleLevel(sampler_linear_clamp, float3(uv, blendmap_index), 0).r * gg_paint.auto_share;
+				if(weight == 0)
+					continue;
+				materialIndex = blendmap_buffer.Load(push.blendmap_buffer_offset + blendmap_index * sizeof(uint));
+			}
 			ShaderMaterial material = load_material(materialIndex);
 
 #ifdef UPDATE_BASECOLORMAP
