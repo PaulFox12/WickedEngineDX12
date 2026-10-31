@@ -110,6 +110,7 @@ namespace wi
 		rtGUIBlurredBackground[0] = {};
 		rtGUIBlurredBackground[1] = {};
 		rtGUIBlurredBackground[2] = {};
+		for (auto& x : rtLensRainBlur) x = {};
 		rtShadingRate = {};
 		rtFSR[0] = {};
 		rtFSR[1] = {};
@@ -339,6 +340,24 @@ namespace wi
 			device->SetName(&rtGUIBlurredBackground[1], "rtGUIBlurredBackground[1]");
 			device->CreateTexture(&desc, nullptr, &rtGUIBlurredBackground[2]);
 			device->SetName(&rtGUIBlurredBackground[2], "rtGUIBlurredBackground[2]");
+		}
+		{
+			// GG: the lens rain's fog, made here so nothing is created during play
+			TextureDesc desc;
+			desc.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+			desc.format = Format::R10G10B10A2_UNORM;
+			desc.width = std::max(1u, internalResolution.x / 4);
+			desc.height = std::max(1u, internalResolution.y / 4);
+			device->CreateTexture(&desc, nullptr, &rtLensRainBlur[0]);
+			device->SetName(&rtLensRainBlur[0], "rtLensRainBlur[0]");
+			device->CreateTexture(&desc, nullptr, &rtLensRainBlur[1]);
+			device->SetName(&rtLensRainBlur[1], "rtLensRainBlur[1]");
+			desc.width = std::max(1u, desc.width / 4);
+			desc.height = std::max(1u, desc.height / 4);
+			device->CreateTexture(&desc, nullptr, &rtLensRainBlur[2]);
+			device->SetName(&rtLensRainBlur[2], "rtLensRainBlur[2]");
+			device->CreateTexture(&desc, nullptr, &rtLensRainBlur[3]);
+			device->SetName(&rtLensRainBlur[3], "rtLensRainBlur[3]");
 		}
 		if (device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2) &&
 			wi::renderer::GetVariableRateShadingClassification())
@@ -3055,7 +3074,18 @@ namespace wi
 			// rain on the lens: after the grade and the heat haze's distortion, before the FXAA, under every sprite
 			if (getLensRainAmount() > 0)
 			{
-				wi::renderer::Postprocess_LensRain(*rt_read, *rt_write, cmd,
+				// the fog between the drops: the image blurred at a quarter and a sixteenth of its size
+				const bool fog = getLensRainFog() > 0 && rtLensRainBlur[3].IsValid();
+				if (fog)
+				{
+					device->EventBegin("Lens Rain Fog", cmd);
+					wi::renderer::Postprocess_Downsample4x(*rt_read, rtLensRainBlur[0], cmd);
+					wi::renderer::Postprocess_Blur_Gaussian(rtLensRainBlur[0], rtLensRainBlur[1], rtLensRainBlur[0], cmd, -1, -1, true);
+					wi::renderer::Postprocess_Downsample4x(rtLensRainBlur[0], rtLensRainBlur[2], cmd);
+					wi::renderer::Postprocess_Blur_Gaussian(rtLensRainBlur[2], rtLensRainBlur[3], rtLensRainBlur[2], cmd, -1, -1, true);
+					device->EventEnd(cmd);
+				}
+				wi::renderer::Postprocess_LensRain(*rt_read, fog ? rtLensRainBlur[0] : *rt_read, fog ? rtLensRainBlur[2] : *rt_read, *rt_write, cmd,
 					XMFLOAT4(getLensRainAmount(), getLensRainSize(), getLensRainFlow().x, getLensRainFlow().y),
 					XMFLOAT4(getLensRainSlide(), getLensRainRefraction(), getLensRainFog(), lensRainTime));
 

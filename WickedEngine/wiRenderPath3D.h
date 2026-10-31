@@ -153,6 +153,7 @@ namespace wi
 		wi::graphics::Texture rtSun[3]; // 0: sun render target used for lightshafts (can be MSAA), 1: radial blurred lightshafts
 		wi::graphics::Texture rtSun_resolved; // sun render target, but the resolved version if MSAA is enabled
 		wi::graphics::Texture rtGUIBlurredBackground[3];	// downsampled, gaussian blurred scene for GUI
+		wi::graphics::Texture rtLensRainBlur[4];	// GG: the lens rain's fog: a quarter size blurred copy of the image and its temp, then a sixteenth size one
 		wi::graphics::Texture rtShadingRate; // UINT8 shading rate per tile
 		wi::graphics::Texture rtFSR[2]; // FSR upscaling result (full resolution LDR)
 		wi::graphics::Texture rtOutlineSource; // linear depth but only the regions which have outline stencil

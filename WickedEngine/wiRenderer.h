@@ -1071,9 +1071,11 @@ namespace wi::renderer
 		float amount = 1.0f
 	);
 	// GG: rain on the lens, drawn after the tone map (lensrainCS.hlsl): params0 amount, drop size, flow x and y; params1
-	// slide, refraction, fog, time
+	// slide, refraction, fog, time; the fog reads the image blurred a little (blurNear) and much (blurFar)
 	void Postprocess_LensRain(
 		const wi::graphics::Texture& input,
+		const wi::graphics::Texture& blurNear,
+		const wi::graphics::Texture& blurFar,
 		const wi::graphics::Texture& output,
 		wi::graphics::CommandList cmd,
 		const XMFLOAT4& params0,
