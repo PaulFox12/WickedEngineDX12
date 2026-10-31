@@ -33,6 +33,7 @@
     <None Include="$(MSBuildThisFileDirectory)hairparticleHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)icosphere.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)imageHF.hlsli" />
+    <None Include="$(MSBuildThisFileDirectory)lensrainHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)impostorHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)lightingHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)objectHF.hlsli" />
@@ -112,6 +113,16 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">Compute</ShaderType>
     </FxCompile>
     <FxCompile Include="$(MSBuildThisFileDirectory)ssflare_combineCS.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|ARM'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|ARM'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)lensrainCS.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>

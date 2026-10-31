@@ -52,6 +52,16 @@ namespace wi
 		bool screenLensFlareNoSky = true;
 		float screenLensFlareCap = 200.0f;
 		bool screenLensFlareFollowBloom = false; // the bloom's threshold and cap in place of its own
+		// rain on the lens after the tone map (Postprocess_LensRain), off at amount 0; its clock runs in Update and holds
+		// while paused
+		float lensRainAmount = 0.0f;
+		float lensRainSize = 0.03f;
+		XMFLOAT2 lensRainFlow = XMFLOAT2(0.0f, 0.1f);
+		float lensRainSlide = 0.3f;
+		float lensRainRefraction = 0.5f;
+		float lensRainFog = 0.0f;
+		float lensRainTime = 0.0f;
+		bool lensRainPaused = false;
 		float motionBlurStrength = 100.0f;
 		float dofStrength = 10.0f;
 		float sharpenFilterAmount = 0.28f;
@@ -269,6 +279,13 @@ namespace wi
 		constexpr bool getScreenLensFlareNoSky() const { return screenLensFlareNoSky; }
 		constexpr float getScreenLensFlareCap() const { return screenLensFlareCap; }
 		constexpr bool getScreenLensFlareFollowBloom() const { return screenLensFlareFollowBloom; }
+		constexpr float getLensRainAmount() const { return lensRainAmount; }
+		constexpr float getLensRainSize() const { return lensRainSize; }
+		constexpr XMFLOAT2 getLensRainFlow() const { return lensRainFlow; }
+		constexpr float getLensRainSlide() const { return lensRainSlide; }
+		constexpr float getLensRainRefraction() const { return lensRainRefraction; }
+		constexpr float getLensRainFog() const { return lensRainFog; }
+		constexpr bool getLensRainPaused() const { return lensRainPaused; }
 		constexpr float getMotionBlurStrength() const { return motionBlurStrength; }
 		constexpr float getDepthOfFieldStrength() const { return dofStrength; }
 		constexpr float getSharpenFilterAmount() const { return sharpenFilterAmount; }
@@ -339,6 +356,13 @@ namespace wi
 		constexpr void setScreenLensFlareNoSky(bool value) { screenLensFlareNoSky = value; }
 		constexpr void setScreenLensFlareCap(float value) { screenLensFlareCap = value; }
 		constexpr void setScreenLensFlareFollowBloom(bool value) { screenLensFlareFollowBloom = value; }
+		constexpr void setLensRainAmount(float value) { lensRainAmount = value; }
+		constexpr void setLensRainSize(float value) { lensRainSize = value; }
+		constexpr void setLensRainFlow(XMFLOAT2 value) { lensRainFlow = value; }
+		constexpr void setLensRainSlide(float value) { lensRainSlide = value; }
+		constexpr void setLensRainRefraction(float value) { lensRainRefraction = value; }
+		constexpr void setLensRainFog(float value) { lensRainFog = value; }
+		constexpr void setLensRainPaused(bool value) { lensRainPaused = value; }
 		constexpr void setMotionBlurStrength(float value) { motionBlurStrength = value; }
 		constexpr void setDepthOfFieldStrength(float value) { dofStrength = value; }
 		constexpr void setSharpenFilterAmount(float value) { sharpenFilterAmount = value; }

@@ -451,6 +451,10 @@ namespace wi
 
 		RenderPath2D::Update(dt);
 
+		// the lens rain's clock, wrapped long before a float loses the drops' timing
+		if (!lensRainPaused)
+			lensRainTime = std::fmod(lensRainTime + dt, 10000.0f);
+
 		wi::renderer::SetShadowsEnabled(getShadowsEnabled());
 
 		const bool hw_raytrace = device->CheckCapability(GraphicsDeviceCapability::RAYTRACING);
@@ -3044,6 +3048,16 @@ namespace wi
 			if (getSharpenFilterEnabled())
 			{
 				wi::renderer::Postprocess_Sharpen(*rt_read, *rt_write, cmd, getSharpenFilterAmount());
+
+				std::swap(rt_read, rt_write);
+			}
+
+			// rain on the lens: after the grade and the heat haze's distortion, before the FXAA, under every sprite
+			if (getLensRainAmount() > 0)
+			{
+				wi::renderer::Postprocess_LensRain(*rt_read, *rt_write, cmd,
+					XMFLOAT4(getLensRainAmount(), getLensRainSize(), getLensRainFlow().x, getLensRainFlow().y),
+					XMFLOAT4(getLensRainSlide(), getLensRainRefraction(), getLensRainFog(), lensRainTime));
 
 				std::swap(rt_read, rt_write);
 			}

@@ -99,6 +99,9 @@
     <None Include="$(MSBuildThisFileDirectory)imageHF.hlsli">
       <Filter>HF</Filter>
     </None>
+    <None Include="$(MSBuildThisFileDirectory)lensrainHF.hlsli">
+      <Filter>HF</Filter>
+    </None>
     <None Include="$(MSBuildThisFileDirectory)fxaa.hlsli">
       <Filter>HF</Filter>
     </None>
@@ -210,6 +213,9 @@
       <Filter>CS</Filter>
     </FxCompile>
     <FxCompile Include="$(MSBuildThisFileDirectory)ssflare_combineCS.hlsl">
+      <Filter>CS</Filter>
+    </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)lensrainCS.hlsl">
       <Filter>CS</Filter>
     </FxCompile>
     <FxCompile Include="$(MSBuildThisFileDirectory)depthoffield_mainCS.hlsl">
