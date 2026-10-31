@@ -3134,6 +3134,20 @@ namespace wi::terrain
 			shader_terrain.gg_dry_boxes = std::min(pb.dry_boxes, 8u);
 		}
 
+		// GGMAX: GameGuru's Steep Rock, with its material's index (none, or one without a live material: off)
+		const size_t gg_rock_index = (pb.rock_material != INVALID_ENTITY && scene != nullptr) ? scene->materials.GetIndex(pb.rock_material) : ~0ull;
+		if (pb.rock_strength > 0 && scene != nullptr && gg_rock_index < scene->materials.GetCount() && pb.rock_tile > 0)
+		{
+			shader_terrain.gg_rock_material = (uint)gg_rock_index;
+			shader_terrain.gg_rock_strength = std::min(pb.rock_strength, 1.0f);
+			shader_terrain.gg_rock_start = pb.rock_start;
+			shader_terrain.gg_rock_transition = 1.0f / std::max(pb.rock_end - pb.rock_start, 0.001f);
+			shader_terrain.gg_rock_scale = 1.0f / pb.rock_tile;
+			shader_terrain.gg_rock_breakup = pb.rock_breakup;
+			shader_terrain.gg_rock_variation = pb.rock_variation;
+			shader_terrain.gg_bumpiness = pb.bumpiness;
+		}
+
 		return shader_terrain;
 	}
 

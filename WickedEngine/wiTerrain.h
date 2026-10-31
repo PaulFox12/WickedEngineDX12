@@ -143,6 +143,18 @@ namespace wi::terrain
 		XMFLOAT3 dry_min[8] = {};
 		XMFLOAT3 dry_max[8] = {};
 		uint32_t wet_version = 0;
+
+		// GameGuru's Steep Rock (the level's DX11 keys), drawn on the chunks by the object shader (ggTerrainRockHF.hlsli):
+		// the rock texture's material, strength (0 off), the slope where it starts and ends, the tile size in world units,
+		// edge breakup and variation (0-1), the level's bumpiness
+		wi::ecs::Entity rock_material = wi::ecs::INVALID_ENTITY;
+		float rock_strength = 0;
+		float rock_start = 0.3f;
+		float rock_end = 0.5f;
+		float rock_tile = 1181.1f;
+		float rock_breakup = 0.5f;
+		float rock_variation = 0.6f;
+		float bumpiness = 1;
 	};
 	extern GGPaintBlend gg_paint_blend;
 	// Frees the shared uncompressed bake scratch - ~340 MB at 8192 with mips, so call it once

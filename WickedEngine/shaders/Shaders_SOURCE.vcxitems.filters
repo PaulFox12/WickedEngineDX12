@@ -105,6 +105,9 @@
     <None Include="$(MSBuildThisFileDirectory)ggTerrainPaintHF.hlsli">
       <Filter>HF</Filter>
     </None>
+    <None Include="$(MSBuildThisFileDirectory)ggTerrainRockHF.hlsli">
+      <Filter>HF</Filter>
+    </None>
     <None Include="$(MSBuildThisFileDirectory)fxaa.hlsli">
       <Filter>HF</Filter>
     </None>

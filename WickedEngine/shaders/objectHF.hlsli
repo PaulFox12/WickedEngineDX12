@@ -96,6 +96,7 @@
 #include "ShaderInterop_SurfelGI.h"
 #include "ShaderInterop_DDGI.h"
 #include "shadingHF.hlsli"
+#include "ggTerrainRockHF.hlsli" // GGMAX: Steep Rock on the terrain's chunks
 
 // DEFINITIONS
 //////////////////
@@ -1125,6 +1126,18 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	surfaceMap = half4(1, 1, 0, 0);
 	specularMap = 1;
 #endif // GG_SUPERQUICK
+
+	// GGMAX: GameGuru's Steep Rock on the terrain's chunks (ggTerrainRockHF.hlsli): a texture laid on steep slopes from
+	// the sides, over the base colour, surface map and normal the virtual texture gave, before the surface is made
+#if defined(OBJECTSHADER_USE_NORMAL) && !defined(PREPASS) && !defined(GG_SUPERQUICK)
+	{
+		const float3 gg_dPdx = ddx(surface.P);
+		const float3 gg_dPdy = ddy(surface.P);
+		[branch]
+		if (GetScene().terrain.gg_rock_strength > 0 && material.IsGGTerrain())
+			gg_terrain_rock(GetScene().terrain, sampler_objectshader, surface.P, input.nor, gg_dPdx, gg_dPdy, surface.N, surface.baseColor, surfaceMap);
+	}
+#endif // OBJECTSHADER_USE_NORMAL && !PREPASS && !GG_SUPERQUICK
 
 	surface.create(material, surface.baseColor, surfaceMap, specularMap);
 

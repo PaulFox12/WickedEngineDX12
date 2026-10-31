@@ -36,6 +36,18 @@ struct alignas(16) ShaderTerrain
 	uint gg_dry_boxes;
 	float2 gg_padding;
 
+	// GGMAX: GameGuru's Steep Rock on the chunks (ggTerrainRockHF.hlsli): the rock material, how strong (0 off), the slope
+	// where it starts and 1 / its width, 1 / the tile size, the edge breakup, the two-size variation, the level's bumpiness
+	uint gg_rock_material;
+	float gg_rock_strength;
+	float gg_rock_start;
+	float gg_rock_transition;
+
+	float gg_rock_scale;
+	float gg_rock_breakup;
+	float gg_rock_variation;
+	float gg_bumpiness;
+
 	void init()
 	{
 		center_chunk_pos = float3(0, 0, 0);
@@ -49,6 +61,14 @@ struct alignas(16) ShaderTerrain
 		gg_wet_buffer = -1;
 		gg_dry_boxes = 0;
 		gg_padding = float2(0, 0);
+		gg_rock_material = 0;
+		gg_rock_strength = 0;
+		gg_rock_start = 0;
+		gg_rock_transition = 0;
+		gg_rock_scale = 0;
+		gg_rock_breakup = 0;
+		gg_rock_variation = 0;
+		gg_bumpiness = 1;
 	}
 };
 
