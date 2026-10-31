@@ -28,12 +28,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	rain.fog = postprocess.params1.z;
 	rain.time = postprocess.params1.w;
 
-	const LensRainWater water = LensRain_Water(float2(uv.x * aspect, uv.y), rain);
+	const LensRainWater water = LensRain_Water(float2(uv.x * aspect, uv.y), rain, postprocess.resolution_rcp.y);
 
 	// there is a drop where the surface is above 0.3; inside it the view is read moved against each drop's slope times its
-	// size, so it is turned over and wide, and toward the edge the move fades back to nothing, which draws the outline
+	// size, so it is turned over and wide, and toward the edge the move fades back to nothing, which draws the outline. The
+	// drops are out of focus, as water on a lens is while the eye looks past it: a soft edge, the view through them blurred,
+	// a dim highlight, and over the scene at partial strength
 	const float t = saturate((water.height - 0.3) / 0.5);
-	const float inside = smoothstep(0.0, 0.4, t) * saturate(rain.amount * 4.0);
+	const float inside = smoothstep(0.0, 0.7, t) * saturate(rain.amount * 4.0);
 	const float2 offset = -water.lens * (0.5 + rain.refraction * 2.5) * inside;
 	const float rim = inside * (1 - inside) * 4.0;
 
@@ -51,15 +53,24 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	}
 	if (inside > 0)
 	{
+		// the view through the drop, blurred: a ring of eight reads round the moved point and the point itself
 		const float2 at = uv + float2(offset.x / aspect, offset.y);
+		const float blur = 0.1 * rain.size;
 		float3 through = input.SampleLevel(sampler_linear_clamp, at, 0).rgb;
+		[unroll]
+		for (int i = 0; i < 8; ++i)
+		{
+			const float a = i * 0.785398 + 0.392699;
+			through += input.SampleLevel(sampler_linear_clamp, at + float2(cos(a) / aspect, sin(a)) * blur, 0).rgb;
+		}
+		through /= 9.0;
 		if (rain.fog > 0)
 			through = lerp(through, blurNear.SampleLevel(sampler_linear_clamp, at, 0).rgb, rain.fog * 0.35);
-		// a little brighter as a drop gathers light, a little darker in the band of its outline, and a small highlight
-		// from above on the water's slope
+		// a little brighter as a drop gathers light, a little darker in the band of its outline, and a dim highlight from
+		// above on the water's slope
 		const float3 n = normalize(float3(-water.slope * rain.size * 0.08, 1.0));
-		const float spec = pow(saturate(dot(n, float3(-0.32, -0.7, 0.64))), 30.0) * inside;
-		color.rgb = through * (1.0 + 0.06 * inside - 0.3 * rim) + spec * 0.4;
+		const float spec = pow(saturate(dot(n, float3(-0.32, -0.7, 0.64))), 12.0) * inside;
+		color.rgb = lerp(color.rgb, through * (1.0 + 0.04 * inside - 0.2 * rim) + spec * 0.2, inside * 0.85);
 	}
 
 	output[DTid.xy] = color;

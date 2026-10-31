@@ -4,7 +4,7 @@
 // water surface, so drops that touch merge into one with an uneven outline; there is water where the surface is high
 // enough, and through it the view is read moved by each drop's slope times its size, so every drop, large or small,
 // shows a wide view of what is behind it turned over, and the move fading out toward its edge draws the outline.
-// Droplets of two sizes land, sit and dry; drops in columns laid along the flow stick and slip down the glass, leaving
+// Droplets land, sit and dry; drops in columns laid along the flow stick and slip down the glass, leaving
 // droplets that stay where they fell, a thin film along their path and a trail through the fog. Positions are in screen
 // heights (across times the aspect ratio), so drops are round at any aspect.
 
@@ -26,6 +26,7 @@ struct LensRainWater
 	float2 lens;		// each drop's slope times its size, in screen heights: how far it moves the view, the same for a
 						// drop of any size at the same place in it, so every drop shows the same wide view turned over
 	float trail;		// how clear of fog the glass is where drops have run, 0-1
+	float minRadius;	// the smallest drop drawn, in screen heights: a few pixels' drops read as dithering
 	float2 film;		// the slope of the thin film a running drop leaves on its path, which bends the view a little
 };
 
@@ -50,6 +51,8 @@ float4 LensRain_Random(int2 cell, uint seed)
 // from the drop's centre to the pixel in screen heights; height its peak
 void LensRain_Bump(float2 v, float2 xAxis, float2 yAxis, float2 radius, float height, inout LensRainWater water)
 {
+	// a drop near the smallest drawn fades out as it shrinks toward it
+	height *= saturate(min(radius.x, radius.y) / water.minRadius - 1.0);
 	const float2 q = float2(dot(v, xAxis), dot(v, yAxis)) / radius;
 	const float l2 = dot(q, q);
 	if (l2 >= 1 || height <= 0)
@@ -152,8 +155,9 @@ void LensRain_Runs(float2 p, LensRainParams rain, float scale, float density, ui
 	}
 }
 
-// all the water over the point p (screen heights)
-LensRainWater LensRain_Water(float2 p, LensRainParams rain)
+// all the water over the point p (screen heights); pixel: a pixel's height in screen heights. No drop under three pixels
+// across is drawn (the user: the smallest "read as dithering")
+LensRainWater LensRain_Water(float2 p, LensRainParams rain, float pixel)
 {
 	LensRainWater water;
 	water.height = 0;
@@ -161,10 +165,10 @@ LensRainWater LensRain_Water(float2 p, LensRainParams rain)
 	water.lens = 0;
 	water.trail = 0;
 	water.film = 0;
+	water.minRadius = 1.5 * pixel;
 	const float beads = rain.amount * (1.0 - 0.4 * rain.slide);
 	const float runs = rain.amount * rain.slide;
-	LensRain_Droplets(p, rain, 0.35, beads * 0.9, 101u, water);
-	LensRain_Droplets(p, rain, 0.8, beads * 0.45, 211u, water);
+	LensRain_Droplets(p, rain, 0.8, beads * 0.55, 211u, water);
 	LensRain_Runs(p, rain, 1.0, runs * 1.6, 307u, water);
 	LensRain_Runs(p + float2(0.37, 0.11) * rain.size, rain, 0.6, runs * 1.2, 401u, water);
 	return water;
