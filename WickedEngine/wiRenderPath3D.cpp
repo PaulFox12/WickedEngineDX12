@@ -468,7 +468,11 @@ namespace wi
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();
 
+		// GG: the 2D update and the scene update in ranges of their own (the DX11 branch's WK 276a4eb), so a slow
+		// "Update - Wicked" frame names its part; the scene update's stages have Lee's ranges inside
+		auto gg_range_2d = wi::profiler::BeginRangeCPU("RP3D-2D Update");
 		RenderPath2D::Update(dt);
+		wi::profiler::EndRange(gg_range_2d);
 
 		// the lens rain's clock, wrapped long before a float loses the drops' timing
 		if (!lensRainPaused)
@@ -490,7 +494,9 @@ namespace wi
 				scene->SetAccelerationStructureUpdateRequested(true);
 			}
 			scene->camera = *camera;
+			auto gg_range_scene = wi::profiler::BeginRangeCPU("RP3D-Scene Update");
 			scene->Update(dt * wi::renderer::GetGameSpeed());
+			wi::profiler::EndRange(gg_range_scene);
 		}
 	}
 
