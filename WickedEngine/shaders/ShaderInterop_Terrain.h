@@ -48,6 +48,17 @@ struct alignas(16) ShaderTerrain
 	float gg_rock_variation;
 	float gg_bumpiness;
 
+	// GGMAX: GameGuru's height rings round the player (the 512 x 512 texture array its DX11 terrain draws from, one ring a
+	// slice, the finest every gg_ring_seg0 units and each next twice that), for the terrain's tessellated chunks
+	// (objectHF_tessellation.hlsli): their new vertices take the finest ring's height, so the drawn ground follows the data
+	// physics and GetTerrainHeight read. -1 none; gg_tess_k sets the sub-triangle size (distance / k, not below a ring step)
+	int gg_rings;
+	uint gg_ring_count;
+	float gg_ring_seg0;
+	float gg_tess_k;
+
+	float4 gg_ring_centers[5];	// the rings' centres, x and z, two rings to a float4
+
 	void init()
 	{
 		center_chunk_pos = float3(0, 0, 0);
@@ -69,6 +80,14 @@ struct alignas(16) ShaderTerrain
 		gg_rock_breakup = 0;
 		gg_rock_variation = 0;
 		gg_bumpiness = 1;
+		gg_rings = -1;
+		gg_ring_count = 0;
+		gg_ring_seg0 = 0;
+		gg_tess_k = 0;
+		for (int i = 0; i < 5; ++i)
+		{
+			gg_ring_centers[i] = float4(0, 0, 0, 0);
+		}
 	}
 };
 

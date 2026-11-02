@@ -14,6 +14,50 @@ struct ConstantOutput
 	float3 b111 : CENTER;
 };
 
+// GGMAX: GameGuru's terrain, tessellated (a GameGuru terrain material, ShaderTerrain gg_rings): the chunk's triangles cut
+// finer near the camera (sub-triangles distance / gg_tess_k across, not below the finest ring's step) and each new vertex
+// put at the height of GameGuru's height rings round the player, the same data its DX11 terrain draws and physics and
+// GetTerrainHeight read; flat between the chunk's vertices otherwise, where Wicked's own path curves them (PN triangles).
+// A shared edge is cut the same in both triangles (its length and midpoint), and every vertex takes one height, so no cracks
+inline bool gg_terrain_tessellated()
+{
+	return GetMaterial().IsGGTerrain() && GetScene().terrain.gg_rings >= 0;
+}
+
+// the finest ring holding the point (a few texels in from its edge): its height there, and the normal from the heights a
+// ring step either side; false outside every ring. Each ring's texel (column, row) is the vertex at x = left + column * step,
+// z = far - row * step (GameGuru stores a ring's rows from its far z edge)
+bool gg_ring_height(float2 p, out float height, out float3 normal)
+{
+	height = 0;
+	normal = float3(0, 1, 0);
+	const ShaderTerrain t = GetScene().terrain;
+	Texture2DArray rings = bindless_textures2DArray[descriptor_index(t.gg_rings)];
+	float res, res_h, slices;
+	rings.GetDimensions(res, res_h, slices);
+	float step = t.gg_ring_seg0;
+	for (uint ring = 0; ring < t.gg_ring_count; ++ring, step *= 2)
+	{
+		const float4 pair = t.gg_ring_centers[ring >> 1];
+		const float2 c = (ring & 1) ? pair.zw : pair.xy;
+		const float half_size = res * 0.5 * step;
+		const float tx = (p.x - (c.x - half_size)) / step;
+		const float tz = (p.y - (c.y - half_size)) / step;
+		if (tx < 2 || tx > res - 3 || tz < 3 || tz > res - 2)
+			continue;
+		const float2 uv = float2(tx + 0.5, res - tz + 0.5) / res;
+		const float d = 1.0 / res;
+		height = rings.SampleLevel(sampler_linear_clamp, float3(uv, ring), 0).r;
+		const float hxm = rings.SampleLevel(sampler_linear_clamp, float3(uv - float2(d, 0), ring), 0).r;
+		const float hxp = rings.SampleLevel(sampler_linear_clamp, float3(uv + float2(d, 0), ring), 0).r;
+		const float hzp = rings.SampleLevel(sampler_linear_clamp, float3(uv - float2(0, d), ring), 0).r;
+		const float hzm = rings.SampleLevel(sampler_linear_clamp, float3(uv + float2(0, d), ring), 0).r;
+		normal = normalize(float3(hxm - hxp, 2 * step, hzm - hzp));
+		return true;
+	}
+	return false;
+}
+
 #ifdef OBJECTSHADER_COMPILE_HS
 
 ConstantOutput PatchConstantFunction(InputPatch<PixelInput, 3> patch)
@@ -21,6 +65,7 @@ ConstantOutput PatchConstantFunction(InputPatch<PixelInput, 3> patch)
 	ConstantOutput output;
 
 	// tessellation strength based on distance and orientation:
+	const bool gg_terrain = gg_terrain_tessellated(); // GGMAX
 	[unroll]
 	for (uint ie = 0; ie < 3; ++ie)
 	{
@@ -29,6 +74,15 @@ ConstantOutput PatchConstantFunction(InputPatch<PixelInput, 3> patch)
 #else
 		float3 edge = patch[(ie + 1) % 3].pos.xyz - patch[ie].pos.xyz;
 		float3 vec = (patch[(ie + 1) % 3].pos.xyz + patch[ie].pos.xyz) / 2 - GetCamera().position.xyz;
+		[branch]
+		if (gg_terrain)
+		{
+			// GGMAX: sub-triangles distance / k across, not below the finest ring's step
+			const ShaderTerrain gg_t = GetScene().terrain;
+			const float target = max(gg_t.gg_ring_seg0, length(vec) / max(gg_t.gg_tess_k, 1.0));
+			output.edges[(ie + 1) % 3] = clamp(length(edge) / target, 1, 64);
+			continue;
+		}
 		float len = sqrt(dot(edge, edge) / dot(vec, vec));
 		output.edges[(ie + 1) % 3] = max(1, len * GetMesh().tessellation_factor);
 #endif
@@ -37,7 +91,7 @@ ConstantOutput PatchConstantFunction(InputPatch<PixelInput, 3> patch)
 
 #if 1
 	// frustum culling:
-	float rad = GetMaterial().GetDisplacement();
+	float rad = gg_terrain ? 200.0 : GetMaterial().GetDisplacement(); // GGMAX: the rings' heights stray from the chunk's triangle
 	int culled[4];
 	[unroll]
 	for (int ip = 0; ip < 4; ++ip)
@@ -147,6 +201,22 @@ PixelInput main(ConstantOutput input, float3 uvw : SV_DomainLocation, const Outp
 #endif // OBJECTSHADER_USE_UVSETS
 #endif // OBJECTSHADER_USE_NORMAL
 
+
+	// GGMAX: GameGuru's terrain: flat across the chunk's triangle, then the height (and normal) of its height rings
+	[branch]
+	if (gg_terrain_tessellated())
+	{
+		output.pos.xyz = patch[0].pos.xyz * w + patch[1].pos.xyz * u + patch[2].pos.xyz * v;
+		float gg_height;
+		float3 gg_normal;
+		if (gg_ring_height(output.pos.xz, gg_height, gg_normal))
+		{
+			output.pos.y = gg_height;
+#ifdef OBJECTSHADER_USE_NORMAL
+			output.nor = gg_normal;
+#endif // OBJECTSHADER_USE_NORMAL
+		}
+	}
 
 #ifdef OBJECTSHADER_USE_CLIPPLANE
 	output.clip = dot(output.pos, GetCamera().clip_plane);

@@ -155,6 +155,17 @@ namespace wi::terrain
 		float rock_breakup = 0.5f;
 		float rock_variation = 0.6f;
 		float bumpiness = 1;
+
+		// GameGuru's height rings round the player for the tessellated chunks (ShaderTerrain gg_rings): the texture array
+		// (R32_FLOAT, ring_resolution a side, one ring a slice), the finest ring's spacing (each next doubles), each ring's
+		// centre; tessellate: the chunks are drawn tessellated (their meshes' tessellation factor), tess_k the sub-triangle
+		// size (distance / k, not below a ring step)
+		bool tessellate = false;
+		const wi::graphics::Texture* rings = nullptr;
+		uint32_t ring_count = 0;
+		float ring_seg0 = 0;
+		float ring_centers[10][2] = {};
+		float tess_k = 256;
 	};
 	extern GGPaintBlend gg_paint_blend;
 	// Frees the shared uncompressed bake scratch - ~340 MB at 8192 with mips, so call it once

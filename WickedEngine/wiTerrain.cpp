@@ -1302,6 +1302,7 @@ namespace wi::terrain
 
 					MeshComponent& mesh = generator->scene.meshes.Create(chunk_data.entity);
 					mesh.SetQuantizedPositionsDisabled(true); // connecting meshes quantization is not correct because mismatching AABBs
+					mesh.tessellationFactor = gg_paint_blend.tessellate ? 1.0f : 0.0f; // GGMAX: tessellated to GameGuru's height rings
 					object.meshID = chunk_data.entity;
 					mesh.indices = chunk_indices().indices;
 					for (auto& lod : chunk_indices().lods)
@@ -3146,6 +3147,20 @@ namespace wi::terrain
 			shader_terrain.gg_rock_breakup = pb.rock_breakup;
 			shader_terrain.gg_rock_variation = pb.rock_variation;
 			shader_terrain.gg_bumpiness = pb.bumpiness;
+		}
+
+		// GGMAX: GameGuru's height rings for the tessellated chunks
+		const int gg_rings_srv = (pb.tessellate && pb.rings != nullptr && pb.rings->IsValid()) ? device->GetDescriptorIndex(pb.rings, SubresourceType::SRV) : -1;
+		if (gg_rings_srv >= 0 && pb.ring_count > 0 && pb.ring_seg0 > 0)
+		{
+			shader_terrain.gg_rings = gg_rings_srv;
+			shader_terrain.gg_ring_count = std::min(pb.ring_count, 10u);
+			shader_terrain.gg_ring_seg0 = pb.ring_seg0;
+			shader_terrain.gg_tess_k = pb.tess_k;
+			for (uint32_t i = 0; i < 5; ++i)
+			{
+				shader_terrain.gg_ring_centers[i] = XMFLOAT4(pb.ring_centers[i * 2][0], pb.ring_centers[i * 2][1], pb.ring_centers[i * 2 + 1][0], pb.ring_centers[i * 2 + 1][1]);
+			}
 		}
 
 		return shader_terrain;

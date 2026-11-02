@@ -4051,6 +4051,11 @@ int gg_dbg_watch_mesh = -1;
 std::atomic<uint32_t> gg_dbg_watch_batches[RENDERPASS_COUNT] = {};   // batch_flush reached for this mesh
 std::atomic<uint32_t> gg_dbg_watch_instances[RENDERPASS_COUNT] = {}; // instances in those batches
 std::atomic<uint32_t> gg_dbg_watch_nobuffer[RENDERPASS_COUNT] = {};  // bailed: mesh generalBuffer invalid
+// GGMAX: the terrain's tessellation (harness SET_TERRAINTESS reads them): draws of meshes with a tessellation factor, of
+// those asking for the tessellator in this pass, and of those that got a pipeline (running totals)
+std::atomic<uint32_t> gg_dbg_tess_meshes{ 0 };
+std::atomic<uint32_t> gg_dbg_tess_requested[RENDERPASS_COUNT] = {};
+std::atomic<uint32_t> gg_dbg_tess_drawn[RENDERPASS_COUNT] = {};
 std::atomic<uint32_t> gg_dbg_watch_subsets[RENDERPASS_COUNT] = {};   // subsets considered
 std::atomic<uint32_t> gg_dbg_watch_nofilter[RENDERPASS_COUNT] = {};  // subset rejected by filter mask
 std::atomic<uint32_t> gg_dbg_watch_nopso[RENDERPASS_COUNT] = {};     // skipped: PSO null/invalid
@@ -4171,6 +4176,8 @@ void RenderMeshes(
 
 		const float tessF = mesh.GetTessellationFactor();
 		const bool tessellatorRequested = tessF > 0 && tessellation;
+		if (tessF > 0) gg_dbg_tess_meshes.fetch_add(1, std::memory_order_relaxed); // GGMAX: the terrain's tessellation, counted
+		if (tessellatorRequested) gg_dbg_tess_requested[renderPass].fetch_add(1, std::memory_order_relaxed);
 		const bool meshShaderRequested = !tessellatorRequested && mesh_shader && mesh.vb_clu.IsValid();
 		const bool wireframe = wireframe_overlay || (IsWireRender() && GetWireframeMode() != WIREFRAME_OVERLAY);
 
@@ -4494,6 +4501,7 @@ void RenderMeshes(
 				if (ggWatch) gg_dbg_watch_nopso[renderPass].fetch_add(1, std::memory_order_relaxed);
 				continue; // This can happen if the pipeline compilation was not completed for this draw yet
 			}
+			if (tessellatorRequested) gg_dbg_tess_drawn[renderPass].fetch_add(1, std::memory_order_relaxed); // GGMAX
 			if (ggWatch) gg_dbg_watch_draws[renderPass].fetch_add(1, std::memory_order_relaxed);
 
 			const bool meshShaderPSO = pso->desc.ms != nullptr;
@@ -21959,6 +21967,7 @@ void SetWireframeMode(WIREFRAME_MODE mode) {
 	wireRender = (mode != WIREFRAME_DISABLED);
 }
 bool IsWireRender() { return wireRender; }
+void SetWireRender(bool value) { wireRender = value; } // GGMAX: declared in wiRenderer.h but its body was missing (harness SET_WIREFRAME)
 WIREFRAME_MODE GetWireframeMode() { return wireframeMode; }
 void SetToDrawDebugBoneLines(bool param) { debugBoneLines = param; }
 bool GetToDrawDebugBoneLines() { return debugBoneLines; }
