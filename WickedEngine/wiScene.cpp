@@ -47,6 +47,13 @@ namespace wi::scene
 	// GG: the distance between LOD steps (the level's LOD Multiplier times 200, the DX11 rule): LOD 1 past two
 	// steps, LOD 2 past three, LOD 3 past four. Negative keeps the engine's own choice by projected size.
 	float gg_lod_step = -1.0f;
+	// GG: terrain chunks (a GameGuru terrain material, MaterialComponent::GG_TERRAIN) choose their LOD by the distance from
+	// the camera to the chunk's nearest point, in steps of gg_terrain_lod_step (0: the chunk's own width): LOD 0 within
+	// one step, 1 within two, 2 within four, 3 beyond; the same whichever way the camera looks. GameGuru's object rule
+	// above, measured from a chunk's centre in 600-unit steps, drew the ground under the camera at LOD 1-3 (4-16 m between
+	// vertices) and switched a whole 134 m chunk every 15 m of walking (the geometry popping close to the camera, the user
+	// 2026-11-02). Negative: chunks take the object rule again (for an A/B)
+	float gg_terrain_lod_step = 0.0f;
 	// GG: 1 makes a ray test a mesh with no BVH (a skinned one) at its last LOD, the level's "Raycast Use Fastest LOD"
 	// (the DX11 rule); every triangle of that LOD is still tested, and skinned per ray, so the fewer the better
 	int gg_raycast_lowest_lod = 0;
@@ -5803,10 +5810,26 @@ namespace wi::scene
 				// LOD select:
 				if (mesh.subsets_per_lod > 0)
 				{
+					const MaterialComponent* gg_chunk_material = (gg_terrain_lod_step >= 0 && !mesh.subsets.empty()) ? materials.GetComponent(mesh.subsets[0].materialID) : nullptr;
 					if (object.gg_forcelod > 0)
 					{
 						// GG: a forced LOD, whatever the distance; past the mesh's last it draws the last
 						object.lod = std::min((uint32_t)object.gg_forcelod - 1, mesh.GetLODCount() - 1);
+					}
+					else if (gg_chunk_material != nullptr && (gg_chunk_material->_flags & MaterialComponent::GG_TERRAIN))
+					{
+						// GG: a terrain chunk, by its nearest point (gg_terrain_lod_step)
+						const float step = gg_terrain_lod_step > 0 ? gg_terrain_lod_step : std::max(aabb._max.x - aabb._min.x, aabb._max.z - aabb._min.z);
+						const XMFLOAT3 nearest = XMFLOAT3(
+							wi::math::Clamp(camera.Eye.x, aabb._min.x, aabb._max.x),
+							wi::math::Clamp(camera.Eye.y, aabb._min.y, aabb._max.y),
+							wi::math::Clamp(camera.Eye.z, aabb._min.z, aabb._max.z));
+						const float dist = wi::math::Distance(camera.Eye, nearest);
+						uint32_t lod = 0;
+						if (dist > step) lod = 1;
+						if (dist > step * 2) lod = 2;
+						if (dist > step * 4) lod = 3;
+						object.lod = std::min(lod, mesh.GetLODCount() - 1);
 					}
 					else if (gg_lod_step >= 0)
 					{
