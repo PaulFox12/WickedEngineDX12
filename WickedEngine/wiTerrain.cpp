@@ -457,6 +457,20 @@ namespace wi::terrain
 	std::atomic<unsigned long long> gg_dbg_vt_requests{ 0 };   // cumulative allocation requests
 	std::atomic<unsigned long long> gg_dbg_vt_reason{ 0 };     // cumulative trigger bits: 1=knob 2=requests 4=dirty 8=lowwater 16=center (per-frame OR summed)
 	std::atomic<unsigned long long> gg_dbg_vt_tiles{ 0 };      // physical tile count (last)
+	// GGMAX: detail popping in at speed, measured (harness DUMP_VTPOP): frames, frames the allocator was frozen
+	// (camera crossing chunks), chunk-frames whose sharper texture was held back (camera moving / per-frame budget
+	// spent), chunks sharpened, tiles given out and tiles asked for that found no free tile, and the chunks in the
+	// near ring still drawing their coarse texture (summed per frame, and the most in one frame)
+	std::atomic<unsigned long long> gg_dbg_vtpop_frames{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_frozen{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_defer_motion{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_defer_budget{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_upgrades{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_alloc_ok{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_alloc_fail{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_coarse_sum{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_coarse_max{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_steal_recent{ 0 }; // tiles given out that were in use within 16 frames (maybe on screen: the "random squares")
 	static unsigned long long gg_dbg_vt_qpc_us(void)
 	{
 		LARGE_INTEGER f, c;
@@ -1908,6 +1922,9 @@ namespace wi::terrain
 		// every resident tile; newly approached terrain simply stays coarse until the
 		// camera settles, then streams in as designed.
 		const bool gg_vt_frozen = gg_vt_upgrade_hysteresis && gg_center_stable_frames < 10;
+		gg_dbg_vtpop_frames++;
+		if (gg_vt_frozen) gg_dbg_vtpop_frozen++;
+		unsigned long long gg_coarse_near = 0;
 		if (gg_vt_frozen && !atlas.free_tiles.empty())
 		{
 			// The free list entering this frame's chunk loop (used by chunk-init tail
@@ -2143,14 +2160,23 @@ namespace wi::terrain
 				if (gg_center_stable_frames < 10)
 				{
 					gg_defer_change = true; // camera in motion: keep the old VT references
+					if (required_resolution > vt.resolution) gg_dbg_vtpop_defer_motion++;
 				}
 				else if (required_resolution > vt.resolution)
 				{
 					if (gg_upgrade_budget == 0)
+					{
 						gg_defer_change = true;
+						gg_dbg_vtpop_defer_budget++;
+					}
 					else
 						gg_upgrade_budget--;
 				}
+			}
+			if (required_resolution > vt.resolution && vt.resolution != 0)
+			{
+				if (gg_defer_change) gg_coarse_near++;
+				else gg_dbg_vtpop_upgrades++;
 			}
 			if ((vt.resolution != required_resolution && !gg_defer_change) || gg_material_rebind || gg_tail_invalid)
 			{
@@ -2241,6 +2267,8 @@ namespace wi::terrain
 			if (vt.residency == nullptr)
 				continue;
 		}
+		gg_dbg_vtpop_coarse_sum += gg_coarse_near;
+		if (gg_coarse_near > gg_dbg_vtpop_coarse_max) gg_dbg_vtpop_coarse_max = gg_coarse_near;
 
 		wi::jobsystem::Execute(virtual_texture_ctx, [this, gg_vt_frozen](wi::jobsystem::JobArgs args) {
 			auto gg_range_total = wi::profiler::BeginRangeCPU("VT-job Total"); // GGMAX 1.32 instrumentation
@@ -2406,7 +2434,11 @@ namespace wi::terrain
 				{
 					VirtualTextureAtlas::Tile& tile = vt->tiles[alloc_request.tile_index];
 					VirtualTexture* gg_stolen = nullptr; // GGMAX 1.33
-					if (atlas.allocate_tile(tile, vt, &gg_stolen))
+					if (!atlas.free_tiles.empty() && atlas.get_tile_frames(atlas.free_tiles.back()) < 16)
+						gg_dbg_vtpop_steal_recent++;
+					const bool gg_allocated = atlas.allocate_tile(tile, vt, &gg_stolen);
+					if (gg_allocated) gg_dbg_vtpop_alloc_ok++; else gg_dbg_vtpop_alloc_fail++;
+					if (gg_allocated)
 					{
 						if (gg_stolen) gg_stolen->gg_page_dirty = true; // GGMAX 1.33: victim's mapping broke
 						vt->gg_page_dirty = true; // GGMAX 1.33
