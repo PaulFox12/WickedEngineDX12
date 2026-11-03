@@ -984,6 +984,10 @@ SHADERTYPE GetVSTYPE(RENDERPASS renderPass, bool tessellation, bool alphatest, b
 			{
 				realVS = VSTYPE_SHADOW_ALPHATEST;
 			}
+			else if (tessellation)
+			{
+				realVS = VSTYPE_SHADOW_TESSELLATION; // GGMAX: opaque only, GameGuru's terrain chunks
+			}
 			else
 			{
 				realVS = VSTYPE_SHADOW;
@@ -1040,6 +1044,9 @@ SHADERTYPE GetHSTYPE(RENDERPASS renderPass, bool tessellation, bool alphatest)
 		case RENDERPASS_MAIN:
 			return HSTYPE_OBJECT;
 			break;
+		case RENDERPASS_SHADOW:
+			// GGMAX: GameGuru's terrain chunks cast from the surface they are drawn with (opaque, no alpha test)
+			return alphatest ? SHADERTYPE_COUNT : HSTYPE_SHADOW;
 		default:
 			break;
 		}
@@ -1065,6 +1072,8 @@ SHADERTYPE GetDSTYPE(RENDERPASS renderPass, bool tessellation, bool alphatest)
 			}
 		case RENDERPASS_MAIN:
 			return DSTYPE_OBJECT;
+		case RENDERPASS_SHADOW:
+			return alphatest ? SHADERTYPE_COUNT : DSTYPE_SHADOW; // GGMAX
 		default:
 			break;
 		}
@@ -1430,6 +1439,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::VS, shaders[VSTYPE_SHADOW], "shadowVS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::VS, shaders[VSTYPE_SHADOW_ALPHATEST], "shadowVS_alphatest.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::VS, shaders[VSTYPE_SHADOW_TRANSPARENT], "shadowVS_transparent.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::VS, shaders[VSTYPE_SHADOW_TESSELLATION], "shadowVS_tessellation.cso"); }); // GGMAX
 
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_IMPOSTOR], "impostorPS.cso"); });
 
@@ -1698,11 +1708,13 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::HS, shaders[HSTYPE_OBJECT_PREPASS], "objectHS_prepass.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::HS, shaders[HSTYPE_OBJECT_PREPASS_ALPHATEST], "objectHS_prepass_alphatest.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::HS, shaders[HSTYPE_OBJECT_SIMPLE], "objectHS_simple.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::HS, shaders[HSTYPE_SHADOW], "shadowHS_tessellation.cso"); }); // GGMAX
 
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::DS, shaders[DSTYPE_OBJECT], "objectDS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::DS, shaders[DSTYPE_OBJECT_PREPASS], "objectDS_prepass.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::DS, shaders[DSTYPE_OBJECT_PREPASS_ALPHATEST], "objectDS_prepass_alphatest.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::DS, shaders[DSTYPE_OBJECT_SIMPLE], "objectDS_simple.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::DS, shaders[DSTYPE_SHADOW], "shadowDS_tessellation.cso"); }); // GGMAX
 
 	wi::jobsystem::Dispatch(objectps_ctx, MaterialComponent::SHADERTYPE_COUNT, 1, [](wi::jobsystem::JobArgs args) {
 
@@ -2471,11 +2483,15 @@ void LoadShaders()
 							const uint32_t tessellation_max = (gg_pso_trim && !tessellationEnabled) ? 0u : 1u;
 							for (uint32_t tessellation = 0; tessellation <= tessellation_max; ++tessellation)
 							{
-								if (tessellation && renderPass > RENDERPASS_PREPASS_DEPTHONLY)
+								// GGMAX: and the opaque shadow pass, where GameGuru's tessellated terrain chunks cast from the
+								// surface they are drawn with (shadowVS/HS/DS_tessellation)
+								if (tessellation && renderPass > RENDERPASS_PREPASS_DEPTHONLY && renderPass != RENDERPASS_SHADOW)
 									continue;
 								for (uint32_t alphatest = 0; alphatest <= 1; ++alphatest)
 								{
 									const bool transparency = blendMode != BLENDMODE_OPAQUE;
+									if (tessellation && renderPass == RENDERPASS_SHADOW && (transparency || alphatest))
+										continue;
 									// GGMAX 2.09: transparents have no Z-prepass pipeline upstream — with one
 									// exception, the weapon carve. RenderPath3D issues a second PREPASS
 									// DrawScene for GG_FORCEDEPTH materials (see the comment there), because
@@ -4054,6 +4070,9 @@ std::atomic<uint32_t> gg_dbg_watch_nobuffer[RENDERPASS_COUNT] = {};  // bailed: 
 // GGMAX: the terrain's tessellation (harness SET_TERRAINTESS reads them): draws of meshes with a tessellation factor, of
 // those asking for the tessellator in this pass, and of those that got a pipeline (running totals)
 std::atomic<uint32_t> gg_dbg_tess_meshes{ 0 };
+// GGMAX: tessellated meshes (GameGuru's terrain chunks) tessellated in the shadow passes too, casting from the surface the
+// screen draws; false draws them there as the plain mesh (an A/B lever, harness SET_TERRAINTESS)
+bool gg_tess_shadows = true;
 std::atomic<uint32_t> gg_dbg_tess_requested[RENDERPASS_COUNT] = {};
 std::atomic<uint32_t> gg_dbg_tess_drawn[RENDERPASS_COUNT] = {};
 std::atomic<uint32_t> gg_dbg_watch_subsets[RENDERPASS_COUNT] = {};   // subsets considered
@@ -4325,7 +4344,11 @@ void RenderMeshes(
 						default:
 							break;
 						}
-						ggTessellation = 0; // displacement tessellation is pure added vertex work
+						// displacement tessellation is pure added vertex work; GameGuru's terrain chunks keep theirs, the ground
+						// following the height data (and their shadows built tessellated, which a lone untessellated pass would
+						// stop matching)
+						if ((material._flags & MaterialComponent::GG_TERRAIN) == 0)
+							ggTessellation = 0;
 					}
 
 					variant.bits.shadertype = ggShaderType;
@@ -9151,7 +9174,7 @@ void DrawShadowmaps(
 
 				renderQueue.sort_opaque();
 				renderQueue_transparent.sort_transparent();
-				RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, FILTER_OPAQUE, cmd, 0, cascade_count);
+				RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, FILTER_OPAQUE, cmd, gg_tess_shadows ? DRAWSCENE_TESSELLATION : 0, cascade_count); // GGMAX: tessellated terrain casts as drawn
 				RenderMeshes(vis, renderQueue_transparent, RENDERPASS_SHADOW, FILTER_TRANSPARENT | FILTER_WATER, cmd, 0, cascade_count);
 			}
 
@@ -9327,7 +9350,7 @@ void DrawShadowmaps(
 
 				renderQueue.sort_opaque();
 				renderQueue_transparent.sort_transparent();
-				RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, FILTER_OPAQUE, cmd);
+				RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, FILTER_OPAQUE, cmd, gg_tess_shadows ? DRAWSCENE_TESSELLATION : 0); // GGMAX
 				RenderMeshes(vis, renderQueue_transparent, RENDERPASS_SHADOW, FILTER_TRANSPARENT | FILTER_WATER, cmd);
 			}
 
@@ -9494,7 +9517,7 @@ void DrawShadowmaps(
 
 				renderQueue.sort_opaque();
 				renderQueue_transparent.sort_transparent();
-				RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, FILTER_OPAQUE, cmd, 0, camera_count);
+				RenderMeshes(vis, renderQueue, RENDERPASS_SHADOW, FILTER_OPAQUE, cmd, gg_tess_shadows ? DRAWSCENE_TESSELLATION : 0, camera_count); // GGMAX
 				RenderMeshes(vis, renderQueue_transparent, RENDERPASS_SHADOW, FILTER_TRANSPARENT | FILTER_WATER, cmd, 0, camera_count);
 			}
 

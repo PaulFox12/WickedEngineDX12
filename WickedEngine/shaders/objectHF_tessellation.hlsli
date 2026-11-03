@@ -77,9 +77,11 @@ ConstantOutput PatchConstantFunction(InputPatch<PixelInput, 3> patch)
 		[branch]
 		if (gg_terrain)
 		{
-			// GGMAX: sub-triangles distance / k across, not below the finest ring's step
+			// GGMAX: sub-triangles distance / k across, not below the finest ring's step; the distance from the view's eye in
+			// every pass, the shadow passes too, so they cut the chunk as the screen does
 			const ShaderTerrain gg_t = GetScene().terrain;
-			const float target = max(gg_t.gg_ring_seg0, length(vec) / max(gg_t.gg_tess_k, 1.0));
+			const float3 gg_vec = (patch[(ie + 1) % 3].pos.xyz + patch[ie].pos.xyz) / 2 - gg_t.gg_tess_eye;
+			const float target = max(gg_t.gg_ring_seg0, length(gg_vec) / max(gg_t.gg_tess_k, 1.0));
 			output.edges[(ie + 1) % 3] = clamp(length(edge) / target, 1, 64);
 			continue;
 		}
@@ -92,14 +94,19 @@ ConstantOutput PatchConstantFunction(InputPatch<PixelInput, 3> patch)
 #if 1
 	// frustum culling:
 	float rad = gg_terrain ? 200.0 : GetMaterial().GetDisplacement(); // GGMAX: the rings' heights stray from the chunk's triangle
+#ifdef OBJECTSHADER_USE_CAMERAINDEX
+	const ShaderCamera cull_camera = GetCameraIndexed(patch[0].GetCameraIndex()); // GGMAX: a shadow pass, the instance's cascade
+#else
+	const ShaderCamera cull_camera = GetCamera();
+#endif // OBJECTSHADER_USE_CAMERAINDEX
 	int culled[4];
 	[unroll]
 	for (int ip = 0; ip < 4; ++ip)
 	{
 		culled[ip] = 1;
-		culled[ip] &= dot(GetCamera().frustum.planes[ip + 2], patch[0].pos) < -rad;
-		culled[ip] &= dot(GetCamera().frustum.planes[ip + 2], patch[1].pos) < -rad;
-		culled[ip] &= dot(GetCamera().frustum.planes[ip + 2], patch[2].pos) < -rad;
+		culled[ip] &= dot(cull_camera.frustum.planes[ip + 2], patch[0].pos) < -rad;
+		culled[ip] &= dot(cull_camera.frustum.planes[ip + 2], patch[1].pos) < -rad;
+		culled[ip] &= dot(cull_camera.frustum.planes[ip + 2], patch[2].pos) < -rad;
 	}
 	if (culled[0] || culled[1] || culled[2] || culled[3])
 	{

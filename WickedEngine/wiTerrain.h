@@ -166,6 +166,10 @@ namespace wi::terrain
 		float ring_seg0 = 0;
 		float ring_centers[10][2] = {};
 		float tess_k = 256;
+		// the tessellated ground raised (lowered, negative) by this in the shadow passes only (ShaderTerrain
+		// gg_tess_shadow_offset): its own bumps, a few cm across the cut triangles, shadowed themselves under the receiver
+		// tolerance (GameGuru sets -5, which cured it)
+		float tess_shadow_offset = 0;
 	};
 	extern GGPaintBlend gg_paint_blend;
 	// Frees the shared uncompressed bake scratch - ~340 MB at 8192 with mips, so call it once

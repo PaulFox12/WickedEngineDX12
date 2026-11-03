@@ -327,6 +327,9 @@ wi::vector<ShaderEntry> shaders = {
 	{"shadowVS", wi::graphics::ShaderStage::VS },
 	{"shadowVS_alphatest", wi::graphics::ShaderStage::VS },
 	{"shadowVS_transparent", wi::graphics::ShaderStage::VS },
+	{"shadowVS_tessellation", wi::graphics::ShaderStage::VS },
+	{"shadowHS_tessellation", wi::graphics::ShaderStage::HS },
+	{"shadowDS_tessellation", wi::graphics::ShaderStage::DS },
 	{"screenVS", wi::graphics::ShaderStage::VS },
 	{"trailVS", wi::graphics::ShaderStage::VS },
 

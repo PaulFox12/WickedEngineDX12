@@ -815,6 +815,15 @@
     <FxCompile Include="$(MSBuildThisFileDirectory)objectHS_simple.hlsl">
       <Filter>HS</Filter>
     </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)shadowHS_tessellation.hlsl">
+      <Filter>HS</Filter>
+    </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)shadowDS_tessellation.hlsl">
+      <Filter>DS</Filter>
+    </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)shadowVS_tessellation.hlsl">
+      <Filter>VS</Filter>
+    </FxCompile>
     <FxCompile Include="$(MSBuildThisFileDirectory)objectDS_simple.hlsl">
       <Filter>DS</Filter>
     </FxCompile>

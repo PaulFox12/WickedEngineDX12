@@ -1027,7 +1027,15 @@ namespace wi::terrain
 			{
 				chunk_data.mesh_vertex_positions = chunk_mesh->vertex_positions.data();
 
-				if (IsTessellationEnabled())
+				if (gg_paint_blend.tessellate)
+				{
+					// GGMAX: tessellated to GameGuru's height rings. The 0 below, from the terrain's own switch, put every
+					// chunk back flat on each generation pass (each frame while the camera moves, one in 8 while it rests,
+					// the engine's call from Scene::Update running after GameGuru's update set them): the ground flickered
+					// between the two, drawn flat one frame in 8 at rest
+					chunk_mesh->tessellationFactor = 1.0f;
+				}
+				else if (IsTessellationEnabled())
 				{
 					chunk_mesh->tessellationFactor = 32;
 				}
@@ -3161,6 +3169,9 @@ namespace wi::terrain
 			{
 				shader_terrain.gg_ring_centers[i] = XMFLOAT4(pb.ring_centers[i * 2][0], pb.ring_centers[i * 2][1], pb.ring_centers[i * 2 + 1][0], pb.ring_centers[i * 2 + 1][1]);
 			}
+			// the view's eye, which every pass cuts the chunks by (the shadow passes' cameras are the lights')
+			shader_terrain.gg_tess_eye = wi::scene::GetCamera().Eye;
+			shader_terrain.gg_tess_shadow_offset = pb.tess_shadow_offset;
 		}
 
 		return shader_terrain;

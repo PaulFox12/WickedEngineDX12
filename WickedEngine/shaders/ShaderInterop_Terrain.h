@@ -59,6 +59,11 @@ struct alignas(16) ShaderTerrain
 
 	float4 gg_ring_centers[5];	// the rings' centres, x and z, two rings to a float4
 
+	// the view's eye, the one point every pass cuts the tessellated chunks by (the shadow passes' own cameras are the
+	// lights'), so a shadow map's ground is the drawn ground, vertex for vertex
+	float3 gg_tess_eye;
+	float gg_tess_shadow_offset;	// the tessellated ground moved up by this in the shadow passes only (GameGuru lowers it, its bumps' acne)
+
 	void init()
 	{
 		center_chunk_pos = float3(0, 0, 0);
@@ -88,6 +93,8 @@ struct alignas(16) ShaderTerrain
 		{
 			gg_ring_centers[i] = float4(0, 0, 0, 0);
 		}
+		gg_tess_eye = float3(0, 0, 0);
+		gg_tess_shadow_offset = 0;
 	}
 };
 
