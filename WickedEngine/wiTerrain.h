@@ -549,6 +549,11 @@ namespace wi::terrain
 		// for near, correct terrain is never re-referenced (tile residency stays feedback-
 		// driven, so the physical pool cost barely changes).
 		int gg_near_ring_dist = 2;
+		// GGMAX: a middle tier between the full-resolution ring and the single-tile far chunks: chunks closer than
+		// gg_mid_ring_dist (and not in the near ring) take gg_mid_resolution, streamed by feedback like the near ones
+		// (more than one tile pulls residency in). 0 = off, the near ring then the single tile as before
+		int gg_mid_ring_dist = 0;
+		uint32_t gg_mid_resolution = 4096;
 		// GGMAX: extra chunks beyond the stock removal threshold (generation + 2) before a
 		// chunk is destroyed. Bounded islands should keep their chunks alive across zoom
 		// travel — destruction/recreation churn is a VT cache flush. Default 0 = stock.

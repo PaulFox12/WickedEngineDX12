@@ -2133,7 +2133,8 @@ namespace wi::terrain
 			//const uint32_t required_resolution = std::max(min_resolution, max_resolution >> std::min(7, std::max(0, dist - 1)));
 			//const int d = std::max(0, dist - 4); // hold max_resolution for dist 0..4
 			//const uint32_t required_resolution = std::max(min_resolution, max_resolution >> std::min(7, d));
-			const uint32_t required_resolution = dist < gg_near_ring_dist ? max_resolution : min_resolution; // GGMAX: widened full-res zone (stock: dist < 2)
+			const uint32_t required_resolution = dist < gg_near_ring_dist ? max_resolution : // GGMAX: widened full-res zone (stock: dist < 2)
+				(dist < gg_mid_ring_dist ? std::max(min_resolution, std::min(max_resolution, gg_mid_resolution)) : min_resolution); // GGMAX: the middle tier, off unless set
 
 			// GGMAX: an in-place chunk regen merge replaces the chunk's MaterialComponent with a
 			// fresh one (no atlas bindings). Detect that and re-run the bind block against the
