@@ -1565,7 +1565,24 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 #endif // ENVMAPRENDERING
 
 #ifndef DISABLE_ALPHATEST
+#ifndef TRANSPARENT
+	// GGMAX: an alpha-tested surface is solid where its alpha passes the cutout, with a one-pixel soft edge, as DX11's
+	// clip() was (and as the grass's, hairparticlePS_prepass.hlsl). AlphaToCoverage takes the raw alpha as the MSAA
+	// sample mask and dithers it under TAA, ignoring the cutout, so a texture whose smaller mips hold solid areas near
+	// the cutout (texconv --keep-coverage) drew half see-through from the distance its mip changed (runway markings)
+	const float gg_alpha = color.a;
+	const float gg_alpha_width = max(fwidth(gg_alpha), 0.0001);
+	half coverage_alpha = color.a;
+	half coverage_test = alphatest;
+	if (alphatest > 0)
+	{
+		coverage_alpha = (half)saturate((gg_alpha - (float)alphatest) / gg_alpha_width + 0.5);
+		coverage_test = 0.5;
+	}
+	coverage = AlphaToCoverage(coverage_alpha, coverage_test, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
+#else
 	coverage = AlphaToCoverage(color.a, alphatest, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
+#endif // TRANSPARENT
 #endif // DISABLE_ALPHATEST
 	
 	// end point:
