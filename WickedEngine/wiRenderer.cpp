@@ -7847,12 +7847,19 @@ void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vi
 			{
 				AABB aabb = vis.scene->aabb_objects[instanceIndex];
 				// extrude the bounding box a bit:
-				aabb._min.x -= 0.001f;
-				aabb._min.y -= 0.001f;
-				aabb._min.z -= 0.001f;
-				aabb._max.x += 0.001f;
-				aabb._max.y += 0.001f;
-				aabb._max.z += 0.001f;
+				float grow = 0.001f;
+				if (wi::scene::gg_occlusion_box_grow > 0)
+				{
+					// GG: by a share of the distance from the world origin, so it survives the float's rounding there
+					const float reach = std::max(std::max(std::max(std::abs(aabb._min.x), std::abs(aabb._max.x)), std::max(std::abs(aabb._min.y), std::abs(aabb._max.y))), std::max(std::abs(aabb._min.z), std::abs(aabb._max.z)));
+					grow = std::max(grow, reach * wi::scene::gg_occlusion_box_grow);
+				}
+				aabb._min.x -= grow;
+				aabb._min.y -= grow;
+				aabb._min.z -= grow;
+				aabb._max.x += grow;
+				aabb._max.y += grow;
+				aabb._max.z += grow;
 				const XMMATRIX transform = aabb.getAsBoxMatrix() * VP;
 				device->PushConstants(&transform, sizeof(transform), cmd);
 

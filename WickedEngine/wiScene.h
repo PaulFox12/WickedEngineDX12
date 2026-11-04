@@ -47,6 +47,13 @@ namespace wi::scene
 	// Default 8 frames: comfortably longer than the query latency (BufferCount frames behind)
 	// while still short enough to engage during camera motion.
 	extern uint32_t gg_occlusion_history_mask;
+	// GG: how far an occlusion query's box is grown past the object's bounds. Stock grows it by 0.001,
+	// which a float at GameGuru's world positions (100,000 units out a step is 0.0078) cannot hold, so
+	// a box object's query box falls on or behind its own faces and the object can hide itself: drawn for
+	// 8 frames, culled for 1, with a still camera (the greybox blocks in Outdoors' city, 2026-11-04). Above
+	// 0 the growth is this fraction of the box's distance from the world origin (at least 0.001): the
+	// default, 1e-6, is 0.1 units 100,000 out; 0 is stock
+	extern float gg_occlusion_box_grow;
 	extern std::atomic<uint32_t> gg_anim_reduction_scale;   // 0 or 1 = off, else 2..100
 	// Per-armature update decision for the current frame, indexed by armature index. Filled by
 	// RunAnimationUpdateSystem, read by the skinning dispatch. Empty = Reduction Scale is off.
