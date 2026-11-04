@@ -468,6 +468,11 @@ namespace wi::terrain
 	std::atomic<unsigned long long> gg_dbg_vtpop_upgrades{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_alloc_ok{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_alloc_fail{ 0 };
+	// GG: the most terrain texture tiles baked a frame (harness SET_VTBUDGET; 0 none, as stock), and the requests left over
+	// for the next frames' feedback because of it. 16 (2026-11-04): driving run 884's road at 20 m/s, frames over 25 ms 804
+	// uncapped, 4 at 16 (the drive granted 12.6 a frame on average, so detail is rarely held back), 5 at 8, 3 at 4
+	uint32_t gg_vt_bake_budget = 16;
+	std::atomic<unsigned long long> gg_dbg_vtpop_budget_left{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_coarse_sum{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_coarse_max{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_steal_recent{ 0 }; // tiles given out that were in use within 16 frames (maybe on screen: the "random squares")
@@ -2432,6 +2437,40 @@ namespace wi::terrain
 			gg_dbg_vt_free = (unsigned long long)atlas.free_tiles.size();
 			wi::profiler::EndRange(gg_range_free); // GGMAX 1.32
 			atlas.gg_free_dirty = false; // GGMAX 1.33
+			}
+
+			// GG: with a bake budget, only that many requests are granted a frame, the coarsest first so every chunk has a
+			// texture before any gets finer detail (DX11's terrain caps its pages a frame the same way; without a cap a
+			// fast-moving camera baked dozens of tiles in one frame: the frame spikes while driving, 2026-11-04). The others
+			// are dropped here and asked for again by the next frames' feedback, their coarser mip showing meanwhile
+			if (gg_vt_bake_budget > 0)
+			{
+				struct GGRequestRef { VirtualTexture* vt; uint32_t index; uint32_t lod; };
+				static wi::vector<GGRequestRef> gg_refs;
+				gg_refs.clear();
+				for (VirtualTexture* vt : virtual_textures_in_use)
+				{
+					for (uint32_t i = 0; i < (uint32_t)vt->allocation_requests.size(); ++i)
+						gg_refs.push_back({ vt, i, vt->allocation_requests[i].lod });
+				}
+				if (gg_refs.size() > gg_vt_bake_budget)
+				{
+					std::stable_sort(gg_refs.begin(), gg_refs.end(), [](const GGRequestRef& a, const GGRequestRef& b) { return a.lod > b.lod; });
+					gg_dbg_vtpop_budget_left += gg_refs.size() - gg_vt_bake_budget;
+					gg_refs.resize(gg_vt_bake_budget);
+					// keep the chosen requests only, in each virtual texture's list
+					static wi::vector<VirtualTexture::AllocationRequest> gg_keep;
+					for (VirtualTexture* vt : virtual_textures_in_use)
+					{
+						gg_keep.clear();
+						for (const GGRequestRef& r : gg_refs)
+						{
+							if (r.vt == vt)
+								gg_keep.push_back(vt->allocation_requests[r.index]);
+						}
+						vt->allocation_requests.assign(gg_keep.begin(), gg_keep.end());
+					}
+				}
 			}
 
 			// Fulfill new allocation requests:
