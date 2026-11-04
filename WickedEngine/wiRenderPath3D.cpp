@@ -1697,7 +1697,22 @@ namespace wi
 						ResourceState::SHADER_RESOURCE
 					),
 				};
-				device->RenderPassBegin(rp, arraysize(rp), cmd);
+				// GGMAX: single-sampled (gg_reflection_samples 1) the reflection is drawn straight into the resolved
+				// target, which the water reads; there is nothing to resolve
+				RenderPassImage rp_single[] = {
+					RenderPassImage::RenderTarget(
+						&rtReflection_resolved,
+						RenderPassImage::LoadOp::CLEAR,
+						RenderPassImage::StoreOp::STORE,
+						ResourceState::SHADER_RESOURCE,
+						ResourceState::SHADER_RESOURCE
+					),
+					rp[2],
+				};
+				if (depthBuffer_Reflection.desc.sample_count > 1)
+					device->RenderPassBegin(rp, arraysize(rp), cmd);
+				else
+					device->RenderPassBegin(rp_single, arraysize(rp_single), cmd);
 
 				Viewport vp;
 				vp.width = (float)depthBuffer_Reflection.GetDesc().width;
@@ -3684,7 +3699,7 @@ namespace wi
 				return;
 
 			TextureDesc desc;
-			desc.sample_count = 4;
+			desc.sample_count = wi::renderer::gg_reflection_samples <= 1 ? 1 : 4; // GGMAX: 1 (default) draws into rtReflection_resolved; stock 4
 			desc.bind_flags = BindFlag::RENDER_TARGET;
 			desc.format = wi::renderer::format_rendertarget_main;
 			// GGMAX 3.89: Water Reflection Size. 0 reproduces the stock quarter-res target BIT

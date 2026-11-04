@@ -50,6 +50,10 @@ namespace wi::renderer
 	// RenderPath3D::setReflectionsEnabled, so every path that re-creates the reflection
 	// targets picks it up for free - including ResizeBuffers and the game's own callers.
 	extern int gg_reflection_width;
+	// GGMAX: the planar reflection's samples per pixel, 1 (the default: drawn straight into the resolved target, as DX11's
+	// reflection is single-sampled) or 4 (stock, resolved after the pass); read where the targets are made
+	// (setReflectionsEnabled)
+	extern int gg_reflection_samples;
 	extern float gg_light_max_distance; // GGMAX: point and spot lights farther than this from the camera (their range added) are left out of the frame; 0 none (the host's SetLightMaxDistance)
 	extern uint32_t gg_lights_visible; // GGMAX: the lights in view this frame, and how many of them the entity array took (the performance panel)
 	extern uint32_t gg_lights_packed;

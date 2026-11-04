@@ -531,6 +531,7 @@ int gg_shadow_res_steps = 4;
 // GGMAX 3.89: Water Reflection Size. 0 = stock internal-resolution/4 for the planar
 // reflection target. See wiRenderer.h and the only consumer, setReflectionsEnabled.
 int gg_reflection_width = 0;
+int gg_reflection_samples = 1; // GGMAX: 1 as DX11's reflection (0.42 ms of 14.9 saved at start_east, no visible change; 2026-11-04)
 // GGMAX: environment probe captures on (1) or held (0); a lever for the harness, to tell whether a frame drawn from
 // another direction comes from a probe capture
 float gg_light_max_distance = 0.0f;
@@ -1503,6 +1504,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_LIGHTCULLING_ADVANCED], "lightCullingCS_ADVANCED.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_LIGHTCULLING_ADVANCED_DEBUG], "lightCullingCS_ADVANCED_DEBUG.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_RESOLVEMSAADEPTHSTENCIL], "resolveMSAADepthStencilCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_GG_RESOLVEDEPTH_SINGLESAMPLE], "resolveMSAADepthStencilCS.cso", wi::graphics::ShaderModel::SM_6_0, { "GG_SINGLE_SAMPLE" }); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VXGI_OFFSETPREV], "vxgi_offsetprevCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VXGI_TEMPORAL], "vxgi_temporalCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VXGI_SDF_JUMPFLOOD], "vxgi_sdf_jumpfloodCS.cso"); });
@@ -12832,7 +12834,9 @@ void ResolveMSAADepthBuffer(const Texture& dst, const Texture& src, CommandList 
 
 	const TextureDesc& desc = src.GetDesc();
 
-	device->BindComputeShader(&shaders[CSTYPE_RESOLVEMSAADEPTHSTENCIL], cmd);
+	// GGMAX: a single-sample source (the planar reflection at gg_reflection_samples 1) is copied by the shader's
+	// single-sample form; a Texture2DMS view of it would read nothing
+	device->BindComputeShader(&shaders[desc.sample_count > 1 ? CSTYPE_RESOLVEMSAADEPTHSTENCIL : CSTYPE_GG_RESOLVEDEPTH_SINGLESAMPLE], cmd);
 	device->Dispatch((desc.width + 7) / 8, (desc.height + 7) / 8, 1, cmd);
 
 	device->Barrier(GPUBarrier::Image(&dst, ResourceState::UNORDERED_ACCESS, dst.desc.layout), cmd);

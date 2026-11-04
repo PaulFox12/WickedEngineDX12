@@ -424,6 +424,7 @@ namespace wi::enums
 		CSTYPE_DEPTH_REPROJECT,
 		CSTYPE_DEPTH_PYRAMID,
 		CSTYPE_LIGHTMAP_EXPAND,
+		CSTYPE_GG_RESOLVEDEPTH_SINGLESAMPLE, // GGMAX: ResolveMSAADepthBuffer's copy of a single-sample depth buffer
 
 
 		ASTYPE_OBJECT,
