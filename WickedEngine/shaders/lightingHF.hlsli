@@ -77,6 +77,10 @@ inline float3 gg_weapon_shadow_P(in Surface surface)
 	return surface.P;
 }
 
+// GG: a shader's own scale on the directional lights' specular (1 everywhere unless a shader sets it before its lighting;
+// the ocean takes the sun's glint away under the game's overcast with it, the lamps' reflections kept)
+static float gg_directional_specular_scale = 1.0f;
+
 inline void light_directional(in ShaderEntity light, in Surface surface, inout Lighting lighting, in half shadow_mask = 1)
 {
 	if (shadow_mask <= 0.001)
@@ -186,7 +190,7 @@ inline void light_directional(in ShaderEntity light, in Surface surface, inout L
 	}
 
 	lighting.direct.diffuse = mad(light_color, BRDF_GetDiffuse(surface, surface_to_light), lighting.direct.diffuse);
-	lighting.direct.specular = mad(light_color, BRDF_GetSpecular(surface, surface_to_light), lighting.direct.specular);
+	lighting.direct.specular = mad(light_color * gg_directional_specular_scale, BRDF_GetSpecular(surface, surface_to_light), lighting.direct.specular);
 
 #ifdef LIGHTING_SCATTER
 	const half scattering = ComputeScattering(saturate(dot(L, -surface.V)));

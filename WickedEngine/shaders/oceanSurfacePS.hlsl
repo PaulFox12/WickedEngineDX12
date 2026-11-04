@@ -54,6 +54,8 @@ float4 main(PSIn input) : SV_TARGET
 	Lighting lighting;
 	lighting.create(0, 0, GetAmbient(surface.N), 0);
 
+	// GG: the sun's glint as the game's weather allows (SetWaterSunGlint, SetOvercast); the lamps' reflections kept
+	gg_directional_specular_scale = saturate(GetWeather().gg_water_glint) * (1.0f - saturate(GetWeather().gg_overcast));
 	TiledLighting(surface, lighting, GetFlatTileIndex(pixel));
 
 	const float bump_strength = 0.1;

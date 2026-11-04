@@ -2000,6 +2000,8 @@ namespace wi::scene
 		float fogHeightStart = 1;
 		float fogHeightEnd = 3;
 		float gg_fog_opacity = 0; // GGMAX 1.65: DX11 FogA — scales/steers fog color, see fogHF.hlsli
+		float gg_overcast = 0; // GG: the game's overcast, 0-1 (SetOvercast): fades the sun's water highlight, disc and glow. Not serialized
+		float gg_water_glint = 1; // GG: the sun's glint on water, 0-1 (SetWaterSunGlint). Not serialized
 		XMFLOAT3 windDirection = XMFLOAT3(0, 0, 0);
 		// GGMAX 3.57: object-path wind scale (tree sway). Feeds ShaderWind::gg_object_space_rcp
 		// / gg_object_amplitude. 1.0/1.0 = stock behaviour. Not serialized, same as gg_fog_opacity

@@ -104,6 +104,7 @@ inline half4 GetFog(float distance, float3 O, float3 V)
 		float3 sideVector = normalize(cross(upVector, dir));
 		float3 forwardVector = normalize(cross(sideVector, upVector));
 		float2 lightOnPlane = normalize(float2(dot(sunDirection, forwardVector), dot(sunDirection, sideVector)));
+		lightOnPlane.x = lerp(lightOnPlane.x, 0.0f, saturate(GetWeather().gg_overcast)); // GG: overcast: no sun glow in the haze
 		bool intersectGround = RaySphereIntersectNearest(worldPosition, dir, float3(0, 0, 0), atmosphere.bottomRadius) >= 0.0;
 		float2 uv;
 		SkyViewLutParamsToUv(atmosphere, intersectGround, viewZenithCosAngle, lightOnPlane.x, viewHeight, uv);

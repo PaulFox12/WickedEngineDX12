@@ -34,6 +34,8 @@ float3 AccurateAtmosphericScattering(float2 pixelPosition, float3 rayOrigin, flo
         float2 lightOnPlane = float2(dot(sunDirection, forwardVector), dot(sunDirection, sideVector));
         lightOnPlane = normalize(lightOnPlane);
         float lightViewCosAngle = lightOnPlane.x;
+        // GG: overcast takes the sun's glow out of the sky's direction: every azimuth reads as one square to the sun
+        lightViewCosAngle = lerp(lightViewCosAngle, 0.0f, saturate(GetWeather().gg_overcast));
 
         bool intersectGround = RaySphereIntersectNearest(worldPosition, worldDirection, float3(0, 0, 0), atmosphere.bottomRadius) >= 0.0f;
 
@@ -74,7 +76,7 @@ float3 AccurateAtmosphericScattering(float2 pixelPosition, float3 rayOrigin, flo
     if (enableSun)
     {
         float3 sunIlluminance = sunColor;
-		totalColor = luminance + GetSunLuminance(worldPosition, worldDirection, sunDirection, sunIlluminance, atmosphere, texture_transmittancelut);
+		totalColor = luminance + GetSunLuminance(worldPosition, worldDirection, sunDirection, sunIlluminance, atmosphere, texture_transmittancelut) * (1.0f - saturate(GetWeather().gg_overcast)); // GG: the disc fades with overcast
 	}
     else
     {
@@ -89,6 +91,7 @@ float3 AccurateAtmosphericScattering(float2 pixelPosition, float3 rayOrigin, flo
         // mask magnitude restored, and a dim (dusk/night) sun still darkens the mask.
         float3 sunColorNorm = sunColor / max(max(sunColor.r, max(sunColor.g, sunColor.b)), 1.0);
         totalColor = max(pow(saturate(dot(sunDirection, rayDirection)), 64) * sunColorNorm, 0) * luminance * 1.0;
+        totalColor *= 1.0f - saturate(GetWeather().gg_overcast); // GG: no sun shafts through the overcast
     }
 
 	if (GetFrame().options & OPTION_BIT_HEIGHT_FOG)
@@ -157,6 +160,7 @@ float3 GetDynamicSkyColor(in float2 pixel, in float3 V, bool sun_enabled = true,
 			float3 sunColor = GetSunColor();
 			sunColor /= max(max(sunColor.r, max(sunColor.g, sunColor.b)), 1.0);
 			sky = max(pow(saturate(dot(GetSunDirection(), V)), 64) * sunColor, 0);
+			sky *= 1.0f - saturate(GetWeather().gg_overcast); // GG: no sun shafts through the overcast
 		}
     }
 

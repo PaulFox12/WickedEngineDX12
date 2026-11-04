@@ -380,7 +380,11 @@ struct alignas(16) ShaderWeather
 
 	float4 stars_rotation; // quaternion
 
-	float2 padding_stars;
+	// GG: how overcast the game's weather is, 0 clear to 1 (SetOvercast). The game keeps clouds off and makes its gloom
+	// with haze and the sun's colour, so the sun's highlight on water, its disc and its glow in the sky and the fog are
+	// faded by this; 0 is stock. In the old padding: the layout is unchanged
+	float gg_overcast;
+	float gg_water_glint; // GG: the sun's glint on water, 0-1 (SetWaterSunGlint; 1 stock), times 1 - gg_overcast
 	// GGMAX 1.65: DX11-style Fog Opacity (FogA). In non-realistic-sky modes DX11 fog is a
 	// recolor of the surface toward the user fog RGB scaled by THIS value (0 = fog off);
 	// with realistic sky it blends the user fog RGB over the sampled sky color. See fogHF.hlsli.
