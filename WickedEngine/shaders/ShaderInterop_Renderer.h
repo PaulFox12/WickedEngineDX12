@@ -161,6 +161,9 @@ enum TEXTURESLOT
 // while the near field stays crisp. User-tuned on TESTPRO1 (A/B'd -1.0/+1.0/0.0). Toward -2.0 = more
 // crispness + more swim; toward +1.0 = more stable but the foreground softens too.
 static const float SVT_MIP_BIAS = 0.0;
+// GGMAX: the terrain's tile atlas sampled with the pixel's UV gradients (SampleVirtual), so the object sampler's
+// anisotropic taps run inside each tile as DX11's terrain pages did; false = stock, one bilinear tap per mip
+static const bool GG_SVT_GRAD = true;
 static const uint SVT_TILE_SIZE = 256u;
 static const uint SVT_TILE_BORDER = 4u;
 static const uint SVT_TILE_SIZE_PADDED = SVT_TILE_SIZE + SVT_TILE_BORDER * 2;
@@ -254,6 +257,18 @@ struct alignas(16) ShaderTextureSlot
 	{
 		return bindless_textures_half4[UniformTextureSlot(texture_descriptor)];
 	}
+	// GGMAX: a UV gradient in the atlas's texels at one mip of the virtual image, its length capped at 6 texels so an
+	// anisotropic footprint stays inside the 4-texel tile border. Stock took one bilinear tap per mip from a mip chosen
+	// for anisotropic filtering (get_lod), so at a low angle it skipped texels along the view: road markings broke into
+	// steps and swam as the camera moved, where DX11's terrain sampled its pages with SampleGrad and the x4 sampler.
+	float2 gg_svt_atlas_grad(in float2 uv_d, in float2 lod_dim, in float2 atlas_dim_rcp)
+	{
+		float2 t = uv_d * lod_dim;
+		const float len = length(t);
+		t *= len > 6.0 ? 6.0 / len : 1.0;
+		return t * atlas_dim_rcp;
+	}
+
 	half4 SampleVirtual(
 		in Texture2D<half4> tex,
 		in SamplerState sam,
@@ -261,10 +276,13 @@ struct alignas(16) ShaderTextureSlot
 		in Texture2D<uint4> residency_map,
 		in uint2 virtual_tile_count,
 		in uint2 virtual_image_dim,
-		in float virtual_lod
+		in float virtual_lod,
+		in float2 uv_dx,
+		in float2 uv_dy
 	)
 	{
 		virtual_lod = max(0, virtual_lod);
+		const bool gg_grad = GG_SVT_GRAD && (any(uv_dx != 0) || any(uv_dy != 0));
 
 #ifdef SVT_FEEDBACK
 		[branch]
@@ -300,7 +318,11 @@ struct alignas(16) ShaderTextureSlot
 			float2 virtual_tile_pixel = fmod(virtual_pixel, SVT_TILE_SIZE);
 			float2 atlas_tile_pixel = tile_pixel_upperleft + 0.5 + virtual_tile_pixel;
 			float2 atlas_uv = atlas_tile_pixel * atlas_dim_rcp;
-			value0 = tex.SampleLevel(sam, atlas_uv, 0);
+			[branch]
+			if (gg_grad)
+				value0 = tex.SampleGrad(sam, atlas_uv, gg_svt_atlas_grad(uv_dx, virtual_lod_dim, atlas_dim_rcp), gg_svt_atlas_grad(uv_dy, virtual_lod_dim, atlas_dim_rcp));
+			else
+				value0 = tex.SampleLevel(sam, atlas_uv, 0);
 		}
 
 		// Mip - less detailed:
@@ -317,7 +339,11 @@ struct alignas(16) ShaderTextureSlot
 			float2 virtual_tile_pixel = fmod(virtual_pixel, SVT_TILE_SIZE);
 			float2 atlas_tile_pixel = tile_pixel_upperleft + 0.5 + virtual_tile_pixel;
 			float2 atlas_uv = atlas_tile_pixel * atlas_dim_rcp;
-			value1 = tex.SampleLevel(sam, atlas_uv, 0);
+			[branch]
+			if (gg_grad)
+				value1 = tex.SampleGrad(sam, atlas_uv, gg_svt_atlas_grad(uv_dx, virtual_lod_dim, atlas_dim_rcp), gg_svt_atlas_grad(uv_dy, virtual_lod_dim, atlas_dim_rcp));
+			else
+				value1 = tex.SampleLevel(sam, atlas_uv, 0);
 		}
 
 		return lerp(value0, value1, (half)frac(clamped_lod)); // custom trilinear filtering
@@ -336,7 +362,7 @@ struct alignas(16) ShaderTextureSlot
 			residency_map.GetDimensions(virtual_tile_count.x, virtual_tile_count.y);
 			float2 virtual_image_dim = virtual_tile_count * SVT_TILE_SIZE;
 			float virtual_lod = get_lod(virtual_image_dim, ddx_coarse(uv), ddy_coarse(uv), GetAnisotropy()) + SVT_MIP_BIAS;
-			return SampleVirtual(tex, sam, uv, residency_map, virtual_tile_count, virtual_image_dim, virtual_lod);
+			return SampleVirtual(tex, sam, uv, residency_map, virtual_tile_count, virtual_image_dim, virtual_lod, ddx_coarse(uv), ddy_coarse(uv));
 		}
 #endif // DISABLE_SVT
 
@@ -356,7 +382,7 @@ struct alignas(16) ShaderTextureSlot
 			float2 virtual_tile_count;
 			residency_map.GetDimensions(virtual_tile_count.x, virtual_tile_count.y);
 			float2 virtual_image_dim = virtual_tile_count * SVT_TILE_SIZE;
-			return SampleVirtual(tex, sam, uv, residency_map, virtual_tile_count, virtual_image_dim, lod);
+			return SampleVirtual(tex, sam, uv, residency_map, virtual_tile_count, virtual_image_dim, lod, float2(0, 0), float2(0, 0));
 		}
 #endif // DISABLE_SVT
 
@@ -378,7 +404,7 @@ struct alignas(16) ShaderTextureSlot
 			float2 virtual_image_dim = virtual_tile_count * SVT_TILE_SIZE;
 			float virtual_lod = get_lod(virtual_image_dim, ddx_coarse(uv), ddy_coarse(uv), GetAnisotropy()) + SVT_MIP_BIAS;
 			virtual_lod += bias;
-			return SampleVirtual(tex, sam, uv, residency_map, virtual_tile_count, virtual_image_dim, virtual_lod + bias);
+			return SampleVirtual(tex, sam, uv, residency_map, virtual_tile_count, virtual_image_dim, virtual_lod + bias, ddx_coarse(uv), ddy_coarse(uv));
 		}
 #endif // DISABLE_SVT
 
@@ -401,7 +427,7 @@ struct alignas(16) ShaderTextureSlot
 			residency_map.GetDimensions(virtual_tile_count.x, virtual_tile_count.y);
 			float2 virtual_image_dim = virtual_tile_count * SVT_TILE_SIZE;
 			float virtual_lod = get_lod(virtual_image_dim, uv_dx, uv_dy, GetAnisotropy()) + SVT_MIP_BIAS;
-			return SampleVirtual(tex, sam, uv, residency_map, virtual_tile_count, virtual_image_dim, virtual_lod);
+			return SampleVirtual(tex, sam, uv, residency_map, virtual_tile_count, virtual_image_dim, virtual_lod, uv_dx, uv_dy);
 		}
 #endif // DISABLE_SVT
 
