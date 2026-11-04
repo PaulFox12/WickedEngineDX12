@@ -1337,12 +1337,52 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	half4 color = surface.baseColor;
 
 #ifdef WATER
+	// GG: the plane of this water's own surface, its unbumped normal through the pixel: the depth below it is measured
+	// from there, as a river (the spline tool's) runs downhill and isn't at the scene's one reflection plane, the sea's
+	// (the ocean sets it); the planar reflection is that plane's, so it is taken only near it, the probes' elsewhere
+	const float3 gg_water_N = normalize(surface.N);
+	const float4 gg_water_plane = float4(gg_water_N, -dot(gg_water_N, surface.P));
+	const half gg_water_planar = (half)saturate(1 - abs(dot(float4(surface.P, 1), camera.reflection_plane)) / 200.0);
 	//NORMALMAP
 	half2 bumpColor0 = 0;
 	half2 bumpColor1 = 0;
 	half2 bumpColor2 = 0;
+	// GG: a river (the spline tool's; userdata.y is its flow rate, 0 for any other water), as DX11's River Water shader
+	// drew it: the normal map flows down the UVs' v at this point's speed (the second UVs' y, 1 the river's base speed),
+	// sampled twice half a cycle apart and cross-faded (two-phase flow, so a fast stretch never smears), each cycle
+	// starting somewhere new so the reset doesn't pulse, and a larger, slower pair under it breaks the repeat; choppier
+	// where it is turbulent (the second UVs' x). The foam pattern is the normal map's alpha
+	const float gg_river_flow = asfloat(material.userdata.y);
+	half gg_river_turbulence = 0;
+	half gg_river_foamtex = 0;
 	[branch]
-	if (material.textures[NORMALMAP].IsValid())
+	if (gg_river_flow > 0 && material.textures[NORMALMAP].IsValid())
+	{
+		Texture2D<half4> texture_normalmap = bindless_textures_half4[descriptor_index(material.textures[NORMALMAP].texture_descriptor)];
+		gg_river_turbulence = (half)saturate(uvsets.z);
+		const float flowRate = gg_river_flow * max(0.0, uvsets.w); // texture tiles a second
+		const float phaseRate = 0.35; // cycles a second
+		const float time = GetTime();
+		const float phase0 = frac(time * phaseRate);
+		const float phase1 = frac(time * phaseRate + 0.5);
+		const half weight0 = (half)(1 - abs(2 * phase0 - 1));
+		const float travel = flowRate / phaseRate;
+		const float2 jump0 = frac(floor(time * phaseRate) * float2(0.3713, 0.6197));
+		const float2 jump1 = frac(floor(time * phaseRate + 0.5) * float2(0.5281, 0.2879) + 0.5);
+		const float2 uvA = uvsets.xy + jump0 - float2(0, travel * phase0);
+		const float2 uvB = uvsets.xy + jump1 - float2(0, travel * phase1);
+		const float2 uvC = uvsets.xy * 0.37 + jump0.yx - float2(0, travel * 0.6 * 0.37 * phase0);
+		const float2 uvD = uvsets.xy * 0.37 + jump1.yx - float2(0, travel * 0.6 * 0.37 * phase1);
+		const half4 sA = texture_normalmap.Sample(sampler_objectshader, uvA);
+		const half4 sB = texture_normalmap.Sample(sampler_objectshader, uvB);
+		const half4 sC = texture_normalmap.Sample(sampler_objectshader, uvC);
+		const half4 sD = texture_normalmap.Sample(sampler_objectshader, uvD);
+		const half2 fine = (2 * sA.rg - 1) * weight0 + (2 * sB.rg - 1) * (1 - weight0);
+		const half2 broad = (2 * sC.rg - 1) * weight0 + (2 * sD.rg - 1) * (1 - weight0);
+		bumpColor0 = lerp(fine, broad, 0.35) * (1 + 1.5 * gg_river_turbulence);
+		gg_river_foamtex = lerp(lerp(sB.a, sA.a, weight0), lerp(sD.a, sC.a, weight0), 0.4);
+	}
+	else if (material.textures[NORMALMAP].IsValid())
 	{
 		Texture2D<half4> texture_normalmap = bindless_textures_half4[descriptor_index(material.textures[NORMALMAP].texture_descriptor)];
 		const float2 UV_normalMap = material.textures[NORMALMAP].GetUVSet() == 0 ? uvsets.xy : uvsets.zw;
@@ -1359,7 +1399,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	surface.bumpColor.rg *= material.GetNormalMapStrength();
 
 	[branch]
-	if (camera.texture_reflection_index >= 0)
+	if (camera.texture_reflection_index >= 0 && gg_water_planar > 0)
 	{
 		//REFLECTION
 		float4 reflectionUV = mul(camera.reflection_view_projection, float4(surface.P, 1));
@@ -1378,7 +1418,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 			float water_depth = -dot(float4(reflectivePosition, 1), water_plane);
 			reflectiveColor.rgb = lerp(color.rgb, reflectiveColor.rgb, saturate(exp(-water_depth * color.a)));
 		}
-		lighting.indirect.specular += reflectiveColor * surface.F;
+		lighting.indirect.specular += reflectiveColor * surface.F * gg_water_planar;
 	}
 #endif // WATER
 
@@ -1461,7 +1501,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	if (camera.texture_refraction_index >= 0)
 	{
 		// Water refraction:
-		float4 water_plane = camera.reflection_plane;
+		float4 water_plane = gg_water_plane; // GG: was camera.reflection_plane, the sea's
 		const float camera_above_water = dot(float4(camera.position, 1), water_plane) < 0; 
 		Texture2D<half4> texture_refraction = bindless_textures_half4[descriptor_index(camera.texture_refraction_index)];
 		// First sample using full perturbation:
@@ -1491,6 +1531,18 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		// Water fog computation:
 		float waterfog = saturate(exp(-water_depth * color.a));
 		float3 transmittance = saturate(exp(-water_depth * surface.extinction * color.a));
+		[branch]
+		if (gg_river_flow > 0)
+		{
+			// GG: a river never clearer than its least fog (userdata.w, 1 - its clarity), and its foam: white water where it
+			// is turbulent and along its banks where it is shallow (userdata.z the bank foam), hiding what is beneath
+			waterfog = min(waterfog, 1 - saturate(asfloat(material.userdata.w)));
+			const half shore = (half)(saturate(1 - water_depth / 40.0) * saturate(asfloat(material.userdata.z)));
+			const half foamMask = max(gg_river_turbulence, shore);
+			const half riverFoam = saturate((gg_river_foamtex - (1 - foamMask)) * 3.0) * saturate(foamMask * 4.0);
+			surface.albedo = lerp(surface.albedo, 0.8, riverFoam);
+			waterfog *= 1 - riverFoam;
+		}
 		surface.refraction.a = waterfog;
 		surface.refraction.rgb *= transmittance;
 		color.a = 1;

@@ -170,6 +170,13 @@ namespace wi::terrain
 		// gg_tess_shadow_offset): its own bumps, a few cm across the cut triangles, shadowed themselves under the receiver
 		// tolerance (GameGuru sets -5, which cured it)
 		float tess_shadow_offset = 0;
+
+		// GameGuru's road markings (its spline tool's lines), painted by the tile shaders over the texture as GameGuru's DX11
+		// page shader did (shaders/ggTerrainPaintHF.hlsli gg_terrain_markings): a raw buffer GameGuru builds when they change,
+		// a grid over them so a texel finds its own: words 0-7 the cell size, the grid's origin x and z (floats), its width
+		// and height in cells, the byte offsets of the cells (start and count, two words a cell), the index list and the
+		// pieces (12 floats each: a.x, a.z, b.x, b.z, half width, dash, gap, phase, red, green, blue, wear); null for none
+		const wi::graphics::GPUBuffer* markings = nullptr;
 	};
 	extern GGPaintBlend gg_paint_blend;
 	// Frees the shared uncompressed bake scratch - ~340 MB at 8192 with mips, so call it once

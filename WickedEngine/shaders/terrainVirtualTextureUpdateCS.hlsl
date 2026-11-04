@@ -253,6 +253,24 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		if (gg_splat && gg_splat_weight > 0)
 			total_color /= gg_splat_weight;
 
+		// GGMAX: GameGuru's road markings over the ground (ggTerrainPaintHF.hlsli): the paint's colour, smoother, not metal,
+		// keeping a little of the ground's bumps, as its DX11 page shader painted them
+		const float4 gg_mark = gg_terrain_markings(blendmap_buffer, push.blendmap_buffer_offset + push.blendmap_layers * sizeof(uint), uv, push.resolution_rcp);
+		[branch]
+		if (gg_mark.x > 0)
+		{
+#ifdef UPDATE_BASECOLORMAP
+			total_color.rgb = lerp(total_color.rgb, (half3)gg_mark.yzw, (half)gg_mark.x);
+#endif // UPDATE_BASECOLORMAP
+#ifdef UPDATE_NORMALMAP
+			total_color.rg = lerp(total_color.rg, 0.5, (half)(0.6 * gg_mark.x));
+#endif // UPDATE_NORMALMAP
+#ifdef UPDATE_SURFACEMAP
+			total_color.g = lerp(total_color.g, 0.55, (half)gg_mark.x);
+			total_color.b = lerp(total_color.b, 0, (half)gg_mark.x);
+#endif // UPDATE_SURFACEMAP
+		}
+
 #ifdef UPDATE_BASECOLORMAP
 		block_rgb[idx] = ApplySRGBCurve_Fast(total_color.rgb);
 #endif // UPDATE_BASECOLORMAP

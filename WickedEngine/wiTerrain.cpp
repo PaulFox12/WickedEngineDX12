@@ -508,6 +508,12 @@ namespace wi::terrain
 			std::memcpy(&block[44], &pb.mask_cells, sizeof(float));
 			block[45] = pb.rotate_layers;
 		}
+		const int marking_srv = (pb.markings != nullptr && pb.markings->IsValid()) ? GetDevice()->GetDescriptorIndex(pb.markings, SubresourceType::SRV) : -1;
+		if (marking_srv >= 0 && size > 0)
+		{
+			block[46] = 1;
+			block[47] = (uint32_t)marking_srv;
+		}
 		const int srv = (pb.enabled && gg_splat_blend && pb.paintmap != nullptr && pb.paintmap->IsValid()) ? GetDevice()->GetDescriptorIndex(pb.paintmap, SubresourceType::SRV) : -1;
 		if (srv >= 0 && size > 0 && pb.map_resolution > 0 && scene != nullptr)
 		{

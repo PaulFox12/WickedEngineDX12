@@ -60,6 +60,69 @@ float4 gg_BSplineWeights(float f)
 	return float4(g * g * g, 3 * f3 - 6 * f2 + 4, -3 * f3 + 3 * f2 + 3 * f + 1, f3) / 6;
 }
 
+// GameGuru's road markings (its spline tool's lines) over a tile texel, as its DX11 page shader drew them: each piece's
+// paint from the texel's distance to it (rounded ends, so pieces meet without a seam), anti-aliased over the texel so a
+// line holds at any distance, dashed along the line by its phase, worn in patches; the strongest piece's colour. None
+// where a texel is wider than a metre (a line there is too thin to show). The block's words 46 and 47: on, the markings
+// buffer (wi::terrain::GGPaintBlend::markings). Returns x the paint (0-1), yzw its colour
+float4 gg_terrain_markings(ByteAddressBuffer buf, uint block, float2 uv, float texel_uv)
+{
+	float4 o = 0;
+	if (buf.Load(block + 46 * 4) == 0)
+		return o;
+	const float2 origin = asfloat(buf.Load2(block + 16));
+	const float size = asfloat(buf.Load(block + 24));
+	const float texel = max(size * texel_uv, 0.01);
+	if (texel > 39.37)
+		return o;
+	ByteAddressBuffer marks = bindless_buffers[descriptor_index(buf.Load(block + 47 * 4))];
+	const float cell = asfloat(marks.Load(0));
+	const float2 grid_origin = asfloat(marks.Load2(4));
+	const uint2 grid_size = marks.Load2(12);
+	const uint cells_at = marks.Load(20);
+	const uint indices_at = marks.Load(24);
+	const uint pieces_at = marks.Load(28);
+	const float2 world = origin + (uv - 0.5) * size;
+	const int2 c = int2(floor((world - grid_origin) / cell));
+	if (any(c < 0) || any(c >= int2(grid_size)))
+		return o;
+	const uint2 run = marks.Load2(cells_at + (c.y * grid_size.x + c.x) * 8);
+	const uint count = min(run.y, 96u);
+	for (uint k = 0; k < count; k++)
+	{
+		const uint at = pieces_at + marks.Load(indices_at + (run.x + k) * 4) * 48;
+		const float4 ab = asfloat(marks.Load4(at));
+		const float4 line_shape = asfloat(marks.Load4(at + 16)); // half width, dash, gap, phase
+		const float4 colour_wear = asfloat(marks.Load4(at + 32));
+		const float2 a = ab.xy;
+		const float2 piece = ab.zw - a;
+		const float len = length(piece);
+		const float2 dir = len > 0.001 ? piece / len : float2(1, 0);
+		const float2 ap = world - a;
+		const float along = clamp(dot(ap, dir), 0, len);
+		const float dist = length(ap - dir * along);
+		float cover = saturate((line_shape.x - dist) / texel + 0.5);
+		if (cover <= 0)
+			continue;
+		if (line_shape.z > 0)
+		{
+			const float period = line_shape.y + line_shape.z;
+			const float pos = fmod(line_shape.w + along, period);
+			float in_dash = saturate(min(pos, line_shape.y - pos) / texel + 0.5);
+			in_dash = max(in_dash, saturate((pos - period) / texel + 0.5));
+			cover *= in_dash;
+		}
+		if (colour_wear.w > 0)
+		{
+			const float n = gg_EdgeNoise(world / 40.0) * 0.6 + gg_EdgeNoise(world / 9.0 + 7.3) * 0.4;
+			cover *= saturate(1 - colour_wear.w * (1.5 - n));
+		}
+		if (cover > o.x)
+			o = float4(cover, colour_wear.rgb);
+	}
+	return o;
+}
+
 // uv: the tile texel's uv in the chunk (0-1); texel_uv: a texel's size in uv
 GGTerrainPaint gg_terrain_paint(ByteAddressBuffer buf, uint block, float2 uv, float texel_uv)
 {
