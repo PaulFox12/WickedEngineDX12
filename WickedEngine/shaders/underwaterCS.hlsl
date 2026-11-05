@@ -82,10 +82,26 @@ void main(uint3 DTid : SV_DispatchThreadID)
 		if (postprocess.params0.x > 0 && V.y < 0 && ocean_dist < distance(GetCamera().position, surface_position))
 			water_depth = ocean_dist;
 
-		float waterfog = saturate(exp(-water_depth * uw_density));
-		float3 transmittance = saturate(exp(-water_depth * ocean.extinction_color.rgb * uw_density));
-		color.rgb *= transmittance;
-		color.rgb = lerp(uw_color, color.rgb, waterfog);
+		[branch]
+		if (ocean.gg_fog_max > ocean.gg_fog_min && ocean.gg_fog_max > 0)
+		{
+			// GG: a script's SetWaterFog, as GameGuru's DX11 object shader fogs under water (ApplyFog): the light's path
+			// through the water (to a point under it and up to the surface; through the surface, the camera's way to it),
+			// no fog nearer than the minimum, nearly full by the maximum, never less than the minimum amount, toward the
+			// water colour, darker looking down
+			const float path = surface_position.y < ocean.water_height ?
+				distance(GetCamera().position, surface_position) + (ocean.water_height - surface_position.y) : ocean_dist;
+			const float clear = min(saturate(1 - ocean.extinction_color.w), exp(max(0, path - ocean.gg_fog_min) * 4.0 / (ocean.gg_fog_min - ocean.gg_fog_max)));
+			const float fade = V.y * 0.5 + 0.5;
+			color.rgb = lerp(ocean.water_color.rgb * (1.0 - fade * fade), color.rgb, clear);
+		}
+		else
+		{
+			float waterfog = saturate(exp(-water_depth * uw_density));
+			float3 transmittance = saturate(exp(-water_depth * ocean.extinction_color.rgb * uw_density));
+			color.rgb *= transmittance;
+			color.rgb = lerp(uw_color, color.rgb, waterfog);
+		}
 		
 		//color = float4(1, 0, 0, 1);
 	}

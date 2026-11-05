@@ -358,8 +358,8 @@ struct alignas(16) ShaderOcean
 
 	float caustic_scale;	// scales ONLY the seabed caustic lookup, so its size is independent of patch_size (which also drives wave size). 1 = stock (welded to patch size); <1 = larger caustics
 	float underwater_fog_density;	// GG delta 1.23: fog density for the underwaterCS screen effect, DECOUPLED from the surface water_color.a. 0 = use water_color.a (stock); >0 = independent underwater fog so the surface can stay transparent while the submerged view fogs.
-	float caustic_pad1;
-	float caustic_pad2;
+	float gg_fog_min;	// GG: a script's SetWaterFog, DX11's under water fog (underwaterCS): no fog nearer than this (units of water)
+	float gg_fog_max;	// GG: full fog by this; 0 = off (Lee's underwater fog above as it is). Its minimum amount is extinction_color.w
 
 	float4 underwater_color;	// GG delta 1.23: colour the submerged view fogs toward + the waterline transition band, DECOUPLED from the surface water_color.rgb. Only used when underwater_fog_density > 0. rgb used, a spare.
 

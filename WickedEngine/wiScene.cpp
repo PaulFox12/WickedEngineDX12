@@ -1166,6 +1166,9 @@ namespace wi::scene
 		shaderscene.weather.ocean.caustic_scale = weather.oceanParameters.caustic_scale;
 		shaderscene.weather.ocean.underwater_fog_density = weather.oceanParameters.underwater_fog_density;
 		shaderscene.weather.ocean.underwater_color = weather.oceanParameters.underwater_color;
+		shaderscene.weather.ocean.gg_fog_min = weather.oceanParameters.gg_waterFogMin; // GG: SetWaterFog (underwaterCS)
+		shaderscene.weather.ocean.gg_fog_max = weather.oceanParameters.gg_waterFogMax;
+		shaderscene.weather.ocean.extinction_color.w = weather.oceanParameters.gg_waterFogMinAmount;
 		shaderscene.weather.ocean.texture_displacementmap = device->GetDescriptorIndex(ocean.getDisplacementMap(), SubresourceType::SRV);
 		shaderscene.weather.ocean.texture_gradientmap = device->GetDescriptorIndex(ocean.getGradientMap(), SubresourceType::SRV);
 		shaderscene.weather.stars = weather.stars;

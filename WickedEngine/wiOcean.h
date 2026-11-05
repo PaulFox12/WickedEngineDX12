@@ -57,6 +57,13 @@ namespace wi
 			float underwater_fog_density = 0.0f;
 			XMFLOAT4 underwater_color = XMFLOAT4(0.0f, 0.05f, 0.12f, 1.0f);
 
+			// GG: a script's SetWaterFog (GameGuru's DX11 under water fog): the submerged view fogs by the water's path
+			// length, none nearer than gg_waterFogMin, full by gg_waterFogMax, never less than gg_waterFogMinAmount,
+			// toward the water colour (underwaterCS). gg_waterFogMax 0 = off, the underwater fog above as it is
+			float gg_waterFogMin = 0.0f;
+			float gg_waterFogMax = 0.0f;
+			float gg_waterFogMinAmount = 0.0f;
+
 			// GG delta 1.24: tints the see-through (refraction) SURFACE view toward waterColor.rgb
 			// with depth, so a chosen "Water Base Color" is visible even on fully-transparent water
 			// (waterColor.a == 0) — clear shallows, coloured depths, like real water absorbing light.
