@@ -159,6 +159,10 @@ namespace wi::renderer
 	// The executed-check for gg_shadow_caster_extrude — VISIBLE_OBJECTS cannot see the effect,
 	// so without this an A/B cannot distinguish "no cost" from "the knob did nothing".
 	extern std::atomic<unsigned int> gg_dbg_shadow_casters;
+	// GG: sun shadow casters smaller than this many of a cascade's texels left out of it (0 keeps all), and how many
+	// object-cascade pairs that left out last frame
+	extern float gg_shadow_min_texels;
+	extern unsigned int gg_shadow_texel_skipped;
 	// GGMAX 3.108: sun shadows of SHADOW_DISTANCE_FADE objects dissolve with their distance fade
 	// (false = stock hard cut, for A/B); per-frame count of casters inside their fade band.
 	extern bool gg_shadow_distance_fade;

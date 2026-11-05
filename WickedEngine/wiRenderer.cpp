@@ -423,6 +423,10 @@ std::atomic<unsigned long long> gg_dbg_transparent_shadow_batches{ 0 };
 // every timing number looked healthy while the mechanism under test never ran.
 // Reset each gather so the value is per-frame, not cumulative.
 std::atomic<unsigned int> gg_dbg_shadow_casters{ 0 };
+// GG: a sun shadow caster smaller in every direction than this many of a cascade's shadow map texels is left out of that
+// cascade (0 keeps every caster); and the object-cascade pairs it left out last frame
+float gg_shadow_min_texels = 2.0f;
+unsigned int gg_shadow_texel_skipped = 0;
 // GGMAX 3.108: SHADOW_DISTANCE_FADE objects (the tree pool) dissolve their sun shadow with their
 // distance fade. gg_shadow_distance_fade = false restores the stock hard cut (harness
 // SET_SHADOWDISTFADE 0, for A/B); gg_dbg_shadow_fading counts the casters inside their fade band this
@@ -9214,6 +9218,19 @@ void DrawShadowmaps(
 			// GGMAX 2.28: per-frame caster count — the executed-check for gg_shadow_caster_extrude.
 			gg_dbg_shadow_casters.store(0, std::memory_order_relaxed);
 			gg_dbg_shadow_fading.store(0, std::memory_order_relaxed);   // GGMAX 3.108
+			gg_shadow_texel_skipped = 0;
+
+			// GG: each cascade's smallest caster, gg_shadow_min_texels of its shadow map's texels across (its ortho width over
+			// the viewport's width); an object smaller in every direction casts nothing that cascade could show
+			float* ggMinCasterSize = (float*)alloca(sizeof(float) * cascade_count);
+			for (uint32_t cascade = 0; cascade < cascade_count; ++cascade)
+			{
+				XMFLOAT4X4 vp;
+				XMStoreFloat4x4(&vp, shcams[cascade].view_projection);
+				const float scaleX = std::sqrt(vp._11 * vp._11 + vp._21 * vp._21 + vp._31 * vp._31);
+				const float texel = (scaleX > 0 && shadow_rect.w > 0) ? (2.0f / scaleX) / float(shadow_rect.w) : 0.0f;
+				ggMinCasterSize[cascade] = cascade < ggDedicatedCount ? 0.0f : gg_shadow_min_texels * texel;
+			}
 
 			for (size_t i = 0; i < vis.scene->aabb_objects.size(); ++i)
 			{
@@ -9233,11 +9250,18 @@ void DrawShadowmaps(
 						// GG: a terrain chunk casts from the mesh it is drawn with: a coarser LOD (the shadow LOD override, Shadows Use
 						// Fastest LOD) stood above the drawn ground in places and darkened it in blocky patches with long streaks
 						const bool gg_terrain_chunk = (object.GetFilterMask() & wi::enums::FILTER_TERRAIN) != 0;
+						const float ggCasterSize = std::max(aabb._max.x - aabb._min.x, std::max(aabb._max.y - aabb._min.y, aabb._max.z - aabb._min.z));
 						for (uint32_t cascade = 0; cascade < cascade_count; ++cascade)
 						{
 							//GGMAX delayed cascades: no instances for skipped cascades
 							if (ggDelayedShadows && cascade < DelayedShadowCascadeState::MAX_CASCADES && !delayedShadowState.update[cascade])
 								continue;
+							// GG: too small to show in this cascade's shadow map (gg_shadow_min_texels)
+							if (ggCasterSize < ggMinCasterSize[cascade])
+							{
+								gg_shadow_texel_skipped++;
+								continue;
+							}
 							// GGMAX far-cascade caster cull (DX11 parity): keep object shadows out of the far cascades.
 							// 1.59: thresholds apply to the SUN cascade index (raw slot minus dedicated count);
 							// dedicated slots themselves are exempt.
