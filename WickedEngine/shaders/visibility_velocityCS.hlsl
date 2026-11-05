@@ -24,7 +24,8 @@ void main(uint2 DTid : SV_DispatchThreadID)
 
 	uint primitiveID = texture_primitiveID[pixel];
 
-	float3 pre;
+	// GG: the sky's unless found below (a surface that wouldn't load was left unset)
+	float3 pre = ray.Origin + ray.Direction * GetCamera().z_far;
 	[branch]
 	if (any(primitiveID))
 	{
@@ -43,7 +44,15 @@ void main(uint2 DTid : SV_DispatchThreadID)
 	}
 	else
 	{
-		pre = ray.Origin + ray.Direction * GetCamera().z_far;
+		// GG: GameGuru's own passes (the trees, the far terrain) write depth but no primitive: such a pixel is placed by its
+		// depth and moved by the camera as a still surface there, where taken for the sky at the far plane it had no parallax
+		// and temporal AA smeared it whenever the camera moved
+		const float depth = texture_depth[pixel];
+		[branch]
+		if (depth > 0)
+		{
+			pre = reconstruct_position(uv, depth);
+		}
 	}
 
 	float2 pos2D = clipspace;
