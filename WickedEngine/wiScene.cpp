@@ -6066,6 +6066,8 @@ namespace wi::scene
 				inst.alphaTest_size = wi::math::pack_half2(XMFLOAT2(1 - object.alphaRef, size));
 				inst.SetUserStencilRef(object.userStencilRef);
 				inst.rimHighlight = wi::math::pack_half4(XMFLOAT4(object.rimHighlightColor.x * object.rimHighlightColor.w, object.rimHighlightColor.y * object.rimHighlightColor.w, object.rimHighlightColor.z * object.rimHighlightColor.w, object.rimHighlightFalloff));
+				inst.padding.x = object.gg_texOffset.x; // GG: the object's own texture offset (objectHF, surfaceHF)
+				inst.padding.y = object.gg_texOffset.y;
 
 				std::memcpy(instanceArrayMapped + args.jobIndex, &inst, sizeof(inst)); // memcpy whole structure into mapped pointer to avoid read from uncached memory
 

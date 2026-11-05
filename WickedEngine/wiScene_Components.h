@@ -1259,6 +1259,9 @@ namespace wi::scene
 		// below the tree pool's reach. The shadow then dissolves over [start, start + radius] while the
 		// object itself stays. FLT_MAX = no separate start: the shadow fades with the object. Runtime only.
 		float gg_shadow_fade_start = std::numeric_limits<float>::max();
+		// GG: added to this object's texture coordinates on top of its material's offset, so one entity's part can
+		// scroll on its own while the model's material is shared (GameGuru's SetEntityLimbTextureScroll). Runtime only.
+		XMFLOAT2 gg_texOffset = XMFLOAT2(0, 0);
 
 		uint16_t lod = 0;
 		uint16_t gg_forcelod = 0; // GG: the LOD forced plus one (GameGuru's SetEntityLOD), 0 to choose by distance

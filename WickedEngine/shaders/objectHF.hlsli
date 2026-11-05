@@ -401,6 +401,7 @@ struct VertexSurface
 
 		uvsets = input.GetUVSets();
 		uvsets.xy = mad(uvsets.xy, material.texMulAdd.xy, material.texMulAdd.zw);
+		uvsets.xy += input.GetInstance().padding.xy; // GG: the object's own texture offset (ObjectComponent::gg_texOffset)
 
 		// GGMAX 3.35d: the lightmap atlas UV. Super Quick has no lightmapping.
 #ifndef OBJECTSHADER_LAYOUT_GG_SUPERQUICK

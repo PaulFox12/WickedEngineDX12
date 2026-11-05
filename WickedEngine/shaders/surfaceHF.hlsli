@@ -442,9 +442,9 @@ struct Surface
 			float4 uv1 = lerp(geometry.uv_range_min.xyxy, geometry.uv_range_max.xyxy, buf[i1]);
 			float4 uv2 = lerp(geometry.uv_range_min.xyxy, geometry.uv_range_max.xyxy, buf[i2]);
 			// all three must be transformed, to have correct derivatives (not enough to only transform final uvsets):
-			uv0.xy = mad(uv0.xy, material.texMulAdd.xy, material.texMulAdd.zw);
-			uv1.xy = mad(uv1.xy, material.texMulAdd.xy, material.texMulAdd.zw);
-			uv2.xy = mad(uv2.xy, material.texMulAdd.xy, material.texMulAdd.zw);
+			uv0.xy = mad(uv0.xy, material.texMulAdd.xy, material.texMulAdd.zw) + inst.padding.xy; // GG: + the object's own texture offset
+			uv1.xy = mad(uv1.xy, material.texMulAdd.xy, material.texMulAdd.zw) + inst.padding.xy;
+			uv2.xy = mad(uv2.xy, material.texMulAdd.xy, material.texMulAdd.zw) + inst.padding.xy;
 			uvsets = attribute_at_bary(uv0, uv1, uv2, bary);
 
 #ifdef SURFACE_LOAD_MIPCONE
