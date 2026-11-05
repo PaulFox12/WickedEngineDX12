@@ -739,6 +739,10 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	case 16: return float4(frac(surface.P * 0.05), 1);                         // world-position grid (skinned vertex stability)
 	default: break;
 	}
+	// GG: the Wicked terrain's shading priced (SET_TANGENTVIS 50-52): 52 its chunks a flat colour, no texture reads, unlit
+	[branch]
+	if (GetFrame().gg_debugvis == 52 && material.IsGGTerrain())
+		return float4(0.25, 0.32, 0.18, 1);
 #endif // PREPASS
 
 #ifdef PARALLAXOCCLUSIONMAPPING
@@ -796,7 +800,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 #ifdef PREPASS
 	if (material.textures[BASECOLORMAP].IsValid())
 #else
-	if (material.textures[BASECOLORMAP].IsValid() && (GetFrame().options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0)
+	if (material.textures[BASECOLORMAP].IsValid() && (GetFrame().options & OPTION_BIT_DISABLE_ALBEDO_MAPS) == 0 && !(GetFrame().gg_debugvis == 50 && material.IsGGTerrain())) // GG: 50, the terrain's texture reads skipped
 #endif // PREPASS
 	{
 		surface.baseColor *= material.textures[BASECOLORMAP].Sample(sampler_objectshader, uvsets);
@@ -876,7 +880,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 #ifndef WATER
 #if defined(OBJECTSHADER_USE_TANGENT) && !defined(GG_SUPERQUICK) // GGMAX 3.34: no normal mapping on the Super Quick rungs
 	[branch]
-	if (material.textures[NORMALMAP].IsValid())
+	if (material.textures[NORMALMAP].IsValid() && !(GetFrame().gg_debugvis == 50 && material.IsGGTerrain())) // GG: 50 skips it on the terrain
 	{
 		surface.bumpColor = half3(material.textures[NORMALMAP].Sample(sampler_objectshader, uvsets).rg, 1);
 		surface.bumpColor = surface.bumpColor * 2 - 1;
@@ -897,7 +901,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	// surface is still described correctly - just uniformly over the mesh instead of per texel.
 #if defined(OBJECTSHADER_USE_UVSETS) && !defined(GG_SUPERQUICK)
 	[branch]
-	if (material.textures[SURFACEMAP].IsValid())
+	if (material.textures[SURFACEMAP].IsValid() && !(GetFrame().gg_debugvis == 50 && material.IsGGTerrain())) // GG: 50 skips it on the terrain
 	{
 		surfaceMap = material.textures[SURFACEMAP].Sample(sampler_objectshader, uvsets);
 	}
@@ -1325,6 +1329,10 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	case 24: return float4(surface.F, 1);        // EnvBRDFApprox - diffuse is scaled by (1 - F)
 	default: break;
 	}
+	// GG: 51, the terrain's chunks textured and unlit (their lighting's cost)
+	[branch]
+	if (GetFrame().gg_debugvis == 51 && material.IsGGTerrain())
+		return float4(surface.albedo, 1);
 #endif // PREPASS
 
 	half3 ambient = GetAmbient(surface.N);
