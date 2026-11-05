@@ -57,8 +57,11 @@ namespace wi::scene
 	extern std::atomic<uint32_t> gg_anim_reduction_scale;   // 0 or 1 = off, else 2..100
 	// Per-armature update decision for the current frame, indexed by armature index. Filled by
 	// RunAnimationUpdateSystem, read by the skinning dispatch. Empty = Reduction Scale is off.
+	// GG: also filled, with Reduction Scale off, to hold armatures the main view has not drawn (gg_anim_vis_hold_skinning)
 	extern wi::vector<uint8_t> gg_anim_armature_update;
 	extern uint32_t gg_anim_armatures_skipped;
+	extern int gg_anim_vis_hold_skinning;
+	extern uint32_t gg_anim_vis_held;
 	extern uint32_t gg_anim_forced_first_pose;
 	// GGMAX 3.93: how many PIVOT GROUPS the prologue decided this frame, and the largest.
 	// 280 armatures collapse to ~94 groups on testpro2level. ★ If content ever breaks the

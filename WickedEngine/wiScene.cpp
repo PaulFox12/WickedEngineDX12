@@ -2358,6 +2358,10 @@ namespace wi::scene
 	// dispatch in wiRenderer - one decision, so the parts of a character cannot disagree.
 	wi::vector<uint8_t> gg_anim_armature_update;
 	uint32_t gg_anim_armatures_skipped = 0;   // diagnostic: armatures held this frame
+	// GG: 1 holds the skinning of armatures the main view has not drawn (RunAnimationUpdateSystem); gg_anim_vis_held counts
+	// them this frame (DUMP_ANIMREDUCTION)
+	int gg_anim_vis_hold_skinning = 1;
+	uint32_t gg_anim_vis_held = 0;
 	uint32_t gg_anim_groups = 0;              // GGMAX 3.93: pivot groups decided this frame
 	uint32_t gg_anim_group_largest = 0;       // GGMAX 3.93: armatures in the biggest group
 	std::atomic<uint32_t> gg_anim_meshes_held{ 0 };   // GGMAX 3.92, see wiScene.h
@@ -2628,6 +2632,66 @@ namespace wi::scene
 						if (!posed) { gg_anim_posed_once.emplace(ae, GetDevice()->GetFrameCount()); gg_anim_forced_first_pose++; }
 					}
 					else gg_anim_armatures_skipped++;
+				}
+			}
+		}
+
+		// GG: an armature none of whose objects the main view has drawn for the visibility pause's frames, and none of
+		// them near the camera, is held as Reduction Scale holds one: its animation is not evaluated (the visibility pause
+		// stops it already) and its meshes keep the pose they were last skinned to, not skinned again (RunMeshUpdateSystem's
+		// hold and the skinning dispatch read gg_anim_armature_update). Stock skinned every character in the level each
+		// frame, off screen or not. Only an armature already posed (gg_anim_posed_once), not in the post-load grace;
+		// gg_anim_vis_hold_skinning 0 turns it off (harness SET_SKINVISHOLD)
+		gg_anim_vis_held = 0;
+		if (gg_anim_vis_hold_skinning != 0 && gg_anim_reduction_grace <= 0.0f)
+		{
+			const uint32_t visPauseFrames = gg_anim_vis_pause_frames.load(std::memory_order_relaxed);
+			const size_t armCount = armatures.GetCount();
+			if (visPauseFrames > 0 && armCount > 0)
+			{
+				if (gg_anim_armature_update.size() != armCount)
+				{
+					gg_anim_armature_update.clear();
+					gg_anim_armature_update.resize(armCount, 1);
+				}
+				// per armature: 0 no object, 1 an object seen or near, 2 every object unseen
+				wi::vector<uint8_t> gg_seen(armCount, 0);
+				const uint32_t curFrame = (uint32_t)GetDevice()->GetFrameCount();
+				const uint32_t nearDist2 = gg_anim_vis_pause_neardist2.load(std::memory_order_relaxed);
+				const XMFLOAT3 eye = GetCamera().Eye;
+				for (size_t oi = 0; oi < objects.GetCount(); ++oi)
+				{
+					const ObjectComponent& obj = objects[oi];
+					const MeshComponent* m = meshes.GetComponent(obj.meshID);
+					if (m == nullptr || m->armatureID == wi::ecs::INVALID_ENTITY) continue;
+					const size_t ai = armatures.GetIndex(m->armatureID);
+					if (ai >= armCount) continue;
+					// never drawn counts as unseen here (the grace above covers a level's load, and an armature is posed once
+					// before it can be held): most of a level's characters are never in view, and were skinned every frame
+					bool seen = obj.gg_last_visible_frame != 0 && curFrame - obj.gg_last_visible_frame <= visPauseFrames;
+					if (!seen && nearDist2 > 0)
+					{
+						const float dx = obj.center.x - eye.x, dy = obj.center.y - eye.y, dz = obj.center.z - eye.z;
+						seen = dx * dx + dy * dy + dz * dz < (float)nearDist2;
+					}
+					if (seen) gg_seen[ai] = 1;
+					else if (gg_seen[ai] == 0) gg_seen[ai] = 2;
+				}
+				const uint64_t gg_frame = GetDevice()->GetFrameCount();
+				for (size_t ai = 0; ai < armCount; ++ai)
+				{
+					if (gg_seen[ai] == 0 || gg_anim_armature_update[ai] == 0) continue;
+					const wi::ecs::Entity ae = armatures.GetEntity(ai);
+					const bool posed = gg_anim_posed_once.count(ae) != 0;
+					if (gg_seen[ai] == 2 && posed)
+					{
+						gg_anim_armature_update[ai] = 0;
+						gg_anim_vis_held++;
+					}
+					else if (!posed)
+					{
+						gg_anim_posed_once.emplace(ae, gg_frame);
+					}
 				}
 			}
 		}
