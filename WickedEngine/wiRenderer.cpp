@@ -546,6 +546,9 @@ float particleScatter = 0; // GG: the sun's forward scattering on lit particle l
 int gg_reflection_blur = 0;
 // GG: the planar reflection passes draw every object at its last LOD. See wiRenderer.h.
 int gg_reflection_lowest_lod = 0;
+int gg_apparent_area_cull = 1;
+float gg_main_apparent_area = 0.0f;
+float gg_reflection_apparent_area = 0.002f;
 int gg_shadow_lowest_lod = 0;
 int gg_probe_lowest_lod = 0;
 int gg_reflection_transparent = 1;
@@ -4976,6 +4979,20 @@ void UpdateVisibility(Visibility& vis)
 				const float radius = aabb.getRadius();
 				const float radiusSq = radius * radius;
 				if (distSq > radiusSq && radiusSq < apparentCullTangentSq * distSq)
+				{
+					visible = false;
+				}
+			}
+			// GG: the DX11 build's apparent size cull, by its measure: the bounding box's largest face area over the
+			// squared distance to its centre
+			if (visible && vis.gg_min_apparent_area > 0.0f && !vis.scene->objects[args.jobIndex].IsApparentCullDisabled())
+			{
+				const float sx = aabb._max.x - aabb._min.x;
+				const float sy = aabb._max.y - aabb._min.y;
+				const float sz = aabb._max.z - aabb._min.z;
+				const float largestArea = std::max(sx * sy, std::max(sx * sz, sy * sz));
+				const float distSq = wi::math::DistanceSquared(apparentCullEye, aabb.getCenter());
+				if (distSq > 0.0f && largestArea <= vis.gg_min_apparent_area * distSq)
 				{
 					visible = false;
 				}

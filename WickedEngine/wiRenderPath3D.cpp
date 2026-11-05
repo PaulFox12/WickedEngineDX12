@@ -518,6 +518,8 @@ namespace wi
 		{
 			visibility_main.flags &= ~wi::renderer::Visibility::ALLOW_OCCLUSION_CULLING;
 		}
+		// GG: the DX11 build's apparent size cull, at the level's Apparent Size
+		visibility_main.gg_min_apparent_area = wi::renderer::gg_apparent_area_cull == 1 ? wi::renderer::gg_main_apparent_area : 0.0f;
 		{
 			auto gg_range = wi::profiler::BeginRangeCPU("RP3D-VisMain"); // GGMAX 1.32 instrumentation
 			wi::renderer::UpdateVisibility(visibility_main);
@@ -539,6 +541,9 @@ namespace wi
 				wi::renderer::Visibility::ALLOW_HAIRS |
 				wi::renderer::Visibility::ALLOW_LIGHTS
 				;
+			// GG: as DX11, the reflection culls more for its size: the level's Apparent Size or 0.002, the larger
+			visibility_reflection.gg_min_apparent_area = wi::renderer::gg_apparent_area_cull != 0 ?
+				std::max(wi::renderer::gg_main_apparent_area, wi::renderer::gg_reflection_apparent_area) : 0.0f;
 			auto gg_range = wi::profiler::BeginRangeCPU("RP3D-VisRefl"); // GGMAX 1.32 instrumentation
 			wi::renderer::UpdateVisibility(visibility_reflection);
 			wi::profiler::EndRange(gg_range);

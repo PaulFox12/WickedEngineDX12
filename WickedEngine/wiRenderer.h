@@ -67,6 +67,13 @@ namespace wi::renderer
 	// GG: 1 draws every object in the planar reflection passes at its last LOD (the level's "Reflections Use
 	// Fastest LOD"). Read in DrawScene, which is the one place the reflection's batches are queued.
 	extern int gg_reflection_lowest_lod;
+	// GG: the DX11 build's apparent size cull (Visibility::gg_min_apparent_area): the main view culls at the level's Apparent
+	// Size (gg_main_apparent_area, set each frame by GameGuru), the planar reflection at gg_reflection_apparent_area where
+	// that is larger (DX11's "reflections cull more agressively by default", 0.002). gg_apparent_area_cull 0 turns both
+	// off, 2 the reflection's only (A/B levers, SET_APPARENTAREA)
+	extern int gg_apparent_area_cull;
+	extern float gg_main_apparent_area;
+	extern float gg_reflection_apparent_area;
 	// GG: 1 draws every object's shadow at its last LOD (the level's "Shadows Use Fastest LOD"); 1 draws the environment
 	// probes' capture at the last LOD ("Probes Use Fastest LOD"). The DX11 rules, per-category flags in the level's visuals
 	extern int gg_shadow_lowest_lod;
@@ -285,6 +292,9 @@ namespace wi::renderer
 			ALLOW_EVERYTHING = ~0u
 		};
 		uint32_t flags = EMPTY;
+		// GG: the DX11 build's apparent size cull for this view: an object whose bounding box's largest face area over its
+		// squared distance from the camera is at or below this is not drawn; 0 off (see gg_apparent_area_cull)
+		float gg_min_apparent_area = 0.0f;
 
 		// wi::renderer::UpdateVisibility() fills these:
 		wi::primitive::Frustum frustum;
