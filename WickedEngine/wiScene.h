@@ -264,6 +264,33 @@ namespace wi::scene
 		wi::graphics::GPUBuffer skinningBuffer;
 		std::atomic<uint32_t> skinningAllocator{ 0 };
 
+		// GGMAX: on a GPU that is not cache coherent UMA, the instance, geometry and material arrays are written in cached
+		// memory (the *ArrayMapped pointers point there while gg_upload_cached), and the renderer uploads only the 4 KB
+		// blocks that changed since the last upload (wi::renderer's GG_UploadChanged, wi::scene::gg_upload_changed_only).
+		// They were 8.9 MB a frame on Outdoors, copied whole
+		struct GGUploadArray
+		{
+			struct alignas(64) Block { uint8_t bytes[64]; };
+			wi::vector<Block> cpu;		// what Scene::Update writes
+			wi::vector<uint8_t> last;	// what the GPU buffer was last given
+			void* lastBuffer = nullptr;	// the GPU buffer it went to, and its size (a new one is given everything)
+			uint64_t lastBufferSize = 0;
+			void* Prepare(size_t size)
+			{
+				const size_t blocks = (size + sizeof(Block) - 1) / sizeof(Block);
+				if (cpu.size() < blocks)
+					cpu.resize(blocks);
+				return cpu.data();
+			}
+		};
+		GGUploadArray gg_upload_instances;
+		GGUploadArray gg_upload_geometry;
+		GGUploadArray gg_upload_materials;
+		bool gg_upload_cached = false;
+		uint32_t gg_hair_geometry_offset = 0;	// the hairs' geometry records, then the emitters', start here
+		wi::vector<uint32_t> gg_object_meshlet_offsets;
+		uint64_t gg_upload_bytes = 0;			// what the last upload copied (DUMP_UPLOADS)
+
 		// Occlusion query state:
 		struct OcclusionResult
 		{

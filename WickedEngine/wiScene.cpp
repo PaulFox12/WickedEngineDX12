@@ -99,6 +99,10 @@ namespace wi::scene
 	// Harness: SET_INSTINIT 0|1.
 	bool gg_instinit_parallel = false;
 
+	// GGMAX: 1 uploads only the changed blocks of the instance, geometry and material arrays (Scene::GGUploadArray); 0 stock,
+	// the whole arrays written to the upload buffer and copied every frame. Harness: SET_UPLOADCHANGED 0|1
+	int gg_upload_changed_only = 1;
+
 	// Run a Scene::Update system, optionally serialised + timed. Variadic so call expressions
 	// containing commas (RunPhysicsUpdateSystem(ctx, *this, dt)) pass through intact.
 	#define GG_SCENE_SYS(label, ...)                                              \
@@ -264,7 +268,10 @@ namespace wi::scene
 				device->SetName(&instanceUploadBuffer[i], "Scene::instanceUploadBuffer");
 			}
 		}
-		instanceArrayMapped = (ShaderMeshInstance*)instanceUploadBuffer[cpu_gpu_mapped_resource_index].mapped_data;
+		// GGMAX: in cached memory, the changed blocks uploaded by the renderer (GGUploadArray)
+		gg_upload_cached = gg_upload_changed_only != 0 && !device->CheckCapability(GraphicsDeviceCapability::CACHE_COHERENT_UMA);
+		instanceArrayMapped = gg_upload_cached ? (ShaderMeshInstance*)gg_upload_instances.Prepare(instanceArraySize * sizeof(ShaderMeshInstance)) :
+			(ShaderMeshInstance*)instanceUploadBuffer[cpu_gpu_mapped_resource_index].mapped_data;
 
 		materialArraySize = materials.GetCount();
 		if (impostors.GetCount() > 0)
@@ -302,7 +309,8 @@ namespace wi::scene
 				device->SetName(&materialUploadBuffer[i], "Scene::materialUploadBuffer");
 			}
 		}
-		materialArrayMapped = (ShaderMaterial*)materialUploadBuffer[cpu_gpu_mapped_resource_index].mapped_data;
+		materialArrayMapped = gg_upload_cached ? (ShaderMaterial*)gg_upload_materials.Prepare(materialArraySize * sizeof(ShaderMaterial)) :
+			(ShaderMaterial*)materialUploadBuffer[cpu_gpu_mapped_resource_index].mapped_data;
 
 		if (textureStreamingFeedbackBuffer.desc.size < materialArraySize * sizeof(uint32_t))
 		{
@@ -384,11 +392,21 @@ namespace wi::scene
 			});
 
 			// Scan mesh subset counts and skinning data sizes to allocate GPU geometry data:
-			geometryAllocator.store(0u);
+			// GGMAX: each mesh's geometry records in mesh order. Handed out by these jobs in whatever order they ran, the
+			// geometry array and every instance's offsets into it moved about each frame, so the whole of both was new
+			// to every upload
+			{
+				uint32_t gg_geometry = 0;
+				for (size_t i = 0; i < meshes.GetCount(); ++i)
+				{
+					meshes[i].geometryOffset = gg_geometry;
+					gg_geometry += (uint32_t)meshes[i].subsets.size();
+				}
+				geometryAllocator.store(gg_geometry);
+			}
 			skinningAllocator.store(0u);
 			wi::jobsystem::Dispatch(ctx, (uint32_t)meshes.GetCount(), small_subtask_groupsize, [&](wi::jobsystem::JobArgs args) {
 				MeshComponent& mesh = meshes[args.jobIndex];
-				mesh.geometryOffset = geometryAllocator.fetch_add((uint32_t)mesh.subsets.size());
 				skinningAllocator.fetch_add(uint32_t(mesh.morph_targets.size() * sizeof(MorphTargetGPU)));
 			});
 			wi::jobsystem::Dispatch(ctx, (uint32_t)armatures.GetCount(), small_subtask_groupsize, [&](wi::jobsystem::JobArgs args) {
@@ -486,6 +504,7 @@ namespace wi::scene
 
 		// GPU subset count allocation is ready at this point:
 		geometryArraySize = geometryAllocator.load();
+		gg_hair_geometry_offset = (uint32_t)geometryArraySize; // GGMAX: each hair's record by its index, then each emitter's
 		geometryArraySize += hairs.GetCount();
 		geometryArraySize += emitters.GetCount();
 		if (impostors.GetCount() > 0)
@@ -523,7 +542,8 @@ namespace wi::scene
 				device->SetName(&geometryUploadBuffer[i], "Scene::geometryUploadBuffer");
 			}
 		}
-		geometryArrayMapped = (ShaderGeometry*)geometryUploadBuffer[cpu_gpu_mapped_resource_index].mapped_data;
+		geometryArrayMapped = gg_upload_cached ? (ShaderGeometry*)gg_upload_geometry.Prepare(geometryArraySize * sizeof(ShaderGeometry)) :
+			(ShaderGeometry*)geometryUploadBuffer[cpu_gpu_mapped_resource_index].mapped_data;
 
 		// Skinning data size is ready at this point:
 		skinningDataSize = skinningAllocator.load();
@@ -5697,7 +5717,23 @@ namespace wi::scene
 		matrix_objects_prev.resize(objects.GetCount());
 		occlusion_results_objects.resize(objects.GetCount());
 
-		meshletAllocator.store(0u);
+		// GGMAX: each object's meshlets in object order, the hairs and impostor taking theirs after (they were handed out by
+		// the object jobs in whatever order they ran, so every instance's record changed each frame); last frame's mesh
+		// index where it still names the object's mesh
+		gg_object_meshlet_offsets.resize(objects.GetCount());
+		{
+			uint32_t gg_meshlets = 0;
+			for (size_t i = 0; i < objects.GetCount(); ++i)
+			{
+				gg_object_meshlet_offsets[i] = gg_meshlets;
+				const ObjectComponent& gg_object = objects[i];
+				const MeshComponent* gg_mesh = gg_object.mesh_index < meshes.GetCount() && meshes.GetEntity(gg_object.mesh_index) == gg_object.meshID ?
+					&meshes[gg_object.mesh_index] : meshes.GetComponent(gg_object.meshID);
+				if (gg_mesh != nullptr)
+					gg_meshlets += gg_mesh->meshletCount;
+			}
+			meshletAllocator.store(gg_meshlets);
+		}
 
 		parallel_bounds.clear();
 		parallel_bounds.resize((size_t)wi::jobsystem::DispatchGroupCount((uint32_t)objects.GetCount(), small_subtask_groupsize));
@@ -5957,7 +5993,7 @@ namespace wi::scene
 				inst.baseGeometryCount = (uint)mesh.subsets.size();
 				inst.geometryOffset = inst.baseGeometryOffset + first_subset;
 				inst.geometryCount = last_subset - first_subset;
-				inst.meshletOffset = meshletAllocator.fetch_add(mesh.meshletCount, std::memory_order_relaxed);
+				inst.meshletOffset = gg_object_meshlet_offsets[args.jobIndex]; // GGMAX: in object order (above)
 				inst.fadeDistance = object.fadeDistance;
 				inst.center = object.center;
 				inst.radius = object.radius;
@@ -6463,7 +6499,7 @@ namespace wi::scene
 			geometry.aabb_min = hair.aabb._min;
 			geometry.aabb_max = hair.aabb._max;
 
-			size_t geometryAllocation = geometryAllocator.fetch_add(1);
+			const size_t geometryAllocation = gg_hair_geometry_offset + args.jobIndex; // GGMAX: by its index (was the next free)
 			std::memcpy(geometryArrayMapped + geometryAllocation, &geometry, sizeof(geometry));
 			hair.gg_geometry_index = (uint32_t)geometryAllocation; // GGMAX 1.37d: for the frozen-velocity patch
 
@@ -6580,7 +6616,7 @@ namespace wi::scene
 			geometry.vb_col = emitter.vb_col.descriptor_srv;
 			geometry.flags = SHADERMESH_FLAG_DOUBLE_SIDED | SHADERMESH_FLAG_EMITTEDPARTICLE;
 
-			size_t geometryAllocation = geometryAllocator.fetch_add(1);
+			const size_t geometryAllocation = gg_hair_geometry_offset + hairs.GetCount() + args.jobIndex; // GGMAX: by its index
 			std::memcpy(geometryArrayMapped + geometryAllocation, &geometry, sizeof(geometry));
 
 			ShaderMeshInstance inst;

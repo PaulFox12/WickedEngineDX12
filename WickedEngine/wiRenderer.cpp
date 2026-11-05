@@ -6916,6 +6916,64 @@ void UpdatePerFrameData(
 	frameCB.decals = ShaderEntityIterator(decalarray_offset, decalarray_count);
 	frameCB.forces = ShaderEntityIterator(forcefieldarray_offset, forcefieldarray_count);
 }
+// GGMAX: a scene array (Scene::GGUploadArray) given to its GPU buffer. Written in cached memory by Scene::Update, only its
+// 4 KB blocks that differ from what the buffer was last given are written to this frame's upload buffer and copied, a run
+// of them in one copy; a new GPU buffer is given everything. Bytes [always_from, always_to) are always given (records the
+// renderer patches later in the frame). Otherwise (stock, or a cache coherent UMA device) the whole array, as before
+static uint64_t GG_UploadChanged(GPUBuffer& dst, GPUBuffer& upload, wi::scene::Scene::GGUploadArray& arr, bool cached, size_t size,
+	size_t always_from, size_t always_to, CommandList cmd)
+{
+	if (!cached)
+	{
+		device->CopyBuffer(&dst, 0, &upload, 0, size, cmd);
+		return size;
+	}
+	const size_t block = 4096;
+	const size_t blocks = (size + block - 1) / block;
+	const uint8_t* cpu = (const uint8_t*)arr.cpu.data();
+	uint8_t* mapped = (uint8_t*)upload.mapped_data;
+	const bool fresh = arr.lastBuffer != dst.internal_state.get() || arr.lastBufferSize != dst.desc.size;
+	const size_t last_size = fresh ? 0 : arr.last.size();
+	wi::vector<uint8_t> changed(blocks);
+	wi::jobsystem::context ctx;
+	wi::jobsystem::Dispatch(ctx, (uint32_t)blocks, 64, [&](wi::jobsystem::JobArgs args) {
+		const size_t from = args.jobIndex * block;
+		const size_t to = std::min(size, from + block);
+		changed[args.jobIndex] = to > last_size || (from < always_to && to > always_from) || std::memcmp(cpu + from, arr.last.data() + from, to - from) != 0;
+	});
+	wi::jobsystem::Wait(ctx);
+	if (arr.last.size() < size)
+		arr.last.resize(size);
+	arr.lastBuffer = dst.internal_state.get();
+	arr.lastBufferSize = dst.desc.size;
+	uint64_t copied = 0;
+	size_t run_from = 0;
+	bool in_run = false;
+	for (size_t b = 0; b <= blocks; ++b)
+	{
+		const bool c = b < blocks && changed[b];
+		if (c)
+		{
+			const size_t from = b * block;
+			const size_t to = std::min(size, from + block);
+			std::memcpy(mapped + from, cpu + from, to - from);
+			std::memcpy(arr.last.data() + from, cpu + from, to - from);
+			if (!in_run)
+			{
+				run_from = from;
+				in_run = true;
+			}
+		}
+		else if (in_run)
+		{
+			const size_t run_to = std::min(size, b * block);
+			device->CopyBuffer(&dst, run_from, &upload, run_from, run_to - run_from, cmd);
+			copied += run_to - run_from;
+			in_run = false;
+		}
+	}
+	return copied;
+}
 void UpdateRenderData(
 	const Visibility& vis,
 	const FrameCB& frameCB,
@@ -6979,44 +7037,33 @@ void UpdateRenderData(
 		PushBarrier(GPUBarrier::Buffer(&vis.matrixBuffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE));
 	}
 
+	// GGMAX: the instance, geometry and material arrays, only their changed blocks (GG_UploadChanged); the hairs' geometry
+	// records always, as the frozen-velocity patch below rewrites them after this
+	wi::scene::Scene& gg_scene = *(wi::scene::Scene*)vis.scene;
+	uint64_t gg_uploaded = 0;
 	if (vis.scene->instanceBuffer.IsValid() && vis.scene->instanceArraySize > 0)
 	{
-		device->CopyBuffer(
-			&vis.scene->instanceBuffer,
-			0,
-			&vis.scene->instanceUploadBuffer[vis.scene->cpu_gpu_mapped_resource_index],
-			0,
-			vis.scene->instanceArraySize * sizeof(ShaderMeshInstance),
-			cmd
-		);
+		gg_uploaded += GG_UploadChanged(gg_scene.instanceBuffer, gg_scene.instanceUploadBuffer[vis.scene->cpu_gpu_mapped_resource_index],
+			gg_scene.gg_upload_instances, vis.scene->gg_upload_cached, vis.scene->instanceArraySize * sizeof(ShaderMeshInstance), 0, 0, cmd);
 		PushBarrier(GPUBarrier::Buffer(&vis.scene->instanceBuffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE));
 	}
 
 	if (vis.scene->geometryBuffer.IsValid() && vis.scene->geometryArraySize > 0)
 	{
-		device->CopyBuffer(
-			&vis.scene->geometryBuffer,
-			0,
-			&vis.scene->geometryUploadBuffer[vis.scene->cpu_gpu_mapped_resource_index],
-			0,
-			vis.scene->geometryArraySize * sizeof(ShaderGeometry),
-			cmd
-		);
+		const size_t gg_hairs_from = vis.scene->gg_hair_geometry_offset * sizeof(ShaderGeometry);
+		gg_uploaded += GG_UploadChanged(gg_scene.geometryBuffer, gg_scene.geometryUploadBuffer[vis.scene->cpu_gpu_mapped_resource_index],
+			gg_scene.gg_upload_geometry, vis.scene->gg_upload_cached, vis.scene->geometryArraySize * sizeof(ShaderGeometry),
+			gg_hairs_from, gg_hairs_from + vis.scene->hairs.GetCount() * sizeof(ShaderGeometry), cmd);
 		PushBarrier(GPUBarrier::Buffer(&vis.scene->geometryBuffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE));
 	}
 
 	if (vis.scene->materialBuffer.IsValid() && vis.scene->materialArraySize > 0)
 	{
-		device->CopyBuffer(
-			&vis.scene->materialBuffer,
-			0,
-			&vis.scene->materialUploadBuffer[vis.scene->cpu_gpu_mapped_resource_index],
-			0,
-			vis.scene->materialArraySize * sizeof(ShaderMaterial),
-			cmd
-		);
+		gg_uploaded += GG_UploadChanged(gg_scene.materialBuffer, gg_scene.materialUploadBuffer[vis.scene->cpu_gpu_mapped_resource_index],
+			gg_scene.gg_upload_materials, vis.scene->gg_upload_cached, vis.scene->materialArraySize * sizeof(ShaderMaterial), 0, 0, cmd);
 		PushBarrier(GPUBarrier::Buffer(&vis.scene->materialBuffer, ResourceState::COPY_DST, ResourceState::SHADER_RESOURCE));
 	}
+	gg_scene.gg_upload_bytes = gg_uploaded;
 
 	if (vis.scene->skinningBuffer.IsValid() && vis.scene->skinningDataSize > 0)
 	{
@@ -7339,6 +7386,13 @@ void UpdateRenderData(
 					{
 						ShaderGeometry* gg_geometry = vis.scene->geometryArrayMapped + hair.gg_geometry_index;
 						gg_geometry->vb_pre = hair.vb_pos[0].descriptor_srv;
+						// GGMAX: with the arrays in cached memory the upload buffer was written above; patch it too (the
+						// hairs' records are always copied, GG_UploadChanged)
+						if (vis.scene->gg_upload_cached)
+						{
+							ShaderGeometry* gg_uploaded = (ShaderGeometry*)vis.scene->geometryUploadBuffer[vis.scene->cpu_gpu_mapped_resource_index].mapped_data + hair.gg_geometry_index;
+							gg_uploaded->vb_pre = hair.vb_pos[0].descriptor_srv;
+						}
 					}
 				}
 			}
