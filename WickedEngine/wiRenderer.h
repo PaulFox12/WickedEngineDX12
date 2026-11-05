@@ -1315,7 +1315,17 @@ namespace wi::renderer
 
 	// Render occluders against a depth buffer
 	void OcclusionCulling_Reset(const Visibility& vis, wi::graphics::CommandList cmd);
-	void OcclusionCulling_Render(const wi::scene::CameraComponent& camera, const Visibility& vis, wi::graphics::CommandList cmd);
+	// GG: gg_parts picks the queries recorded: 1 the objects', 2 the lights', 4 the ocean's (all by default)
+	void OcclusionCulling_Render(const wi::scene::CameraComponent& camera, const Visibility& vis, wi::graphics::CommandList cmd, uint32_t gg_parts = ~0u);
+	// GG: with a multisampled main depth, the objects' occlusion boxes tested against a single-sample depth instead
+	// (gg_occlusion_single_sample, wiRenderPath3D): the lights' and ocean's queries stay on the prepass list, the lights'
+	// resolved there one by one (the shadow maps' predication reads them); later, once the visibility pass has resolved
+	// the frame's depth, each 2x2 block's farthest goes into depth_1x (half resolution), the objects' boxes are drawn
+	// against it and every query resolved
+	extern int gg_occlusion_single_sample;
+	void GG_OcclusionCulling_ResolveLights(const Visibility& vis, wi::graphics::CommandList cmd);
+	void GG_OcclusionCulling_ObjectsSingleSample(const wi::scene::CameraComponent& camera, const Visibility& vis, const wi::graphics::Texture& resolved_depth,
+		const wi::graphics::Texture& depth_1x, wi::graphics::CommandList cmd);
 	void OcclusionCulling_Resolve(const Visibility& vis, wi::graphics::CommandList cmd);
 
 	void ComputeReprojectedDepthPyramid(

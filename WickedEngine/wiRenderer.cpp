@@ -1172,6 +1172,8 @@ PipelineState PSO_mesh_blend_resolve;
 //rendered with. Default OFF = stock behaviour.
 Shader shadowClearPS_GG;
 PipelineState PSO_shadowClear_GG;
+Shader ggOcclusionDepthPS; // GG: the half-resolution farthest depth for the occlusion boxes
+PipelineState PSO_ggOcclusionDepth;
 static bool delayedShadowCascadesEnabled = false;
 // GGMAX 1.57: receiver-side depth bias for directional cascade shadows, in reversed-Z NDC
 // units (positive = receiver reads closer to the light = less self-shadow acne). The DX11-era
@@ -2106,6 +2108,10 @@ void LoadShaders()
 		LoadShader(ShaderStage::PS, shadowClearPS_GG, "shadowClearPS.cso");
 		desc.ps = &shadowClearPS_GG;
 		device->CreatePipelineState(&desc, &PSO_shadowClear_GG);
+		// GG: each 2x2 block's farthest depth into a half-resolution target (GG_OcclusionCulling_ObjectsSingleSample)
+		LoadShader(ShaderStage::PS, ggOcclusionDepthPS, "ggOcclusionDepthPS.cso");
+		desc.ps = &ggOcclusionDepthPS;
+		device->CreatePipelineState(&desc, &PSO_ggOcclusionDepth);
 		desc.ps = &shaders[PSTYPE_COPY_DEPTH];
 
 		desc.ps = &shaders[PSTYPE_COPY_STENCIL_BIT];
@@ -7887,7 +7893,7 @@ void OcclusionCulling_Reset(const Visibility& vis, CommandList cmd)
 		cmd
 	);
 }
-void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vis, CommandList cmd)
+void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vis, CommandList cmd, uint32_t gg_parts)
 {
 	if (!GetOcclusionCullingEnabled() || GetFreezeCullingCameraEnabled() || !vis.scene->queryHeap.IsValid())
 	{
@@ -7907,9 +7913,10 @@ void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vi
 	const GPUQueryHeap& queryHeap = vis.scene->queryHeap;
 	int query_write = vis.scene->queryheap_idx;
 
-	if (!vis.visibleObjects.empty())
+	if (!vis.visibleObjects.empty() && (gg_parts & 1))
 	{
 		device->EventBegin("Occlusion Culling Objects", cmd);
+		auto gg_range_objects = wi::profiler::BeginRangeGPU("Occlusion Objects", cmd); // GG: the parts' costs apart
 
 		for (uint32_t instanceIndex : vis.visibleObjects)
 		{
@@ -7943,12 +7950,14 @@ void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vi
 			}
 		}
 
+		wi::profiler::EndRange(gg_range_objects);
 		device->EventEnd(cmd);
 	}
 
-	if (!vis.visibleLights.empty())
+	if (!vis.visibleLights.empty() && (gg_parts & 2))
 	{
 		device->EventBegin("Occlusion Culling Lights", cmd);
+		auto gg_range_lights = wi::profiler::BeginRangeGPU("Occlusion Lights", cmd); // GG
 
 		for (uint32_t lightIndex : vis.visibleLights)
 		{
@@ -7966,20 +7975,23 @@ void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vi
 			}
 		}
 
+		wi::profiler::EndRange(gg_range_lights);
 		device->EventEnd(cmd);
 	}
 
-	if (vis.scene->weather.IsOceanEnabled())
+	if (vis.scene->weather.IsOceanEnabled() && (gg_parts & 4))
 	{
 		int queryIndex = vis.scene->ocean.occlusionQueries[query_write];
 		if (queryIndex >= 0)
 		{
 			device->EventBegin("Occlusion Culling Ocean", cmd);
+			auto gg_range_ocean = wi::profiler::BeginRangeGPU("Occlusion Ocean", cmd); // GG
 
 			device->QueryBegin(&queryHeap, queryIndex, cmd);
 			vis.scene->ocean.RenderForOcclusionTest(camera, cmd);
 			device->QueryEnd(&queryHeap, queryIndex, cmd);
 
+			wi::profiler::EndRange(gg_range_ocean);
 			device->EventEnd(cmd);
 		}
 	}
@@ -8030,6 +8042,84 @@ void OcclusionCulling_Resolve(const Visibility& vis, CommandList cmd)
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
 	}
+}
+// GG: the lights' occlusion queries resolved one by one on the prepass list, so the shadow maps' predication reads this
+// frame's, while the objects' queries are drawn later against a single-sample depth (GG_OcclusionCulling_ObjectsSingleSample,
+// which resolves every query again); the same state pattern as OcclusionCulling_Resolve
+void GG_OcclusionCulling_ResolveLights(const Visibility& vis, CommandList cmd)
+{
+	if (!GetOcclusionCullingEnabled() || GetFreezeCullingCameraEnabled() || !vis.scene->queryHeap.IsValid())
+	{
+		return;
+	}
+	const int query_write = vis.scene->queryheap_idx;
+	const GPUQueryHeap& queryHeap = vis.scene->queryHeap;
+	const bool predication = device->CheckCapability(GraphicsDeviceCapability::PREDICATION);
+	bool resolved = false;
+	for (uint32_t lightIndex : vis.visibleLights)
+	{
+		const LightComponent& light = vis.scene->lights[lightIndex];
+		if (light.occlusionquery < 0)
+			continue;
+		const uint32_t q = (uint32_t)light.occlusionquery;
+		device->QueryResolve(&queryHeap, q, 1, &vis.scene->queryResultBuffer[query_write], (uint64_t)q * sizeof(uint64_t), cmd);
+		if (predication)
+			device->QueryResolve(&queryHeap, q, 1, &vis.scene->queryPredicationBuffer, (uint64_t)q * sizeof(uint64_t), cmd);
+		resolved = true;
+	}
+	if (resolved && predication)
+	{
+		GPUBarrier barriers[] = {
+			GPUBarrier::Buffer(&vis.scene->queryPredicationBuffer, ResourceState::COPY_DST, ResourceState::PREDICATION),
+		};
+		device->Barrier(barriers, arraysize(barriers), cmd);
+	}
+}
+int gg_occlusion_single_sample = 1;
+void GG_OcclusionCulling_ObjectsSingleSample(const CameraComponent& camera, const Visibility& vis, const Texture& resolved_depth,
+	const Texture& depth_1x, CommandList cmd)
+{
+	if (!GetOcclusionCullingEnabled() || GetFreezeCullingCameraEnabled() || !vis.scene->queryHeap.IsValid())
+	{
+		return;
+	}
+	device->EventBegin("Occlusion Culling 1x", cmd);
+	auto range = wi::profiler::BeginRangeGPU("Occlusion Culling 1x", cmd);
+
+	PushBarrier(GPUBarrier::Image(&resolved_depth, resolved_depth.desc.layout, ResourceState::SHADER_RESOURCE));
+	FlushBarriers(cmd);
+
+	RenderPassImage rp[] = {
+		RenderPassImage::DepthStencil(&depth_1x, RenderPassImage::LoadOp::DONTCARE, RenderPassImage::StoreOp::DONTCARE),
+	};
+	device->RenderPassBegin(rp, arraysize(rp), cmd);
+	Viewport vp;
+	vp.width = (float)depth_1x.desc.width;
+	vp.height = (float)depth_1x.desc.height;
+	device->BindViewports(1, &vp, cmd);
+	Rect rect;
+	rect.left = 0;
+	rect.top = 0;
+	rect.right = (int32_t)depth_1x.desc.width;
+	rect.bottom = (int32_t)depth_1x.desc.height;
+	device->BindScissorRects(1, &rect, cmd);
+
+	// the frame's depth (the visibility pass's first mip) into the half-resolution target, each 2x2 block's farthest
+	device->BindPipelineState(&PSO_ggOcclusionDepth, cmd);
+	device->BindResource(&resolved_depth, 0, cmd);
+	device->Draw(3, 0, cmd);
+
+	OcclusionCulling_Render(camera, vis, cmd, 1);
+
+	device->RenderPassEnd(cmd);
+
+	PushBarrier(GPUBarrier::Image(&resolved_depth, ResourceState::SHADER_RESOURCE, resolved_depth.desc.layout));
+	FlushBarriers(cmd);
+
+	OcclusionCulling_Resolve(vis, cmd);
+
+	wi::profiler::EndRange(range);
+	device->EventEnd(cmd);
 }
 
 void DrawWaterRipples(const Visibility& vis, CommandList cmd)

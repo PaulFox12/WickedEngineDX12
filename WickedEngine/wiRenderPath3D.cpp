@@ -388,6 +388,20 @@ namespace wi
 			device->CreateTexture(&desc, nullptr, &depthBuffer_Main);
 			device->SetName(&depthBuffer_Main, "depthBuffer_Main");
 
+			// GG: a single-sample, half-resolution depth for the objects' occlusion boxes (each 2x2 block's farthest), when
+			// the main one is multisampled
+			gg_depthBuffer_Occlusion = {};
+			if (desc.sample_count > 1)
+			{
+				TextureDesc gg_desc = desc;
+				gg_desc.sample_count = 1;
+				gg_desc.format = Format::D32_FLOAT;
+				gg_desc.width = (desc.width + 1) / 2;
+				gg_desc.height = (desc.height + 1) / 2;
+				device->CreateTexture(&gg_desc, nullptr, &gg_depthBuffer_Occlusion);
+				device->SetName(&gg_depthBuffer_Occlusion, "gg_depthBuffer_Occlusion");
+			}
+
 			desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
 			desc.format = Format::R32_FLOAT;
 			desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
@@ -1157,7 +1171,9 @@ namespace wi
 		// GGMAX 1.40: occlusion-culling recording body, shared between the stock own-list path
 		// and the merged prepass-tail path. Safe on the prepass list: it renders against
 		// depthBuffer_Main which the prepass just finished writing (same-list sequencing).
-		auto gg_record_occlusion = [this](CommandList cmd) {
+		// GG: gg_split (the main depth multisampled, wi::renderer::gg_occlusion_single_sample): only the lights' and ocean's
+		// queries here, the lights' resolved; the objects' later against a single-sample depth, every query resolved there
+		auto gg_record_occlusion = [this](CommandList cmd, bool gg_split) {
 			GraphicsDevice* device = wi::graphics::GetDevice();
 			auto gg_range = wi::profiler::BeginRangeCPU("RP3D-rec Occlusion"); // GGMAX 1.32
 
@@ -1186,11 +1202,14 @@ namespace wi
 			vp.height = (float)depthBuffer_Main.GetDesc().height;
 			device->BindViewports(1, &vp, cmd);
 
-			wi::renderer::OcclusionCulling_Render(*camera, visibility_main, cmd);
+			wi::renderer::OcclusionCulling_Render(*camera, visibility_main, cmd, gg_split ? 2u | 4u : ~0u);
 
 			device->RenderPassEnd(cmd);
 
-			wi::renderer::OcclusionCulling_Resolve(visibility_main, cmd); // must be outside renderpass!
+			if (gg_split)
+				wi::renderer::GG_OcclusionCulling_ResolveLights(visibility_main, cmd); // must be outside renderpass!
+			else
+				wi::renderer::OcclusionCulling_Resolve(visibility_main, cmd); // must be outside renderpass!
 
 			device->EventEnd(cmd);
 			wi::profiler::EndRange(gg_range); // GGMAX 1.32
@@ -1200,7 +1219,9 @@ namespace wi
 		cmd = device->BeginCommandList();
 		CommandList cmd_maincamera_prepass = cmd;
 		const bool gg_merge_occlusion = gg_render_merge_lists && getOcclusionCullingEnabled(); // GGMAX 1.40
-		wi::jobsystem::Execute(ctx, [this, cmd, gg_merge_occlusion, &gg_record_occlusion](wi::jobsystem::JobArgs args) {
+		// GG: the objects' occlusion boxes against a single-sample depth (merged lists only, the main depth multisampled)
+		const bool gg_occlusion_1x = gg_merge_occlusion && wi::renderer::gg_occlusion_single_sample != 0 && gg_depthBuffer_Occlusion.IsValid();
+		wi::jobsystem::Execute(ctx, [this, cmd, gg_merge_occlusion, gg_occlusion_1x, &gg_record_occlusion](wi::jobsystem::JobArgs args) {
 
 			GraphicsDevice* device = wi::graphics::GetDevice();
 			auto gg_range_cpu = wi::profiler::BeginRangeCPU("RP3D-rec Prepass"); // GGMAX 1.32
@@ -1347,7 +1368,7 @@ namespace wi
 			// GGMAX 1.40 (a): record the occlusion pass at the tail of this list instead of its own
 			if (gg_merge_occlusion)
 			{
-				gg_record_occlusion(cmd);
+				gg_record_occlusion(cmd, gg_occlusion_1x);
 			}
 
 			wi::profiler::EndRange(gg_range_cpu); // GGMAX 1.32
@@ -1507,7 +1528,7 @@ namespace wi
 			cmd = device->BeginCommandList();
 			cmd_occlusionculling = cmd;
 			wi::jobsystem::Execute(ctx, [this, cmd, &gg_record_occlusion](wi::jobsystem::JobArgs args) {
-				gg_record_occlusion(cmd);
+				gg_record_occlusion(cmd, false);
 			});
 		}
 
@@ -1820,6 +1841,17 @@ namespace wi
 
 				wi::profiler::EndRange(range); // Planar Reflections
 				device->EventEnd(cmd);
+			});
+		}
+
+		// GG: the objects' occlusion boxes against a single-sample depth, once the visibility pass (compute effects) has
+		// resolved the frame's depth into depthBuffer_Copy; the opaque list follows it on the same queue
+		if (gg_occlusion_1x)
+		{
+			cmd = device->BeginCommandList();
+			device->WaitCommandList(cmd, cmd_maincamera_compute_effects);
+			wi::jobsystem::Execute(ctx, [this, cmd](wi::jobsystem::JobArgs args) {
+				wi::renderer::GG_OcclusionCulling_ObjectsSingleSample(*camera, visibility_main, depthBuffer_Copy, gg_depthBuffer_Occlusion, cmd);
 			});
 		}
 
