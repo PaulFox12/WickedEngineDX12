@@ -516,3 +516,10 @@ extern void (*g_pfnWickedListFinish)(wi::graphics::CommandList cmd, bool bLast);
 extern void (*g_pfnWickedSubmitEnd)(void);
 extern int (*g_pfnWickedGpuRangeBegin)(wi::graphics::CommandList cmd, const char* name);
 extern void (*g_pfnWickedGpuRangeEnd)(int range);
+// GG: the pipeline cache (#243, wiGraphicsDevice_DX12.cpp): a pipeline loaded from a library on disk at its first draw
+// before it is compiled; the uses recorded and warmed on the loading screen
+void GG_PipelineCacheSave();
+int GG_PipelineCacheWarm(double* pMs);
+void GG_PipelineCacheSetEnabled(bool value);
+void GG_PipelineCacheClear();
+void GG_PipelineCacheStats(char* out, int size);

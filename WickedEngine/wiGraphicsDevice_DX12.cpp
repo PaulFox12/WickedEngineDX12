@@ -33,6 +33,8 @@ DEFINE_GUID(D3D12_VIDEO_DECODE_PROFILE_H264, 0x1b81be68, 0xa0c7, 0x11d3, 0xb9, 0
 #include <ctime>   // GGMAX 1.51: report timestamp
 #include <psapi.h> // GGMAX 3.141: GetProcessMemoryInfo for the device-removal report
 #include <algorithm>
+#include "wiJobSystem.h" // GG: the pipeline cache's warm-up
+#include <unordered_map>
 #include <intrin.h> // _BitScanReverse64
 
 using namespace Microsoft::WRL;
@@ -45,6 +47,9 @@ std::atomic<unsigned long long> gg_dbg_pso_compile_us{ 0 };
 // GGMAX 1.82: the SUM of compile time is not what a user feels — a hitch is the WORST SINGLE
 // stall. 57 compiles totalling 400 ms is invisible if they are 7 ms each and fatal if one is 300.
 std::atomic<unsigned long long> gg_dbg_pso_compile_max_us{ 0 };
+std::atomic<unsigned long long> gg_dbg_pso_compile_maxr_us{ 0 }; // GG: the slowest since the harness's HITCH_RESET
+std::atomic<unsigned long long> gg_dbg_pso_library_loads{ 0 }; // GG: pipelines loaded from the pipeline library at their first draw
+std::atomic<unsigned long long> gg_dbg_pso_library_us{ 0 }; // GG: and their time
 std::atomic<unsigned long long> gg_dbg_tex_creates{ 0 };
 // GGMAX 2.61: CopyAllocator::submit ends in a null-event SetEventOnCompletion — a CPU-BLOCKING
 // wait until the copy queue drains that submission. Every CreateTexture/CreateBuffer WITH init
@@ -2146,6 +2151,7 @@ namespace dx12_internal
 		wi::vector<uint8_t> shadercode;
 		wi::vector<D3D12_INPUT_ELEMENT_DESC> input_elements;
 		D3D_PRIMITIVE_TOPOLOGY primitiveTopology;
+		uint64_t gg_content_hash = 0; // GG: the pipeline cache's key: its shaders' bytecode and its states (0 none)
 
 		ComPtr<ID3D12VersionedRootSignatureDeserializer> rootsig_deserializer;
 		const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* rootsig_desc = nullptr;
@@ -2292,6 +2298,204 @@ namespace dx12_internal
 	typename DX12Type<T>::type* to_internal(const GPUResource* res)
 	{
 		return static_cast<typename DX12Type<T>::type*>(res->internal_state.get());
+	}
+
+	// GG: the pipeline cache (#243). A pipeline compiled by the driver at its first draw froze the frame (670 and 755 ms in
+	// the user's run of 2026-11-06). Each pipeline gets a content key when it is made (its shaders' bytecode and its
+	// states), each use at a draw a key with the render pass's formats; at a first draw the pipeline is loaded from a
+	// pipeline library kept on disk beside the exe, else compiled and stored in it. The uses are recorded, and
+	// GG_PipelineCacheWarm compiles those the library lacks (after a shader or driver change) on the loading screen.
+	// Saved by GG_PipelineCacheSave and when the device closes; a library from another driver is dropped and made again
+	static uint64_t gg_fnv(uint64_t h, const void* data, size_t size)
+	{
+		const uint8_t* p = (const uint8_t*)data;
+		for (size_t i = 0; i < size; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+		return h;
+	}
+	template<typename T> static uint64_t gg_fnv_v(uint64_t h, const T& v) { return gg_fnv(h, &v, sizeof(v)); }
+	struct GGPipelineUse
+	{
+		uint64_t content = 0;
+		uint32_t ds = 0;
+		uint32_t samples = 1;
+		uint32_t count = 0;
+		uint32_t rt[8] = {};
+	};
+	static std::mutex gg_pc_lock;
+	static ComPtr<ID3D12Device2> gg_pc_device;
+	static ComPtr<ID3D12PipelineLibrary1> gg_pc_library;
+	static wi::vector<uint8_t> gg_pc_blob; // the library's saved data, alive while the library is
+	static std::string gg_pc_path, gg_pc_uses_path;
+	static bool gg_pc_enabled = true;
+	static bool gg_pc_mesh = false;
+	static uint32_t gg_pc_stored = 0, gg_pc_loaded = 0, gg_pc_warmed = 0, gg_pc_unsaved = 0;
+	static double gg_pc_warm_ms = 0;
+	static std::unordered_map<uint64_t, GGPipelineUse> gg_pc_uses; // by the use's key
+	static bool gg_pc_uses_dirty = false;
+	static std::mutex gg_pc_registry_lock;
+	static std::unordered_map<uint64_t, wi::allocator::weak_ptr<PipelineState_DX12>> gg_pc_registry; // by content key
+
+	static uint64_t gg_pc_use_key(const GGPipelineUse& u) { return gg_fnv(14695981039346656037ull, &u, sizeof(u)); }
+	static void gg_pc_name(uint64_t key, wchar_t(&name)[24]) { swprintf(name, 24, L"gg%016llx", (unsigned long long)key); }
+
+	// the use's key, recorded
+	static uint64_t gg_pc_use(uint64_t content, DXGI_FORMAT ds, const D3D12_RT_FORMAT_ARRAY& formats, uint32_t samples)
+	{
+		GGPipelineUse u;
+		u.content = content;
+		u.ds = (uint32_t)ds;
+		u.samples = samples;
+		u.count = formats.NumRenderTargets;
+		for (uint32_t i = 0; i < formats.NumRenderTargets && i < 8; ++i) u.rt[i] = (uint32_t)formats.RTFormats[i];
+		const uint64_t key = gg_pc_use_key(u);
+		if (content != 0)
+		{
+			std::scoped_lock l(gg_pc_lock);
+			if (gg_pc_uses.emplace(key, u).second) gg_pc_uses_dirty = true;
+		}
+		return key;
+	}
+	static bool gg_pc_load(uint64_t key, const D3D12_PIPELINE_STATE_STREAM_DESC& streamDesc, ComPtr<ID3D12PipelineState>& out)
+	{
+		std::scoped_lock l(gg_pc_lock);
+		if (!gg_pc_enabled || gg_pc_library == nullptr) return false;
+		wchar_t name[24];
+		gg_pc_name(key, name);
+		if (FAILED(gg_pc_library->LoadPipeline(name, &streamDesc, IID_PPV_ARGS(&out))) || out == nullptr) { out.Reset(); return false; }
+		gg_pc_loaded++;
+		return true;
+	}
+	static void gg_pc_store(uint64_t key, ID3D12PipelineState* pso)
+	{
+		std::scoped_lock l(gg_pc_lock);
+		if (!gg_pc_enabled || gg_pc_library == nullptr) return;
+		wchar_t name[24];
+		gg_pc_name(key, name);
+		if (SUCCEEDED(gg_pc_library->StorePipeline(name, pso))) { gg_pc_stored++; gg_pc_unsaved++; }
+	}
+	static bool gg_pc_read(const std::string& path, wi::vector<uint8_t>& data)
+	{
+		FILE* f = fopen(path.c_str(), "rb");
+		if (!f) return false;
+		fseek(f, 0, SEEK_END);
+		const long size = ftell(f);
+		fseek(f, 0, SEEK_SET);
+		if (size <= 0 || size > 512l * 1024 * 1024) { fclose(f); return false; }
+		data.resize((size_t)size);
+		const bool ok = fread(data.data(), 1, data.size(), f) == data.size();
+		fclose(f);
+		return ok;
+	}
+	static bool gg_pc_write(const std::string& path, const void* data, size_t size)
+	{
+		const std::string tmp = path + ".tmp";
+		FILE* f = fopen(tmp.c_str(), "wb");
+		if (!f) return false;
+		const bool ok = fwrite(data, 1, size, f) == size;
+		fclose(f);
+		if (!ok) { remove(tmp.c_str()); return false; }
+		return MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+	}
+	// the library and the uses from disk, or empty; a library made by another driver or adapter is dropped
+	static void gg_pc_open(ID3D12Device* device, bool mesh)
+	{
+		std::scoped_lock l(gg_pc_lock);
+		gg_pc_mesh = mesh;
+		if (FAILED(device->QueryInterface(IID_PPV_ARGS(&gg_pc_device)))) return;
+		char exe[MAX_PATH] = {};
+		GetModuleFileNameA(nullptr, exe, MAX_PATH);
+		std::string dir = exe;
+		dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+		gg_pc_path = dir + "gg_pipeline_cache.bin";
+		gg_pc_uses_path = dir + "gg_pipeline_uses.bin";
+		if (gg_pc_read(gg_pc_path, gg_pc_blob))
+		{
+			if (FAILED(gg_pc_device->CreatePipelineLibrary(gg_pc_blob.data(), gg_pc_blob.size(), IID_PPV_ARGS(&gg_pc_library))))
+			{
+				gg_pc_library.Reset();
+				gg_pc_blob.clear();
+				wilog("[GG] the pipeline cache from another driver or a damaged file: made again");
+			}
+		}
+		if (gg_pc_library == nullptr)
+		{
+			gg_pc_blob.clear();
+			if (FAILED(gg_pc_device->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&gg_pc_library)))) gg_pc_library.Reset();
+		}
+		wi::vector<uint8_t> uses;
+		if (gg_pc_read(gg_pc_uses_path, uses) && uses.size() % sizeof(GGPipelineUse) == 0)
+		{
+			const GGPipelineUse* u = (const GGPipelineUse*)uses.data();
+			for (size_t i = 0; i < uses.size() / sizeof(GGPipelineUse); ++i) gg_pc_uses.emplace(gg_pc_use_key(u[i]), u[i]);
+		}
+		wilog("[GG] pipeline cache: %s, %d KB, %d uses recorded", gg_pc_library ? "open" : "unavailable", (int)(gg_pc_blob.size() / 1024), (int)gg_pc_uses.size());
+	}
+	static void gg_pc_save()
+	{
+		std::scoped_lock l(gg_pc_lock);
+		if (gg_pc_library != nullptr && gg_pc_unsaved > 0)
+		{
+			const SIZE_T size = gg_pc_library->GetSerializedSize();
+			wi::vector<uint8_t> data(size);
+			if (size > 0 && SUCCEEDED(gg_pc_library->Serialize(data.data(), size)) && gg_pc_write(gg_pc_path, data.data(), size)) gg_pc_unsaved = 0;
+		}
+		if (gg_pc_uses_dirty && !gg_pc_uses_path.empty())
+		{
+			wi::vector<GGPipelineUse> uses;
+			uses.reserve(gg_pc_uses.size());
+			for (auto& x : gg_pc_uses) uses.push_back(x.second);
+			if (gg_pc_write(gg_pc_uses_path, uses.data(), uses.size() * sizeof(GGPipelineUse))) gg_pc_uses_dirty = false;
+		}
+	}
+	// the recorded uses the library lacks whose pipeline exists now, compiled on the job threads and stored
+	static int gg_pc_warm(double* pMs)
+	{
+		wi::Timer timer;
+		struct Job { GGPipelineUse use; uint64_t key; wi::allocator::shared_ptr<PipelineState_DX12> pso; };
+		wi::vector<Job> jobs;
+		{
+			std::scoped_lock l(gg_pc_lock);
+			if (!gg_pc_enabled || gg_pc_library == nullptr || gg_pc_device == nullptr) return 0;
+			for (auto& x : gg_pc_uses) jobs.push_back({ x.second, x.first, {} });
+		}
+		{
+			std::scoped_lock l(gg_pc_registry_lock);
+			for (auto& j : jobs)
+			{
+				auto it = gg_pc_registry.find(j.use.content);
+				if (it != gg_pc_registry.end()) j.pso = it->second.lock();
+			}
+		}
+		std::atomic<int> warmed{ 0 };
+		wi::jobsystem::context ctx;
+		wi::jobsystem::Dispatch(ctx, (uint32_t)jobs.size(), 1, [&](wi::jobsystem::JobArgs args) {
+			Job& j = jobs[args.jobIndex];
+			if (j.pso == nullptr) return;
+			PipelineState_DX12::PSO_STREAM stream = j.pso->stream;
+			D3D12_RT_FORMAT_ARRAY formats = {};
+			formats.NumRenderTargets = j.use.count;
+			for (uint32_t i = 0; i < j.use.count && i < 8; ++i) formats.RTFormats[i] = (DXGI_FORMAT)j.use.rt[i];
+			DXGI_SAMPLE_DESC sampleDesc = {};
+			sampleDesc.Count = j.use.samples;
+			stream.stream1.DSFormat = (DXGI_FORMAT)j.use.ds;
+			stream.stream1.Formats = formats;
+			stream.stream1.SampleDesc = sampleDesc;
+			D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+			streamDesc.pPipelineStateSubobjectStream = &stream;
+			streamDesc.SizeInBytes = sizeof(stream.stream1) + (gg_pc_mesh ? sizeof(stream.stream2) : 0);
+			ComPtr<ID3D12PipelineState> p;
+			if (gg_pc_load(j.key, streamDesc, p)) return; // in the library already
+			if (SUCCEEDED(gg_pc_device->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&p))) && p != nullptr)
+			{
+				gg_pc_store(j.key, p.Get());
+				warmed.fetch_add(1);
+			}
+		});
+		wi::jobsystem::Wait(ctx);
+		gg_pc_warmed += (uint32_t)warmed.load();
+		gg_pc_warm_ms = timer.elapsed();
+		if (pMs) *pMs = gg_pc_warm_ms;
+		return warmed.load();
 	}
 
 #ifdef PLATFORM_WINDOWS_DESKTOP
@@ -2885,7 +3089,20 @@ std::mutex queue_locker;
 				}
 
 				ComPtr<ID3D12PipelineState> newpso;
-				HRESULT gg_pso_hr = dx12_check(device->CreatePipelineState(&streamDesc, PPV_ARGS(newpso)));
+				HRESULT gg_pso_hr = S_OK;
+				// GG: the pipeline cache (#243): loaded from the library when it holds this pipeline, else compiled and stored
+				bool gg_from_library = false;
+				uint64_t gg_use_key = 0;
+				if (internal_state->gg_content_hash != 0)
+				{
+					gg_use_key = dx12_internal::gg_pc_use(internal_state->gg_content_hash, DSFormat, formats, sampleDesc.Count);
+					gg_from_library = dx12_internal::gg_pc_load(gg_use_key, streamDesc, newpso);
+				}
+				if (!gg_from_library)
+				{
+					gg_pso_hr = dx12_check(device->CreatePipelineState(&streamDesc, PPV_ARGS(newpso)));
+					if (newpso != nullptr && gg_use_key != 0) dx12_internal::gg_pc_store(gg_use_key, newpso.Get());
+				}
 
 				// GGMAX 2026-08-07: a driver-rejected lazy PSO compile used to fall through to
 				// SetPipelineState(nullptr) below — d3d12.dll AV at 0x18c, no diagnostics (the
@@ -2921,13 +3138,26 @@ std::mutex queue_locker;
 
 				QueryPerformanceCounter(&gg_c1);
 				const unsigned long long gg_compile_us = (unsigned long long)(((gg_c1.QuadPart - gg_c0.QuadPart) * 1000000.0) / (double)gg_f.QuadPart);
+				if (gg_from_library)
+				{
+					::gg_dbg_pso_library_loads.fetch_add(1, std::memory_order_relaxed);
+					::gg_dbg_pso_library_us.fetch_add(gg_compile_us, std::memory_order_relaxed);
+				}
+				else
+				{
 				gg_dbg_pso_compiles.fetch_add(1, std::memory_order_relaxed);
 				gg_dbg_pso_compile_us.fetch_add(gg_compile_us, std::memory_order_relaxed);
+				{
+					unsigned long long gg_prev_r = ::gg_dbg_pso_compile_maxr_us.load(std::memory_order_relaxed);
+					while (gg_compile_us > gg_prev_r &&
+						!::gg_dbg_pso_compile_maxr_us.compare_exchange_weak(gg_prev_r, gg_compile_us, std::memory_order_relaxed)) {}
+				}
 				// GGMAX 1.82: keep the worst single compile — that is the hitch the user actually sees.
 				{
 					unsigned long long gg_prev = gg_dbg_pso_compile_max_us.load(std::memory_order_relaxed);
 					while (gg_compile_us > gg_prev &&
 						!gg_dbg_pso_compile_max_us.compare_exchange_weak(gg_prev, gg_compile_us, std::memory_order_relaxed)) {}
+				}
 				}
 
 				if (g_pfnWickedDeviceCall)
@@ -2935,7 +3165,7 @@ std::mutex queue_locker;
 					// GG: the compile at a pipeline's first draw, where this device makes its pipeline states
 					WickedDeviceCallInfo gg_info;
 					gg_info.call = 3;
-					gg_info.op = "pipeline compiled at its first draw";
+					gg_info.op = gg_from_library ? "pipeline loaded from the pipeline cache at its first draw" : "pipeline compiled at its first draw";
 					g_pfnWickedDeviceCall((double)gg_compile_us / 1000.0, gg_info);
 				}
 
@@ -3937,12 +4167,22 @@ std::mutex queue_locker;
 		::gg_dbg_descriptor_heap_bytes.store(
 			(unsigned long long)descriptorheap_res.heapDesc.NumDescriptors * resource_descriptor_size +
 			(unsigned long long)descriptorheap_sam.heapDesc.NumDescriptors * sampler_descriptor_size);
+		// GG: the pipeline cache (#243), from disk
+		dx12_internal::gg_pc_open(device.Get(), CheckCapability(GraphicsDeviceCapability::MESH_SHADER));
+
 		// First mark: device + queues + descriptor heaps exist, no engine resource has been created
 		// yet. Everything reported here is cost we inherit before drawing anything.
 		GG_VRAMStage("device_created");
 	}
 	GraphicsDevice_DX12::~GraphicsDevice_DX12()
 	{
+		// GG: the pipeline cache (#243) to disk, then let go before the device
+		dx12_internal::gg_pc_save();
+		{
+			std::scoped_lock l(dx12_internal::gg_pc_lock);
+			dx12_internal::gg_pc_library.Reset();
+			dx12_internal::gg_pc_device.Reset();
+		}
 		gg_rm_test_device = nullptr; // GGMAX 3.141
 		gg_rm_adapter3.Reset();
 		gg_rm_gfx_frame_fence[0] = gg_rm_gfx_frame_fence[1] = nullptr;
@@ -5341,6 +5581,52 @@ std::mutex queue_locker;
 
 			dx12_check(device->CreatePipelineState(&streamDesc, PPV_ARGS(internal_state->resource)));
 			::gg_dbg_pso_driver_eager.fetch_add(1, std::memory_order_relaxed); // GGMAX 1.79
+		}
+		else
+		{
+			// GG: the pipeline cache's content key (#243): the shaders' bytecode and the states, each field on its own (the
+			// structs' padding is not set), then registered for the warm-up
+			uint64_t h = 14695981039346656037ull;
+			const Shader* stages[] = { pso->desc.vs, pso->desc.hs, pso->desc.ds, pso->desc.gs, pso->desc.ps, pso->desc.ms, pso->desc.as };
+			for (const Shader* s : stages)
+			{
+				const uint32_t present = (s != nullptr && s->IsValid()) ? 1u : 0u;
+				h = gg_fnv_v(h, present);
+				if (present) { auto si = to_internal(s); h = gg_fnv(h, si->shadercode.data(), si->shadercode.size()); }
+			}
+			const D3D12_RASTERIZER_DESC& r = stream.stream1.RS;
+			h = gg_fnv_v(h, r.FillMode); h = gg_fnv_v(h, r.CullMode); h = gg_fnv_v(h, r.FrontCounterClockwise); h = gg_fnv_v(h, r.DepthBias);
+			h = gg_fnv_v(h, r.DepthBiasClamp); h = gg_fnv_v(h, r.SlopeScaledDepthBias); h = gg_fnv_v(h, r.DepthClipEnable);
+			h = gg_fnv_v(h, r.MultisampleEnable); h = gg_fnv_v(h, r.AntialiasedLineEnable); h = gg_fnv_v(h, r.ForcedSampleCount);
+			h = gg_fnv_v(h, r.ConservativeRaster);
+			const D3D12_DEPTH_STENCIL_DESC1& d = stream.stream1.DSS;
+			h = gg_fnv_v(h, d.DepthEnable); h = gg_fnv_v(h, d.DepthWriteMask); h = gg_fnv_v(h, d.DepthFunc); h = gg_fnv_v(h, d.StencilEnable);
+			h = gg_fnv_v(h, d.StencilReadMask); h = gg_fnv_v(h, d.StencilWriteMask); h = gg_fnv_v(h, d.DepthBoundsTestEnable);
+			for (const D3D12_DEPTH_STENCILOP_DESC* f : { &d.FrontFace, &d.BackFace })
+			{
+				h = gg_fnv_v(h, f->StencilFailOp); h = gg_fnv_v(h, f->StencilDepthFailOp); h = gg_fnv_v(h, f->StencilPassOp); h = gg_fnv_v(h, f->StencilFunc);
+			}
+			const D3D12_BLEND_DESC& b = stream.stream1.BD;
+			h = gg_fnv_v(h, b.AlphaToCoverageEnable); h = gg_fnv_v(h, b.IndependentBlendEnable);
+			for (const D3D12_RENDER_TARGET_BLEND_DESC& t : b.RenderTarget)
+			{
+				h = gg_fnv_v(h, t.BlendEnable); h = gg_fnv_v(h, t.LogicOpEnable); h = gg_fnv_v(h, t.SrcBlend); h = gg_fnv_v(h, t.DestBlend);
+				h = gg_fnv_v(h, t.BlendOp); h = gg_fnv_v(h, t.SrcBlendAlpha); h = gg_fnv_v(h, t.DestBlendAlpha); h = gg_fnv_v(h, t.BlendOpAlpha);
+				h = gg_fnv_v(h, t.LogicOp); h = gg_fnv_v(h, t.RenderTargetWriteMask);
+			}
+			const D3D12_PRIMITIVE_TOPOLOGY_TYPE pt = stream.stream1.PT;
+			const D3D12_INDEX_BUFFER_STRIP_CUT_VALUE strip = stream.stream1.STRIP;
+			const UINT sampleMask = stream.stream1.SampleMask;
+			h = gg_fnv_v(h, pt); h = gg_fnv_v(h, strip); h = gg_fnv_v(h, sampleMask);
+			for (const D3D12_INPUT_ELEMENT_DESC& e : internal_state->input_elements)
+			{
+				if (e.SemanticName) h = gg_fnv(h, e.SemanticName, strlen(e.SemanticName));
+				h = gg_fnv_v(h, e.SemanticIndex); h = gg_fnv_v(h, e.Format); h = gg_fnv_v(h, e.InputSlot);
+				h = gg_fnv_v(h, e.AlignedByteOffset); h = gg_fnv_v(h, e.InputSlotClass); h = gg_fnv_v(h, e.InstanceDataStepRate);
+			}
+			internal_state->gg_content_hash = h != 0 ? h : 1;
+			std::scoped_lock l(gg_pc_registry_lock);
+			gg_pc_registry[internal_state->gg_content_hash] = internal_state;
 		}
 
 		return true;
@@ -9669,3 +9955,35 @@ std::mutex queue_locker;
 }
 
 #endif // WICKEDENGINE_BUILD_DX12
+
+// GG: the pipeline cache (#243), for the game: save it, warm the recorded uses the library lacks (returns how many were
+// compiled; the time in *pMs), switch it, clear it (its files deleted, an empty library), and its counts
+void GG_PipelineCacheSave() { wi::graphics::dx12_internal::gg_pc_save(); }
+int GG_PipelineCacheWarm(double* pMs) { return wi::graphics::dx12_internal::gg_pc_warm(pMs); }
+void GG_PipelineCacheSetEnabled(bool value)
+{
+	std::scoped_lock l(wi::graphics::dx12_internal::gg_pc_lock);
+	wi::graphics::dx12_internal::gg_pc_enabled = value;
+}
+void GG_PipelineCacheClear()
+{
+	using namespace wi::graphics::dx12_internal;
+	std::scoped_lock l(gg_pc_lock);
+	if (gg_pc_device == nullptr) return;
+	gg_pc_library.Reset();
+	gg_pc_blob.clear();
+	gg_pc_uses.clear();
+	gg_pc_uses_dirty = false;
+	gg_pc_unsaved = 0;
+	remove(gg_pc_path.c_str());
+	remove(gg_pc_uses_path.c_str());
+	if (FAILED(gg_pc_device->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&gg_pc_library)))) gg_pc_library.Reset();
+}
+void GG_PipelineCacheStats(char* out, int size)
+{
+	using namespace wi::graphics::dx12_internal;
+	std::scoped_lock l(gg_pc_lock);
+	snprintf(out, (size_t)size, "on=%d library=%d file_kb=%d uses=%d stored=%u loaded=%u warmed=%u warm_ms=%.0f unsaved=%u",
+		gg_pc_enabled ? 1 : 0, gg_pc_library != nullptr ? 1 : 0, (int)(gg_pc_blob.size() / 1024), (int)gg_pc_uses.size(),
+		gg_pc_stored, gg_pc_loaded, gg_pc_warmed, gg_pc_warm_ms, gg_pc_unsaved);
+}
