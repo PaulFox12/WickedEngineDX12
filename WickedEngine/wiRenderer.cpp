@@ -4912,7 +4912,12 @@ void UpdateVisibility(Visibility& vis)
 				if (light.GetType() != LightComponent::DIRECTIONAL)
 				{
 					if (light.GetRange() <= 1.0f) gg_in_reach = false;
-					else if (gg_light_max_distance > 0.0f && wi::math::DistanceEstimated(XMLoadFloat3(&light.position), vis.camera->GetEye()) > gg_light_max_distance + light.GetRange()) gg_in_reach = false;
+					else
+					{
+						// GG: its own reach (gg_maxDistance, SetLightMaxDistanceFor) else the global one
+						const float gg_reach = light.gg_maxDistance > 0.0f ? light.gg_maxDistance : gg_light_max_distance;
+						if (gg_reach > 0.0f && wi::math::DistanceEstimated(XMLoadFloat3(&light.position), vis.camera->GetEye()) > gg_reach + light.GetRange()) gg_in_reach = false;
+					}
 				}
 				if (!light.IsInactive() && gg_in_reach)
 				{

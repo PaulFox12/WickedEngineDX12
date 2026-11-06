@@ -1462,6 +1462,7 @@ namespace wi::scene
 		XMFLOAT4 rotation = XMFLOAT4(0, 0, 0, 1);
 		XMFLOAT3 scale = XMFLOAT3(1, 1, 1);
 		int maskTexDescriptor = -1;
+		float gg_maxDistance = 0.0f; // GG: this light's own reach from the camera (its range added); 0 takes gg_light_max_distance
 
 		wi::vector<wi::Resource> lensFlareRimTextures;
 
