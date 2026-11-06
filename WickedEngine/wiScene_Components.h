@@ -18,6 +18,7 @@
 
 namespace wi::scene
 {
+	extern bool gg_particle_plain_sheets; // GG: legacy particle sheets read as stored (MaterialComponent::gg_plain_sheets)
 
 	struct NameComponent
 	{
@@ -413,6 +414,9 @@ namespace wi::scene
 		mutable ShaderMaterial gg_shader_cache;
 		mutable uint32_t gg_shader_cache_epoch = ~0u;
 		mutable bool gg_shader_cache_valid = false;
+		// GG: the colour and emissive maps read through their plain view, as stored (GameGuru's legacy particle sheets, made
+		// against their stored values and filtered as DX11 filters them), while gg_particle_plain_sheets is on
+		bool gg_plain_sheets = false;
 
 		// Retrieve the array of textures from the material
 		void WriteTextures(const wi::graphics::GPUResource** dest, int count) const;

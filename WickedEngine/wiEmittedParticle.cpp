@@ -50,6 +50,7 @@ namespace wi
 	// scene), each blend keeping the colour premultiplied and in alpha how much of the scene shows through
 	static PipelineState		PSO_half[BLENDMODE_COUNT][EmittedParticleSystem::PARTICLESHADERTYPE_COUNT];
 	static BlendState			halfBlendStates[BLENDMODE_COUNT];
+	static PipelineState		PSO_late[BLENDMODE_COUNT][EmittedParticleSystem::PARTICLESHADERTYPE_COUNT]; // GG: drawn apart for the TAA
 	static DepthStencilState	depthStencilStateNone;
 
 	static bool ALLOW_MESH_SHADER = false;
@@ -653,8 +654,9 @@ namespace wi
 			else if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_PREMULTIPLIED) cb.xParticleLocalOptions |= 16;
 			if (wi::renderer::GetParticleHalfResolutionEnabled() && IsHalfResolution()) cb.xParticleLocalOptions |= 32;
 			if (IsWrapVolume()) cb.xParticleLocalOptions |= 64;
-			if (gg_reencode_sheet) cb.xParticleLocalOptions |= 128; // GG: the sheets put back to their stored values in the shader
-			if (gg_reencode_emissive) cb.xParticleLocalOptions |= 256;
+			// GG: the sheets put back to their stored values in the shader, unless they are read as stored (gg_particle_plain_sheets)
+			if (gg_reencode_sheet && !wi::scene::gg_particle_plain_sheets) cb.xParticleLocalOptions |= 128;
+			if (gg_reencode_emissive && !wi::scene::gg_particle_plain_sheets) cb.xParticleLocalOptions |= 256;
 			cb.xParticleFadeOutStart = wi::math::Clamp(wpe_filler_1, 0.0f, 0.99f);
 			cb.xParticleMirror = (uint32_t)wi::math::Clamp(wpe_filler_2, 0.0f, 3.0f);
 			cb.xParticleWind = layer_wind;
@@ -1020,7 +1022,7 @@ namespace wi
 	}
 
 
-	void EmittedParticleSystem::Draw(const MaterialComponent& material, CommandList cmd, const PARTICLESHADERTYPE* shadertype_override, bool bHalfResolution) const
+	void EmittedParticleSystem::Draw(const MaterialComponent& material, CommandList cmd, const PARTICLESHADERTYPE* shadertype_override, bool bHalfResolution, bool ggLate) const
 	{
 		if (IsInactive())
 			return;
@@ -1038,7 +1040,7 @@ namespace wi
 			const wi::enums::BLENDMODE blendMode = material.GetBlendMode();
 			gg_blendmode = (uint32_t)blendMode;
 			const PARTICLESHADERTYPE type = shadertype_override == nullptr ? shaderType : *shadertype_override;
-			device->BindPipelineState(bHalfResolution ? &PSO_half[blendMode][type] : &PSO[blendMode][type], cmd);
+			device->BindPipelineState(ggLate ? &PSO_late[blendMode][type] : bHalfResolution ? &PSO_half[blendMode][type] : &PSO[blendMode][type], cmd);
 
 			device->BindShadingRate(material.shadingRate, cmd);
 		}
@@ -1169,6 +1171,10 @@ namespace wi
 					half.bs = &halfBlendStates[i];
 					half.dss = &depthStencilStateNone;
 					device->CreatePipelineState(&half, &PSO_half[i][j]);
+					// GG: and into the full resolution target drawn apart for the TAA: that blend, the scene's depth test
+					PipelineStateDesc late = half;
+					late.dss = &depthStencilState;
+					device->CreatePipelineState(&late, &PSO_late[i][j]);
 				}
 			}
 

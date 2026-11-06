@@ -18,5 +18,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float4 right =  input.SampleLevel(sampler_linear_clamp, uv + float2(1, 0) * postprocess.resolution_rcp, 0);
 	float4 bottom = input.SampleLevel(sampler_linear_clamp, uv + float2(0, 1) * postprocess.resolution_rcp, 0);
 
-	output[DTid.xy] = center + (4 * center - top - bottom - left - right) * postprocess.params0[0];
+	// GG: never below black (on the HDR picture, where the GameGuru build sharpens before the particles go on, nothing
+	// clamps it after)
+	output[DTid.xy] = max(0, center + (4 * center - top - bottom - left - right) * postprocess.params0[0]);
 }

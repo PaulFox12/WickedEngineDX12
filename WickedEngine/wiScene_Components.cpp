@@ -47,6 +47,9 @@ using namespace wi::primitive;
 
 namespace wi::scene
 {
+	// GG: GameGuru's legacy particle sheets read through their plain view (MaterialComponent::gg_plain_sheets; on by default,
+	// harness SET_PARTICLEPLAINSHEETS 0 for the sRGB view and the shader's per-pixel re-encode, as before 2026-11-06)
+	bool gg_particle_plain_sheets = true;
 
 
 	XMFLOAT3 TransformComponent::GetPosition() const
@@ -519,6 +522,9 @@ namespace wi::scene
 				{
 				case BASECOLORMAP:
 				case EMISSIVEMAP:
+					// GG: a legacy particle sheet as stored (gg_plain_sheets)
+					subresource = (gg_plain_sheets && wi::scene::gg_particle_plain_sheets) ? -1 : texturemap.resource.GetTextureSRGBSubresource();
+					break;
 				case SPECULARMAP:
 				case SHEENCOLORMAP:
 					subresource = texturemap.resource.GetTextureSRGBSubresource();

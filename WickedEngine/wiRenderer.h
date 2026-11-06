@@ -510,6 +510,16 @@ namespace wi::renderer
 	// the transparent pass and laid over the scene by depth; on by default (the host's SetParticleHalfResolution)
 	void SetParticleHalfResolutionEnabled(bool value);
 	bool GetParticleHalfResolutionEnabled();
+	// GG: while the temporal AA is on, the soft particles are drawn apart and laid over its resolved picture
+	// (Postprocess_GGParticleComposite), so its history neither averages sparks away nor smears flames (on by default);
+	// the render path says each frame whether this frame's go apart
+	void SetParticlesAfterTAAEnabled(bool value);
+	bool GetParticlesAfterTAAEnabled();
+	void SetParticlesAfterTAAThisFrame(bool value);
+	bool GetParticlesAfterTAAThisFrame();
+	// the full resolution soft particles that go apart this frame, back to front into the bound full resolution target
+	bool HasLateParticles(const Visibility& vis);
+	void DrawSoftParticles_Late(const Visibility& vis, wi::graphics::CommandList cmd);
 	// GG: the sun's forward scattering on lit particle layers: a cloud with the sun behind it glows, brightest looking toward
 	// the sun through it; 0 off (the default), 1 the phase function as it is
 	void SetParticleScatter(float value);
@@ -1093,6 +1103,15 @@ namespace wi::renderer
 	);
 	// GG: rain on the lens, drawn after the tone map (lensrainCS.hlsl): params0 amount, drop size, flow x and y; params1
 	// slide, refraction, fog, time; the fog reads the image blurred a little (blurNear) and much (blurFar)
+	// GG: the particles drawn apart (full: the full resolution ones, half: the half resolution ones, either may be null) laid
+	// over the input, the temporal AA's resolved picture (ggparticlecompositeCS.hlsl)
+	void Postprocess_GGParticleComposite(
+		const wi::graphics::Texture& input,
+		const wi::graphics::Texture* full,
+		const wi::graphics::Texture* half,
+		const wi::graphics::Texture& output,
+		wi::graphics::CommandList cmd
+	);
 	void Postprocess_LensRain(
 		const wi::graphics::Texture& input,
 		const wi::graphics::Texture& blurNear,

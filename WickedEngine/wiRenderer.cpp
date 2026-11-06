@@ -549,6 +549,8 @@ uint32_t gg_lights_packed = 0;
 static constexpr uint32_t GG_MATRIXARRAY_COUNT = SHADER_ENTITY_COUNT * 2; // GGMAX: decals, probes and every shadowed light's matrices, with headroom
 bool gg_probe_capture = true;
 bool particleHalfResolution = true; // GG: emitters marked for it drawn at half resolution (SetParticleHalfResolutionEnabled)
+bool particlesAfterTAA = true; // GG: soft particles drawn apart while the TAA is on (SetParticlesAfterTAAEnabled)
+bool particlesAfterTAAThisFrame = false; // GG: the render path's say for this frame
 float particleScatter = 0; // GG: the sun's forward scattering on lit particle layers (SetParticleScatter), 0 off
 // GGMAX 3.90: Water Reflection Blur - passes of the separable Gaussian over the resolved
 // planar reflection. 0 = off. See wiRenderer.h and the consumer in wiRenderPath3D.cpp.
@@ -1381,6 +1383,7 @@ bool LoadShader(
 // GG: the half resolution particles' composite (DrawParticleHalfComposite), loaded with the other shaders (one loaded
 // later is looked for from the current folder, which the game moves)
 static Shader particleCompositePS;
+static Shader ggParticleCompositeCS; // GG: the particles drawn apart laid over the TAA's picture
 static BlendState particleCompositeBlend;
 static PipelineState PSO_particlecomposite;
 
@@ -1601,6 +1604,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_SSFLARE_COMBINE], "ssflare_combineCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_LENSRAIN], "lensrainCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, particleCompositePS, "particlecompositePS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, ggParticleCompositeCS, "ggparticlecompositeCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE], "aerialPerspectiveCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE], "aerialPerspectiveCS_capture.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE_MSAA], "aerialPerspectiveCS_capture_MSAA.cso"); });
@@ -8244,6 +8248,14 @@ void DrawWaterRipples(const Visibility& vis, CommandList cmd)
 
 
 
+static bool IsHalfResolutionEmitter(const wi::EmittedParticleSystem& emitter);
+// GG: a soft particle emitter drawn apart this frame, at full resolution (DrawSoftParticles_Late)
+static bool IsLateEmitter(const wi::EmittedParticleSystem& emitter)
+{
+	return particlesAfterTAAThisFrame && !IsWireRender() && !IsHalfResolutionEmitter(emitter)
+		&& (emitter.shaderType == wi::EmittedParticleSystem::SOFT || emitter.shaderType == wi::EmittedParticleSystem::SOFT_LIGHTING);
+}
+
 void DrawSoftParticles(
 	const Visibility& vis,
 	bool distortion,
@@ -8286,6 +8298,8 @@ void DrawSoftParticles(
 			// GG: one marked for half resolution is drawn after the transparent pass with the others (DrawSoftParticles_Half)
 			if (!distortion && particleHalfResolution && emitter.IsHalfResolution() && !IsWireRender()
 				&& (emitter.shaderType == wi::EmittedParticleSystem::SOFT || emitter.shaderType == wi::EmittedParticleSystem::SOFT_LIGHTING)) continue;
+			// GG: and one drawn apart while the TAA is on, after the transparent pass (DrawSoftParticles_Late)
+			if (!distortion && IsLateEmitter(emitter)) continue;
 			if (distortion && emitter.shaderType == wi::EmittedParticleSystem::SOFT_DISTORTION)
 			{
 				emitter.Draw(*material, cmd);
@@ -8319,6 +8333,10 @@ void DrawSoftParticles(
 // (DrawParticleHalfComposite); the overdraw of big soft smoke costs a quarter. They draw over the transparent meshes and the
 // full resolution particles, as one layer
 void SetParticleHalfResolutionEnabled(bool value) { particleHalfResolution = value; }
+void SetParticlesAfterTAAEnabled(bool value) { particlesAfterTAA = value; }
+bool GetParticlesAfterTAAEnabled() { return particlesAfterTAA; }
+void SetParticlesAfterTAAThisFrame(bool value) { particlesAfterTAAThisFrame = value && particlesAfterTAA && ggParticleCompositeCS.IsValid(); }
+bool GetParticlesAfterTAAThisFrame() { return particlesAfterTAAThisFrame; }
 bool GetParticleHalfResolutionEnabled() { return particleHalfResolution; }
 void SetParticleScatter(float value) { particleScatter = std::max(0.0f, value); }
 float GetParticleScatter() { return particleScatter; }
@@ -8362,6 +8380,44 @@ void DrawSoftParticles_Half(const Visibility& vis, CommandList cmd)
 		const MaterialComponent* material = vis.scene->materials.GetComponent(vis.scene->emitters.GetEntity(emitterIndex));
 		if (material == nullptr) continue;
 		emitter.Draw(*material, cmd, nullptr, true);
+	}
+	device->BindShadingRate(ShadingRate::RATE_1X1, cmd);
+	wi::profiler::EndRange(range);
+}
+
+bool HasLateParticles(const Visibility& vis)
+{
+	if (!particlesAfterTAAThisFrame) return false;
+	for (uint32_t emitterIndex : vis.visibleEmitters)
+	{
+		if (IsLateEmitter(vis.scene->emitters[emitterIndex])) return true;
+	}
+	return false;
+}
+
+void DrawSoftParticles_Late(const Visibility& vis, CommandList cmd)
+{
+	auto range = wi::profiler::BeginRangeGPU("EmittedParticles - Render (After TAA)", cmd);
+	BindCommonResources(cmd);
+	size_t emitterCount = vis.visibleEmitters.size();
+	static thread_local wi::vector<uint32_t> hashes;
+	hashes.resize(emitterCount);
+	for (size_t i = 0; i < emitterCount; ++i)
+	{
+		const wi::EmittedParticleSystem& emitter = vis.scene->emitters[vis.visibleEmitters[i]];
+		float distance = wi::math::DistanceEstimated(emitter.center, vis.camera->Eye);
+		hashes[i] = ((uint32_t)i & 0x0000FFFF) | ((uint32_t)XMConvertFloatToHalf(distance) << 16u);
+	}
+	std::sort(hashes.begin(), hashes.end(), std::greater<uint32_t>());
+	for (size_t i = 0; i < emitterCount; ++i)
+	{
+		const uint32_t emitterIndex = vis.visibleEmitters[hashes[i] & 0x0000FFFF];
+		const wi::EmittedParticleSystem& emitter = vis.scene->emitters[emitterIndex];
+		if (!IsLateEmitter(emitter)) continue;
+		const MaterialComponent* material = vis.scene->materials.GetComponent(vis.scene->emitters.GetEntity(emitterIndex));
+		if (material == nullptr) continue;
+		// the half resolution draw's blend into the target apart, tested against the scene's depth as in the transparent pass
+		emitter.Draw(*material, cmd, nullptr, false, true);
 	}
 	device->BindShadingRate(ShadingRate::RATE_1X1, cmd);
 	wi::profiler::EndRange(range);
@@ -20125,6 +20181,38 @@ void Postprocess_Sharpen(
 
 	device->Barrier(GPUBarrier::Image(&output, ResourceState::UNORDERED_ACCESS, output.desc.layout), cmd);
 
+	device->EventEnd(cmd);
+}
+void Postprocess_GGParticleComposite(
+	const Texture& input,
+	const Texture* full,
+	const Texture* half,
+	const Texture& output,
+	CommandList cmd
+)
+{
+	if (!ggParticleCompositeCS.IsValid()) return;
+	device->EventBegin("Postprocess_GGParticleComposite", cmd);
+	auto range = wi::profiler::BeginRangeGPU("Particles After TAA", cmd);
+	device->BindComputeShader(&ggParticleCompositeCS, cmd);
+	device->BindResource(&input, 0, cmd);
+	device->BindResource(full ? full : &input, 1, cmd);
+	device->BindResource(half ? half : &input, 2, cmd);
+	const TextureDesc& desc = output.GetDesc();
+	PostProcess postprocess;
+	postprocess.resolution.x = desc.width;
+	postprocess.resolution.y = desc.height;
+	postprocess.resolution_rcp.x = 1.0f / postprocess.resolution.x;
+	postprocess.resolution_rcp.y = 1.0f / postprocess.resolution.y;
+	postprocess.params0 = XMFLOAT4((float)((full ? 1 : 0) | (half ? 2 : 0)), 0, 0, 0);
+	postprocess.params1 = XMFLOAT4(0, 0, 0, 0);
+	device->PushConstants(&postprocess, sizeof(postprocess), cmd);
+	const GPUResource* uavs[] = { &output };
+	device->BindUAVs(uavs, 0, arraysize(uavs), cmd);
+	device->Barrier(GPUBarrier::Image(&output, output.desc.layout, ResourceState::UNORDERED_ACCESS), cmd);
+	device->Dispatch((desc.width + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, (desc.height + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, 1, cmd);
+	device->Barrier(GPUBarrier::Image(&output, ResourceState::UNORDERED_ACCESS, output.desc.layout), cmd);
+	wi::profiler::EndRange(range);
 	device->EventEnd(cmd);
 }
 void Postprocess_LensRain(

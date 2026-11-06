@@ -98,6 +98,7 @@ namespace wi
 		rtParticleDistortion_render = {};
 		rtParticleDistortion = {};
 		rtParticleHalf = {};
+		rtParticleFull = {};
 		rtVolumetricLights = {};
 		rtBloom = {};
 		rtBloom_tmp = {};
@@ -270,6 +271,11 @@ namespace wi
 			desc.clear.color[3] = 1;
 			device->CreateTexture(&desc, nullptr, &rtParticleHalf);
 			device->SetName(&rtParticleHalf, "rtParticleHalf");
+			// and the full resolution ones drawn apart while the TAA is on
+			desc.width = internalResolution.x;
+			desc.height = internalResolution.y;
+			device->CreateTexture(&desc, nullptr, &rtParticleFull);
+			device->SetName(&rtParticleFull, "rtParticleFull");
 		}
 		{
 			TextureDesc desc;
@@ -2587,6 +2593,16 @@ namespace wi
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();
 
+		// GG: while the TAA resolves this frame (not FSR 2, which upscales), the soft particles are drawn apart and laid over
+		// its resolved picture (the composite after Postprocess_TemporalAA), so its history neither averages small fast sparks
+		// away nor smears moving flames brighter; the half resolution ones' composite moves there too
+		// (one sample only: the particles' target apart is tested against the main depth buffer)
+		wi::renderer::SetParticlesAfterTAAThisFrame(!getFSR2Enabled() && wi::renderer::GetTemporalAAEnabled() && !wi::renderer::GetTemporalAADebugEnabled()
+			&& temporalAAResources.IsValid() && wi::renderer::GetWireframeMode() == wi::renderer::WIREFRAME_DISABLED && rtParticleFull.IsValid()
+			&& getMSAASampleCount() == 1);
+		gg_particlesFullDrawn = false;
+		gg_particlesHalfDeferred = false;
+
 		// Water ripple rendering:
 		if (!scene->waterRipples.empty())
 		{
@@ -2825,6 +2841,42 @@ namespace wi
 		device->RenderPassEnd(cmd);
 		wi::profiler::EndRange(range_ttail); // GGMAX 2.91: close at the pass boundary
 
+		// GG: drawn apart for the TAA, the particles are drawn with the camera's jitter taken out, as they are laid over its
+		// resolved picture, which has none
+		const bool gg_after_taa = wi::renderer::GetParticlesAfterTAAThisFrame();
+		CameraComponent gg_camera_nojitter;
+		if (gg_after_taa)
+		{
+			gg_camera_nojitter = *camera;
+			gg_camera_nojitter.jitter = XMFLOAT2(0, 0);
+			gg_camera_nojitter.UpdateCamera();
+			wi::renderer::BindCameraCB(gg_camera_nojitter, camera_previous, camera_reflection, cmd);
+		}
+		if (gg_after_taa && wi::renderer::HasLateParticles(visibility_main))
+		{
+			{
+				RenderPassImage rp[] = {
+					RenderPassImage::RenderTarget(&rtParticleFull, RenderPassImage::LoadOp::CLEAR),
+					RenderPassImage::DepthStencil(
+						&depthBuffer_Main,
+						RenderPassImage::LoadOp::LOAD,
+						RenderPassImage::StoreOp::STORE,
+						ResourceState::DEPTHSTENCIL,
+						ResourceState::DEPTHSTENCIL,
+						ResourceState::DEPTHSTENCIL
+					),
+				};
+				device->RenderPassBegin(rp, arraysize(rp), cmd);
+			}
+			Viewport vpf;
+			vpf.width = (float)rtParticleFull.GetDesc().width;
+			vpf.height = (float)rtParticleFull.GetDesc().height;
+			device->BindViewports(1, &vpf, cmd);
+			wi::renderer::DrawSoftParticles_Late(visibility_main, cmd);
+			device->RenderPassEnd(cmd);
+			gg_particlesFullDrawn = true;
+		}
+
 		// GG: the emitters marked for half resolution, drawn together into a quarter of the pixels and laid over the scene by
 		// depth (wi::renderer::SetParticleHalfResolutionEnabled)
 		if (rtParticleHalf.IsValid() && wi::renderer::HasHalfResolutionParticles(visibility_main))
@@ -2840,7 +2892,11 @@ namespace wi
 			wi::renderer::DrawSoftParticles_Half(visibility_main, cmd);
 			device->RenderPassEnd(cmd);
 
-			if (getMSAASampleCount() > 1)
+			if (gg_after_taa)
+			{
+				gg_particlesHalfDeferred = true; // laid over after the TAA
+			}
+			else if (getMSAASampleCount() > 1)
 			{
 				RenderPassImage rp[] = { RenderPassImage::RenderTarget(&rtMain_render, RenderPassImage::LoadOp::LOAD), RenderPassImage::Resolve(&rtMain) };
 				device->RenderPassBegin(rp, arraysize(rp), cmd);
@@ -2850,11 +2906,18 @@ namespace wi
 				RenderPassImage rp[] = { RenderPassImage::RenderTarget(&rtMain, RenderPassImage::LoadOp::LOAD) };
 				device->RenderPassBegin(rp, arraysize(rp), cmd);
 			}
-			vph.width = (float)depthBuffer_Main.GetDesc().width;
-			vph.height = (float)depthBuffer_Main.GetDesc().height;
-			device->BindViewports(1, &vph, cmd);
-			wi::renderer::DrawParticleHalfComposite(rtParticleHalf, cmd);
-			device->RenderPassEnd(cmd);
+			if (!gg_after_taa)
+			{
+				vph.width = (float)depthBuffer_Main.GetDesc().width;
+				vph.height = (float)depthBuffer_Main.GetDesc().height;
+				device->BindViewports(1, &vph, cmd);
+				wi::renderer::DrawParticleHalfComposite(rtParticleHalf, cmd);
+				device->RenderPassEnd(cmd);
+			}
+		}
+		if (gg_after_taa)
+		{
+			wi::renderer::BindCameraCB(*camera, camera_previous, camera_reflection, cmd);
 		}
 
 		// Distortion particles:
@@ -2917,6 +2980,7 @@ namespace wi
 		wi::renderer::BindCameraCB(*camera, camera_previous, camera_reflection, cmd);
 
 		const Texture* rt_first = nullptr; // not ping-ponged with read / write
+		bool gg_sharpenedBeforeParticles = false; // GG: the sharpen done on the TAA's picture before the particles went on
 		const Texture* rt_read = &rtMain;
 		const Texture* rt_write = &rtPostprocess;
 
@@ -2968,6 +3032,29 @@ namespace wi
 					cmd
 				);
 				rt_first = temporalAAResources.GetCurrent();
+
+				// GG: the particles drawn apart for the TAA laid over its resolved picture (RenderTransparents), out of its history;
+				// the sharpen filter (there to take off the TAA's softness) sharpens that picture first and not the particles, whose
+				// bright edges it pushed brighter
+				if (gg_particlesFullDrawn || gg_particlesHalfDeferred)
+				{
+					if (getSharpenFilterEnabled())
+					{
+						wi::renderer::Postprocess_Sharpen(*rt_first, *rt_write, cmd, getSharpenFilterAmount());
+						rt_first = nullptr;
+						std::swap(rt_read, rt_write);
+						gg_sharpenedBeforeParticles = true;
+					}
+					wi::renderer::Postprocess_GGParticleComposite(
+						rt_first == nullptr ? *rt_read : *rt_first,
+						gg_particlesFullDrawn ? &rtParticleFull : nullptr,
+						gg_particlesHalfDeferred ? &rtParticleHalf : nullptr,
+						*rt_write,
+						cmd
+					);
+					rt_first = nullptr;
+					std::swap(rt_read, rt_write);
+				}
 			}
 			// GGMAX 3.120: also for a GG stand-in surface with the ocean off (see gg_underwater_without_ocean)
 			const bool gg_uw_no_ocean = !scene->weather.IsOceanEnabled() && gg_underwater_without_ocean;
@@ -3148,7 +3235,7 @@ namespace wi
 				}
 			}
 
-			if (getSharpenFilterEnabled())
+			if (getSharpenFilterEnabled() && !gg_sharpenedBeforeParticles)
 			{
 				wi::renderer::Postprocess_Sharpen(*rt_read, *rt_write, cmd, getSharpenFilterAmount());
 

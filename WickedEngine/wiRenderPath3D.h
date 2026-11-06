@@ -148,6 +148,9 @@ namespace wi
 		wi::graphics::Texture rtParticleDistortion_render; // contains distortive particles (can be MSAA)
 		wi::graphics::Texture rtParticleDistortion; // contains distortive particles
 		wi::graphics::Texture rtParticleHalf; // GG: the particles drawn at half resolution (colour premultiplied, alpha the scene showing through)
+		wi::graphics::Texture rtParticleFull; // GG: the full resolution soft particles drawn apart while the TAA is on, as rtParticleHalf
+		mutable bool gg_particlesFullDrawn = false; // GG: this frame's, for the composite after the TAA
+		mutable bool gg_particlesHalfDeferred = false;
 		wi::graphics::Texture rtVolumetricLights; // contains the volumetric light results
 		wi::graphics::Texture rtBloom; // contains the bright parts of the image + mipchain
 		wi::graphics::Texture rtBloom_tmp; // temporary for bloom downsampling

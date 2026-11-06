@@ -76,7 +76,9 @@ namespace wi
 
 		// Must have a transform and material component, but mesh is optional
 		void UpdateGPU(uint32_t instanceIndex, const wi::scene::MeshComponent* mesh, wi::graphics::CommandList cmd) const;
-		void Draw(const wi::scene::MaterialComponent& material, wi::graphics::CommandList cmd, const PARTICLESHADERTYPE* shadertype_override = nullptr, bool bHalfResolution = false) const;
+		// GG: bHalfResolution into the half resolution target; ggLate into the target drawn apart for the TAA (its blend, the
+		// depth test)
+		void Draw(const wi::scene::MaterialComponent& material, wi::graphics::CommandList cmd, const PARTICLESHADERTYPE* shadertype_override = nullptr, bool bHalfResolution = false, bool ggLate = false) const;
 
 		void CreateRaytracingRenderData();
 
