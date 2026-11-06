@@ -690,6 +690,8 @@ namespace wi::renderer
 	);
 	void Visibility_Velocity(
 		const wi::graphics::Texture& output,
+		const wi::graphics::Texture& input_customDepth, // GG: prepass RT1, the GG draws' depth (can be MSAA)
+		const wi::graphics::Texture& input_customMotion, // GG: prepass RT2, their own motion (can be MSAA)
 		wi::graphics::CommandList cmd
 	);
 

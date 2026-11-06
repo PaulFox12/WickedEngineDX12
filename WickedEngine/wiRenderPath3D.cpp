@@ -120,6 +120,7 @@ namespace wi
 
 		depthBuffer_Main = {};
 		rtCustomDepth = {};   // GGMAX 3.77
+		rtCustomMotion = {};
 		depthBuffer_Copy = {};
 		depthBuffer_Copy1 = {};
 		depthBuffer_Reflection = {};
@@ -781,10 +782,24 @@ namespace wi
 				device->CreateTexture(&desc, nullptr, &rtVelocity);
 				device->SetName(&rtVelocity, "rtVelocity");
 			}
+			if (!rtCustomMotion.IsValid())
+			{
+				// GG: the GG draws' own motion, prepass RT2 (as rtCustomDepth: the same sample count and end state)
+				TextureDesc desc;
+				desc.format = Format::R16G16_FLOAT;
+				desc.bind_flags = BindFlag::RENDER_TARGET | BindFlag::SHADER_RESOURCE;
+				desc.width = internalResolution.x;
+				desc.height = internalResolution.y;
+				desc.sample_count = getMSAASampleCount();
+				desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
+				device->CreateTexture(&desc, nullptr, &rtCustomMotion);
+				device->SetName(&rtCustomMotion, "rtCustomMotion");
+			}
 		}
 		else
 		{
 			rtVelocity = {};
+			rtCustomMotion = {};
 		}
 
 		// Check whether shadow mask is required:
@@ -1270,8 +1285,17 @@ namespace wi
 					ResourceState::SHADER_RESOURCE_COMPUTE,
 					ResourceState::SHADER_RESOURCE_COMPUTE
 				),
+				// GG: RT2, the GG draws' own motion (the trees' sway), only while the velocity is made; cleared to 0, no motion
+				// of their own. The engine's prepass PS declares no SV_TARGET2, as with RT1
+				RenderPassImage::RenderTarget(
+					&rtCustomMotion,
+					RenderPassImage::LoadOp::CLEAR,
+					RenderPassImage::StoreOp::STORE,
+					ResourceState::SHADER_RESOURCE_COMPUTE,
+					ResourceState::SHADER_RESOURCE_COMPUTE
+				),
 			};
-			device->RenderPassBegin(rp, arraysize(rp), cmd);
+			device->RenderPassBegin(rp, rtCustomMotion.IsValid() ? arraysize(rp) : arraysize(rp) - 1, cmd);
 
 			device->EventBegin("Opaque Z-prepass", cmd);
 			auto range = wi::profiler::BeginRangeGPU("Z-Prepass", cmd);
@@ -1445,6 +1469,8 @@ namespace wi
 			{
 				wi::renderer::Visibility_Velocity(
 					rtVelocity,
+					rtCustomDepth,
+					rtCustomMotion,
 					cmd
 				);
 			}

@@ -127,6 +127,9 @@ namespace wi
 		// GGMAX 3.77: prepass RT1. Real post-projection depth for draws that cannot emit a
 		// PrimitiveID (the GG customDraw passes). 0 = nobody wrote here. See visibility_resolveCS.
 		wi::graphics::Texture rtCustomDepth;
+		// GG: prepass RT2, the GG draws' own motion: how far a pixel's surface was in world x and z last frame from where it
+		// is now (the trees' sway), 0 where none drew; made with rtVelocity, read by visibility_velocityCS
+		wi::graphics::Texture rtCustomMotion;
 		wi::graphics::Texture rtVelocity; // optional R16G16_FLOAT
 		wi::graphics::Texture rtReflection; // contains the scene rendered for planar reflections, MSAA
 		wi::graphics::Texture rtReflection_resolved; // contains the scene rendered for planar reflections, single sample

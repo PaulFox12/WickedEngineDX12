@@ -1683,6 +1683,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_RESOLVE_MSAA], "visibility_resolveCS_MSAA.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_SKY], "visibility_skyCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_VELOCITY], "visibility_velocityCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_VELOCITY_MSAA], "visibility_velocityCS_MSAA.cso"); });
 
 	if (device->CheckCapability(GraphicsDeviceCapability::RAYTRACING))
 	{
@@ -14886,6 +14887,8 @@ void Visibility_Shade(
 }
 void Visibility_Velocity(
 	const Texture& output,
+	const Texture& input_customDepth,
+	const Texture& input_customMotion,
 	CommandList cmd
 )
 {
@@ -14899,7 +14902,11 @@ void Visibility_Velocity(
 	device->ClearUAV(&output, 0, cmd);
 	device->Barrier(GPUBarrier::Memory(&output), cmd);
 
-	device->BindComputeShader(&shaders[CSTYPE_VISIBILITY_VELOCITY], cmd);
+	// GG: the GG draws' depth and own motion (prepass RT1 and RT2), read where one of them is the nearest surface
+	const bool msaa = input_customDepth.IsValid() && input_customDepth.GetDesc().sample_count > 1;
+	device->BindResource(&input_customDepth, 0, cmd);
+	device->BindResource(&input_customMotion, 1, cmd);
+	device->BindComputeShader(&shaders[msaa ? CSTYPE_VISIBILITY_VELOCITY_MSAA : CSTYPE_VISIBILITY_VELOCITY], cmd);
 	device->BindUAV(&output, 0, cmd);
 	device->Dispatch(
 		(output.desc.width + 7u) / 8u,

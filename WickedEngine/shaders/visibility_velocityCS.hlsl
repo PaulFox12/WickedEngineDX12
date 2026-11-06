@@ -4,6 +4,16 @@
 #include "surfaceHF.hlsli"
 #include "raytracingHF.hlsli"
 
+// GG: the GG draws' prepass targets: RT1 their depth (0 where none drew), RT2 how far their surface was in world x and z last
+// frame from where it is now (the trees' sway; 0, none of its own)
+#ifdef VISIBILITY_MSAA
+Texture2DMS<float> input_customDepth : register(t0);
+Texture2DMS<float2> input_customMotion : register(t1);
+#else
+Texture2D<float> input_customDepth : register(t0);
+Texture2D<float2> input_customMotion : register(t1);
+#endif // VISIBILITY_MSAA
+
 RWTexture2D<float2> output_velocity : register(u0);
 
 [numthreads(8, 8, 1)]
@@ -24,6 +34,18 @@ void main(uint2 DTid : SV_DispatchThreadID)
 
 	uint primitiveID = texture_primitiveID[pixel];
 
+#ifdef VISIBILITY_MSAA
+	const float ggDepth = input_customDepth.Load(pixel, 0);
+#else
+	const float ggDepth = input_customDepth[pixel];
+#endif // VISIBILITY_MSAA
+
+	// GG: GameGuru's own passes (the trees, the far terrain) write depth but no primitive. Where one is the nearest surface,
+	// as the resolve takes it (visibility_resolveCS: nearer than the mesh whose primitive is there, or none is), the pixel
+	// moves as that surface: before, a tree against the sky moved as the sky (no parallax: temporal AA smeared it whenever
+	// the camera moved) and a tree before the ground or a building moved as the surface behind it
+	bool gg = ggDepth > 0;
+
 	// GG: the sky's unless found below (a surface that wouldn't load was left unset)
 	float3 pre = ray.Origin + ray.Direction * GetCamera().z_far;
 	[branch]
@@ -40,19 +62,21 @@ void main(uint2 DTid : SV_DispatchThreadID)
 		if (surface.load(prim, ray.Origin, ray.Direction))
 		{
 			pre = surface.pre;
+			float4 tmp = mul(GetCamera().view_projection, float4(surface.P, 1));
+			tmp.xyz /= max(0.0001, tmp.w);
+			gg = gg && ggDepth > saturate(tmp.z);
 		}
 	}
-	else
+	[branch]
+	if (gg)
 	{
-		// GG: GameGuru's own passes (the trees, the far terrain) write depth but no primitive: such a pixel is placed by its
-		// depth and moved by the camera as a still surface there, where taken for the sky at the far plane it had no parallax
-		// and temporal AA smeared it whenever the camera moved
-		const float depth = texture_depth[pixel];
-		[branch]
-		if (depth > 0)
-		{
-			pre = reconstruct_position(uv, depth);
-		}
+		// GG: placed by its depth and moved by the camera as a still surface there, then by its own motion (the sway)
+		pre = reconstruct_position(uv, ggDepth);
+#ifdef VISIBILITY_MSAA
+		pre.xz += input_customMotion.Load(pixel, 0);
+#else
+		pre.xz += input_customMotion[pixel];
+#endif // VISIBILITY_MSAA
 	}
 
 	float2 pos2D = clipspace;

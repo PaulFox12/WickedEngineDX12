@@ -932,6 +932,9 @@
     <FxCompile Include="$(MSBuildThisFileDirectory)visibility_velocityCS.hlsl">
       <Filter>CS</Filter>
     </FxCompile>
+    <FxCompile Include="$(MSBuildThisFileDirectory)visibility_velocityCS_MSAA.hlsl">
+      <Filter>CS</Filter>
+    </FxCompile>
     <FxCompile Include="$(MSBuildThisFileDirectory)impostor_prepareCS.hlsl">
       <Filter>CS</Filter>
     </FxCompile>
