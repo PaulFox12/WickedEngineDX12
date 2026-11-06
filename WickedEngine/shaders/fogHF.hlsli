@@ -110,6 +110,9 @@ inline half4 GetFog(float distance, float3 O, float3 V)
 		SkyViewLutParamsToUv(atmosphere, intersectGround, viewZenithCosAngle, lightOnPlane.x, viewHeight, uv);
 		fogColor = texture_skyviewlut.SampleLevel(sampler_linear_clamp, uv, 0).rgb;
 		fogColor *= GetWeather().sky_exposure;
+		// GG: the overcast darkens the haze as it darkens the sky, so far land doesn't haze into a colour brighter than the
+		// sky behind it
+		fogColor *= 1 - saturate(GetWeather().gg_overcast) * saturate(GetWeather().gg_overcast_fog);
 
 		// DX11: user fog color mixes over the sky sample proportionally to Fog Opacity
 		fogColor = lerp(fogColor, GetHorizonColor(), saturate(GetWeather().gg_fog_opacity));

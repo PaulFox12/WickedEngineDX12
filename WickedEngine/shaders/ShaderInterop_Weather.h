@@ -400,7 +400,7 @@ struct alignas(16) ShaderWeather
 	// 2026-11-06), so what follows moves a whole row and keeps its alignment
 	float gg_overcast;
 	float gg_water_glint; // GG: the sun's glint on water, 0-1 (SetWaterSunGlint; 1 stock), times 1 - gg_overcast
-	float gg_weather_pad0;
+	float gg_overcast_fog; // GG: how much the overcast darkens the fog's sky colour, the haze over far land (0-1, times gg_overcast)
 	float gg_weather_pad1;
 	// GGMAX 1.65: DX11-style Fog Opacity (FogA). In non-realistic-sky modes DX11 fog is a
 	// recolor of the surface toward the user fog RGB scaled by THIS value (0 = fog off);
