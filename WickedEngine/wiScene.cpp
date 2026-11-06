@@ -7784,7 +7784,7 @@ namespace wi::scene
 	{
 		return Intersects(ray, filterMask, layerMask, lod, nullptr, 0, nullptr, 0);
 	}
-	Scene::RayIntersectionResult Scene::Intersects(const Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod, const uint32_t* pOnlyObjects, uint32_t onlyCount, const Entity* pExclude, uint32_t excludeCount) const
+	Scene::RayIntersectionResult Scene::Intersects(const Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod, const uint32_t* pOnlyObjects, uint32_t onlyCount, const Entity* pExclude, uint32_t excludeCount, bool gg_skipCollisionOff) const
 	{
 		RayIntersectionResult result;
 
@@ -7877,6 +7877,8 @@ namespace wi::scene
 
 				const ObjectComponent& object = objects[objectIndex];
 				if (object.meshID == INVALID_ENTITY)
+					continue;
+				if (gg_skipCollisionOff && object.IsGGCollisionOff())
 					continue;
 				if (pExclude != nullptr && excludeCount > 0)
 				{
@@ -10651,9 +10653,9 @@ namespace wi::scene
 	{
 		return scene.Intersects(ray, filterMask, layerMask, lod);
 	}
-	PickResult Pick(const wi::primitive::Ray& ray, uint32_t filterMask, uint32_t layerMask, const Scene& scene, const Entity* pExclude, uint32_t excludeCount)
+	PickResult Pick(const wi::primitive::Ray& ray, uint32_t filterMask, uint32_t layerMask, const Scene& scene, const Entity* pExclude, uint32_t excludeCount, bool gg_skipCollisionOff)
 	{
-		return scene.Intersects(ray, filterMask, layerMask, 0, nullptr, 0, pExclude, excludeCount);
+		return scene.Intersects(ray, filterMask, layerMask, 0, nullptr, 0, pExclude, excludeCount, gg_skipCollisionOff);
 	}
 	PickResult PickObjects(const wi::primitive::Ray& ray, const uint32_t* pObjectIndices, uint32_t count, uint32_t filterMask, uint32_t layerMask, const Scene& scene)
 	{

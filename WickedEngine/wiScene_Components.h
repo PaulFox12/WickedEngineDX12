@@ -1221,8 +1221,11 @@ namespace wi::scene
 			OCCLUSION_QUERY_DISABLED = 1 << 28,	// GGMAX: opt this object out of per-object GPU occlusion queries (always treated as visible)
 			APPARENT_CULL_DISABLED = 1 << 26,	// GGMAX: never culled for its apparent size (a small lamp head kept in view while its light shines)
 			SHADOW_DISTANCE_FADE = 1 << 27,		// GGMAX 3.108: its sun shadow dissolves with its distance fade instead of cutting off (tree pool)
+			GG_COLLISION_OFF = 1 << 29,		// GG: a placement GameGuru turned collision off for in a game (mode 11): picks that ask leave it out
 		};
 		uint32_t _flags = RENDERABLE | CAST_SHADOW;
+		constexpr void SetGGCollisionOff(bool value) { if (value) { _flags |= GG_COLLISION_OFF; } else { _flags &= ~GG_COLLISION_OFF; } }
+		constexpr bool IsGGCollisionOff() const { return _flags & GG_COLLISION_OFF; }
 
 		uint8_t userStencilRef = 0;
 		wi::ecs::Entity meshID = wi::ecs::INVALID_ENTITY;
