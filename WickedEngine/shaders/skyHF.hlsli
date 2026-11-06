@@ -34,8 +34,6 @@ float3 AccurateAtmosphericScattering(float2 pixelPosition, float3 rayOrigin, flo
         float2 lightOnPlane = float2(dot(sunDirection, forwardVector), dot(sunDirection, sideVector));
         lightOnPlane = normalize(lightOnPlane);
         float lightViewCosAngle = lightOnPlane.x;
-        // GG: overcast takes the sun's glow out of the sky's direction: every azimuth reads as one square to the sun
-        lightViewCosAngle = lerp(lightViewCosAngle, 0.0f, saturate(GetWeather().gg_overcast));
 
         bool intersectGround = RaySphereIntersectNearest(worldPosition, worldDirection, float3(0, 0, 0), atmosphere.bottomRadius) >= 0.0f;
 

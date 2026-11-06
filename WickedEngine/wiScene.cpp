@@ -1151,7 +1151,6 @@ namespace wi::scene
 		shaderscene.weather.gg_fog_opacity = weather.gg_fog_opacity; // GGMAX 1.65
 		shaderscene.weather.gg_overcast = weather.gg_overcast; // GG: SetOvercast
 		shaderscene.weather.gg_water_glint = weather.gg_water_glint; // GG: SetWaterSunGlint
-		shaderscene.weather.gg_overcast_fog = weather.gg_overcast_fog; // GG: the overcast's darkening of the haze
 		shaderscene.weather.horizon = wi::math::pack_half3(weather.horizon);
 		shaderscene.weather.zenith = wi::math::pack_half3(weather.zenith);
 		shaderscene.weather.sky_exposure = weather.skyExposure;

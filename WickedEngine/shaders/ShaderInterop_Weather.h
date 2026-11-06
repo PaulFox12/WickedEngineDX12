@@ -395,12 +395,13 @@ struct alignas(16) ShaderWeather
 	float gg_object_independence;   // 0 = every tree follows the rolling gusts ... 1 = each tree sways on its own (DX11)
 	float gg_object_randomness;     // Wind Randomness as the trees use it (eased copy of wind.randomness)
 	// GG: how overcast the game's weather is, 0 clear to 1 (SetOvercast). The game keeps clouds off and makes its gloom
-	// with haze and the sun's colour, so the sun's highlight on water, its disc and its glow in the sky and the fog are
-	// faded by this; 0 is stock. A row with the glint since Lee's tree sway took the padding they were in (merged
+	// with haze and the sun's colour, so this fades only the sun's disc, its shafts and its highlight on water; the sky's
+	// and the haze's colours are left as in clear weather, as DX11 draws them (2026-11-06: flattening the sun out of
+	// them, which the sky probe did not share, made far hills under cloud pale); 0 is stock. A row with the glint since Lee's tree sway took the padding they were in (merged
 	// 2026-11-06), so what follows moves a whole row and keeps its alignment
 	float gg_overcast;
 	float gg_water_glint; // GG: the sun's glint on water, 0-1 (SetWaterSunGlint; 1 stock), times 1 - gg_overcast
-	float gg_overcast_fog; // GG: how much the overcast darkens the fog's sky colour, the haze over far land (0-1, times gg_overcast)
+	float gg_weather_pad0;
 	float gg_weather_pad1;
 	// GGMAX 1.65: DX11-style Fog Opacity (FogA). In non-realistic-sky modes DX11 fog is a
 	// recolor of the surface toward the user fog RGB scaled by THIS value (0 = fog off);
