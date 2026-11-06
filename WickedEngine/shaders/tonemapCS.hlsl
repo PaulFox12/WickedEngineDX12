@@ -27,16 +27,17 @@ half3 RRTAndODTFit(half3 v)
 	return a / b;
 }
 
-half3 ACESFitted(half3 color)
+// GG: matrices false is the curve on each channel alone, as DX11's Wicked draws it (its matrices commented out)
+half3 ACESFitted(half3 color, bool matrices)
 {
-	color = mul(ACESInputMat, color);
+	if (matrices) color = mul(ACESInputMat, color);
 
 	color = clamp(color, 0, 100); // fix for half precision issue with very bright values near point light center
 
 	// Apply RRT and ODT
 	color = RRTAndODTFit(color);
 
-	color = mul(ACESOutputMat, color);
+	if (matrices) color = mul(ACESOutputMat, color);
 
 	// Clamp to [0, 1]
 	color = saturate(color);
@@ -124,7 +125,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	{
 		if (flags & TONEMAP_FLAG_ACES)
 		{
-			result.rgb = ACESFitted(result.rgb);
+			result.rgb = ACESFitted(result.rgb, (flags & TONEMAP_FLAG_GG_ACES_CURVE) == 0);
 		}
 		else
 		{

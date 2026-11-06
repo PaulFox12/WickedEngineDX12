@@ -41,6 +41,12 @@ namespace wi
 	// GG (SetGrassShade): the GG grass blades' light at the root and at the tip, set by the game
 	float gg_grass_shade_root = 1.0f;
 	float gg_grass_shade_tip = 1.0f;
+	// GG: the GG grass blades' sky light, back-lit glow and direct light, multipliers (xHairGGAmbient, xHairGGSubsurface,
+	// xHairGGDirect); 0.6 and 0.8 bring them to DX11's grass, measured against the ground by night and at noon (2026-11-06)
+	float gg_grass_ambient = 0.6f;
+	float gg_grass_subsurface = 1.0f;
+	float gg_grass_direct = 0.8f;
+	static_assert(offsetof(HairParticleCB, xHairAtlasRects) % 16 == 0, "the hair constants' atlas array must start a 16-byte row");
 	// GG: draw strands of no length as empty quads, as stock Wicked does (HAIR_FLAG_GG_DRAW_EMPTY); for measuring only
 	bool gg_grass_draw_empty = false;
 
@@ -693,6 +699,9 @@ namespace wi
 			gg_frame_shapes.insert(gg_frame_shapes.end(), hair.gg_area_shapes.begin(), hair.gg_area_shapes.begin() + hcb.xHairGGAreaCount * GG_HAIR_SHAPE_FLOAT4S);
 			hcb.xHairGGShadeRoot = hair.grass_type != 0 ? gg_grass_shade_root : 1.0f;
 			hcb.xHairGGShadeTip = hair.grass_type != 0 ? gg_grass_shade_tip : 1.0f;
+			hcb.xHairGGAmbient = hair.grass_type != 0 ? gg_grass_ambient : 1.0f;
+			hcb.xHairGGSubsurface = hair.grass_type != 0 ? gg_grass_subsurface : 1.0f;
+			hcb.xHairGGDirect = hair.grass_type != 0 ? gg_grass_direct : 1.0f;
 			if (gg_grass_draw_empty) hcb.xHairFlags |= HAIR_FLAG_GG_DRAW_EMPTY;
 
 			// GGMAX 1.49b: grass strand LOD. Zeroed hcb (= disabled) unless the knob is on

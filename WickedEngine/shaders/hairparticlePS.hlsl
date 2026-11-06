@@ -65,6 +65,9 @@ float4 main(VertexToPixel input) : SV_Target
 	Surface surface;
 	surface.init();
 	surface.create(material, color, surfacemap_simple);
+	// GG: the blade's back-lit glow scaled (1 as the material has it)
+	surface.sss *= xHairGGSubsurface;
+	surface.sss_inv = 1 / (1 + surface.sss);
 	surface.P = input.GetPos3D();
 	surface.N = input.nor_wet.xyz;
 	surface.V = V;
@@ -101,6 +104,10 @@ float4 main(VertexToPixel input) : SV_Target
 	lighting.create(0, 0, GetAmbient(surface.N), 0);
 
 	TiledLighting(surface, lighting, GetFlatTileIndex(pixel));
+	// GG: the blade's sky light and direct light scaled (1 as lit)
+	lighting.indirect.diffuse *= xHairGGAmbient;
+	lighting.direct.diffuse *= xHairGGDirect;
+	lighting.direct.specular *= xHairGGDirect;
 	
 	ApplyLighting(surface, lighting, color);
 

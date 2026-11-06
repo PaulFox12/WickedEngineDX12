@@ -203,6 +203,13 @@ CBUFFER(HairParticleCB, CBSLOT_OTHER_HAIRPARTICLE)
 	uint xHairGGAreaCount;
 	float xHairGGShadeRoot; // GG (SetGrassShade): the blade's light at its root and at its tip, multipliers (1 as lit)
 	float xHairGGShadeTip;
+	// GG: the blade's sky light (ambient), its back-lit glow (subsurface) and its direct light (sun, moon, lights),
+	// multipliers (1 as lit). DX11 drew the grass at 0.45 of its light, sun and sky alike; the blades' own normals here
+	// dim the sun less than that and the sky not at all, so the grass was brighter, twice as bright by night
+	float xHairGGAmbient;
+	float xHairGGSubsurface;
+	float xHairGGDirect;
+	float xHairGGPad1;
 
 	HairParticleAtlasRect xHairAtlasRects[64];
 

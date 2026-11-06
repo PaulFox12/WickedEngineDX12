@@ -1378,6 +1378,11 @@ bool LoadShader(
 	return false;
 }
 
+// GG: the half resolution particles' composite (DrawParticleHalfComposite), loaded with the other shaders (one loaded
+// later is looked for from the current folder, which the game moves)
+static Shader particleCompositePS;
+static BlendState particleCompositeBlend;
+static PipelineState PSO_particlecomposite;
 
 void LoadShaders()
 {
@@ -1595,6 +1600,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_SSFLARE_GHOSTS], "ssflare_ghostsCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_SSFLARE_COMBINE], "ssflare_combineCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_LENSRAIN], "lensrainCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, particleCompositePS, "particlecompositePS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE], "aerialPerspectiveCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE], "aerialPerspectiveCS_capture.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE_MSAA], "aerialPerspectiveCS_capture_MSAA.cso"); });
@@ -1793,6 +1799,30 @@ void LoadShaders()
 	}
 
 	wi::jobsystem::Wait(ctx);
+
+	// GG: the half resolution particles over the scene: scene * their alpha + their colour
+	if (particleCompositePS.IsValid())
+	{
+		BlendState bd;
+		bd.render_target[0].blend_enable = true;
+		bd.render_target[0].src_blend = Blend::ONE;
+		bd.render_target[0].dest_blend = Blend::SRC_ALPHA;
+		bd.render_target[0].blend_op = BlendOp::ADD;
+		bd.render_target[0].src_blend_alpha = Blend::ZERO;
+		bd.render_target[0].dest_blend_alpha = Blend::ONE;
+		bd.render_target[0].blend_op_alpha = BlendOp::ADD;
+		bd.render_target[0].render_target_write_mask = ColorWrite::ENABLE_ALL;
+		bd.independent_blend_enable = false;
+		particleCompositeBlend = bd;
+		PipelineStateDesc desc;
+		desc.vs = &shaders[VSTYPE_SCREEN];
+		desc.ps = &particleCompositePS;
+		desc.bs = &particleCompositeBlend;
+		desc.rs = &rasterizers[RSTYPE_DOUBLESIDED];
+		desc.dss = &depthStencils[DSSTYPE_DEPTHDISABLED];
+		desc.pt = PrimitiveTopology::TRIANGLELIST;
+		device->CreatePipelineState(&desc, &PSO_particlecomposite);
+	}
 
 	if (device->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
 	{
@@ -8301,7 +8331,7 @@ static bool IsHalfResolutionEmitter(const wi::EmittedParticleSystem& emitter)
 
 bool HasHalfResolutionParticles(const Visibility& vis)
 {
-	if (!particleHalfResolution || IsWireRender()) return false;
+	if (!particleHalfResolution || IsWireRender() || !PSO_particlecomposite.IsValid()) return false;
 	for (uint32_t emitterIndex : vis.visibleEmitters)
 	{
 		if (IsHalfResolutionEmitter(vis.scene->emitters[emitterIndex])) return true;
@@ -8341,37 +8371,10 @@ void DrawSoftParticles_Half(const Visibility& vis, CommandList cmd)
 // depth (particlecompositePS)
 void DrawParticleHalfComposite(const Texture& particleHalf, CommandList cmd)
 {
-	static Shader compositePS;
-	static BlendState compositeBlend;
-	static PipelineState compositePSO;
-	static bool bMade = false;
-	if (!bMade)
-	{
-		LoadShader(ShaderStage::PS, compositePS, "particlecompositePS.cso");
-		BlendState bd;
-		bd.render_target[0].blend_enable = true;
-		bd.render_target[0].src_blend = Blend::ONE;
-		bd.render_target[0].dest_blend = Blend::SRC_ALPHA;
-		bd.render_target[0].blend_op = BlendOp::ADD;
-		bd.render_target[0].src_blend_alpha = Blend::ZERO;
-		bd.render_target[0].dest_blend_alpha = Blend::ONE;
-		bd.render_target[0].blend_op_alpha = BlendOp::ADD;
-		bd.render_target[0].render_target_write_mask = ColorWrite::ENABLE_ALL;
-		bd.independent_blend_enable = false;
-		compositeBlend = bd;
-		PipelineStateDesc desc;
-		desc.vs = &shaders[VSTYPE_SCREEN];
-		desc.ps = &compositePS;
-		desc.bs = &compositeBlend;
-		desc.rs = &rasterizers[RSTYPE_DOUBLESIDED];
-		desc.dss = &depthStencils[DSSTYPE_DEPTHDISABLED];
-		desc.pt = PrimitiveTopology::TRIANGLELIST;
-		device->CreatePipelineState(&desc, &compositePSO);
-		bMade = true;
-	}
+	if (!PSO_particlecomposite.IsValid()) return;
 	device->EventBegin("Particles - Half Resolution Composite", cmd);
 	BindCommonResources(cmd);
-	device->BindPipelineState(&compositePSO, cmd);
+	device->BindPipelineState(&PSO_particlecomposite, cmd);
 	device->BindResource(&particleHalf, 0, cmd);
 	device->Draw(3, 0, cmd);
 	device->EventEnd(cmd);
@@ -20275,9 +20278,13 @@ void Postprocess_Tonemap(
 	{
 		tonemap_push.flags_hdrcalibration |= TONEMAP_FLAG_DITHER;
 	}
-	if (tonemap == Tonemap::ACES)
+	if (tonemap == Tonemap::ACES || tonemap == Tonemap::ACES_CURVE)
 	{
 		tonemap_push.flags_hdrcalibration |= TONEMAP_FLAG_ACES;
+	}
+	if (tonemap == Tonemap::ACES_CURVE)
+	{
+		tonemap_push.flags_hdrcalibration |= TONEMAP_FLAG_GG_ACES_CURVE;
 	}
 	if (display_colorspace == ColorSpace::SRGB)
 	{

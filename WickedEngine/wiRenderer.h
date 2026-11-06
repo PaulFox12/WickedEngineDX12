@@ -1113,7 +1113,8 @@ namespace wi::renderer
 	enum class Tonemap
 	{
 		Reinhard,
-		ACES
+		ACES,
+		ACES_CURVE, // GG: the ACES curve on each channel without its colour matrices, as DX11's Wicked draws GameGuru's picture
 	};
 	void Postprocess_Tonemap(
 		const wi::graphics::Texture& input,

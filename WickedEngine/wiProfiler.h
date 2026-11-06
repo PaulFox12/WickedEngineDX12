@@ -74,6 +74,8 @@ namespace wi::profiler
 
 	// Enable/disable profiling
 	void SetEnabled(bool value);
+	// GG: false times CPU ranges only: no GPU range, query, resolve or read back, from the next BeginFrame (true by default)
+	void SetGPUEnabled(bool value);
 
 	bool IsEnabled();
 

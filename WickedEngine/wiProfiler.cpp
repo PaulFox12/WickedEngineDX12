@@ -45,6 +45,8 @@ namespace wi::profiler
 {
 	bool ENABLED = false;
 	bool ENABLED_REQUEST = false;
+	bool GPU_ENABLED = true; // GG: GPU ranges and queries (SetGPUEnabled), taken up at the next BeginFrame
+	bool gpu_this_frame = true;
 	bool initialized = false;
 	std::mutex lock;
 
@@ -485,9 +487,13 @@ namespace wi::profiler
 		gg_cpu_stack.clear();
 		gg_cpu_stack_ids.clear();
 		cpu_frame = BeginRangeCPU("CPU Frame");
+		// GG: CPU ranges only while GPU timing is off (SetGPUEnabled): no command list, query, resolve or read back
+		gpu_this_frame = GPU_ENABLED;
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
-		CommandList cmd = device->BeginCommandList();
+		CommandList cmd;
+		if (gpu_this_frame)
+			cmd = device->BeginCommandList();
 		queryheap_idx = device->GetBufferIndex();
 
 		// Read results of previous timings:
@@ -619,6 +625,13 @@ namespace wi::profiler
 			gg_gpu_idle_time = i2 / (float)n;
 		}
 
+		if (!gpu_this_frame)
+		{
+			gpu_frame = 0;
+			drawn_this_frame = false;
+			return;
+		}
+
 		device->QueryReset(
 			&queryHeap,
 			0,
@@ -635,6 +648,16 @@ namespace wi::profiler
 		{
 			if (phaseThread)
 				PhaseEnd(PhaseId("CPU Frame")); // GG: the frame phase BeginFrame began
+			return;
+		}
+
+		if (!gpu_this_frame)
+		{
+			// GG: CPU ranges only, no GPU Frame query, resolve or read back
+			EndRange(cpu_frame);
+			if (g_pfnWickedProfilerQueries)
+				g_pfnWickedProfilerQueries(0);
+			nextQuery.store(0);
 			return;
 		}
 
@@ -717,7 +740,7 @@ namespace wi::profiler
 		if (g_pfnWickedGpuRangeBegin && name && strcmp(name, "GPU Frame") != 0)
 			gg_span = g_pfnWickedGpuRangeBegin(cmd, name);
 
-		if (!ENABLED || !initialized)
+		if (!ENABLED || !initialized || !gpu_this_frame)
 			return gg_span >= 0 ? (GG_SPAN_TAG | (range_id)gg_span) : 0;
 
 		range_id id = wi::helper::string_hash(name);
@@ -766,6 +789,14 @@ namespace wi::profiler
 		LockRanges();
 
 		auto it = ranges.find(id);
+		if (it == ranges.end() && ((id & GG_SPAN_TAG) || id == 0))
+		{
+			// GG: a GPU range begun while GPU timing was off: only the game's own span, if any, to end
+			UnlockRanges();
+			if ((id & GG_SPAN_TAG) && g_pfnWickedGpuRangeEnd)
+				g_pfnWickedGpuRangeEnd((int)(id & ~GG_SPAN_TAG));
+			return;
+		}
 		if (it != ranges.end())
 		{
 			if (it->second.IsCPURange())
@@ -1203,6 +1234,11 @@ namespace wi::profiler
 	void DisableDrawForThisFrame()
 	{
 		drawn_this_frame = true;
+	}
+
+	void SetGPUEnabled(bool value)
+	{
+		GPU_ENABLED = value;
 	}
 
 	void SetEnabled(bool value)
