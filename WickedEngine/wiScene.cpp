@@ -162,7 +162,10 @@ namespace wi::scene
 	// Default 8 frames. Stock Wicked used all 32, which cannot be met while the camera turns -
 	// see the long note at OcclusionResult::IsOccluded() in wiScene.h.
 	uint32_t gg_occlusion_history_mask = 0xFFu;
-	float gg_occlusion_box_grow = 0.000001f;
+	// GG: an occlusion query's box growth: -1 Lee's BR-0004 (32 float steps of the largest of the box's and the camera's
+	// coordinates; the default since the 2026-11-06 merge: it covers the camera's magnitude too, and stopped the same
+	// flicker), > 0 our share of the box's distance from the origin (1e-6, 2026-11-04), 0 stock
+	float gg_occlusion_box_grow = -1.0f;
 
 	void Scene::Update(float dt)
 	{
