@@ -326,14 +326,16 @@ bool gg_dx11_fog_curve = true;
 // other pixel row of contact AO on grazing ground (only even rows have an exact half-res twin), from ~20 m out at 4000.
 // Swept 4000/10000/20000 with the 3.126b depth pick: 10000 (254 m) kept the railing at 57% dark (stock 90%), gave the
 // least pop-in, and half the extra row striping of 4000 (far-ground index stock 6.30, 4000 7.11, 10000 6.71).
+// GG: BR-0006's trim of the visible lights to what the entity array takes (false: sorted only, as our 2026-10-21 sort)
+bool gg_light_trim = true;
 float gg_msao_reference_far = 10000.0f;
 // GGMAX 3.126b: see MSAO_PREPARE (ShaderInterop_Postprocess.h)
 uint32_t gg_msao_downsample_mode = 1;
 float gg_msao_downsample_edge = 0.1f;
 // GGMAX 3.129: the forward light mask (env probe captures, voxelize) must name slots of frameCB.lights. That array
 // is written in TYPE GROUPS (directional, spot, point, rect; inactive lights skipped) while vis.visibleLights is in
-// scene order - and its order is not even stable past 63 lights (per-group stream compaction appends groups in
-// completion order). Stock ForwardEntityCullingCPU set bit i for visibleLights[i] and the shader loaded slot i, so
+// another order (since BR-0006 nearest-first, trimmed to what the entity array takes; before that scene order and not
+// even stable past 63 lights - per-group stream compaction appends groups in completion order). Stock ForwardEntityCullingCPU set bit i for visibleLights[i] and the shader loaded slot i, so
 // a capture lit each object with whatever light happened to sit at that slot. UpdatePerFrameData records the scene
 // light written to each of the first 64 slots; the mask is built from that table.
 bool gg_forward_lightmask_slots = true;
@@ -497,6 +499,9 @@ uint32_t GG_GetShadowRects(uint32_t* entities, int* widths, int* heights, int* t
 }
 static int localShadowCappedCount = 0;    // local casters denied a slot (rendered fully lit)
 static int localShadowRenderedCount = 0;  // local shadows actually re-rendered this frame
+// GGMAX BR-0006: full local-atlas clears since startup. The per-frame counters above only show the frame a harness read
+// lands on, so a once-per-camera-move full re-render was invisible to them.
+static uint32_t gg_localShadowFullClearTotal = 0;
 static wi::vector<wi::ecs::Entity> localShadowGrantedPrev; // last frame's granted set (Phase 1.5 hysteresis)
 // GGMAX 3.30: entities whose cached local shadow must refresh THIS frame because a shadow caster
 // moved inside their range. Empty = every cached shadow is reusable. Rebuilt every frame by the
@@ -4315,7 +4320,8 @@ void RenderMeshes(
 						break;
 					}
 				}
-				else if (material.customShaderID >= 0 && material.customShaderID < (int)customShaders.size())
+				else if (material.customShaderID >= 0 && material.customShaderID < (int)customShaders.size()
+					&& !customShaders[material.customShaderID].ggStockPipeline)
 				{
 					const CustomShader& customShader = customShaders[material.customShaderID];
 					if (filterMask & customShader.filterMask)
@@ -4342,7 +4348,16 @@ void RenderMeshes(
 					// ⚠ UNLIT and WATER are left alone. UNLIT is already CHEAPER than PBR, so forcing it
 					// would be slower AND would light something deliberately unlit; WATER would stop
 					// reading as water. CARTOON and TERRAINBLENDED are art, not cost.
-					uint32_t ggShaderType = material.shaderType;
+					// ★★★ GGMAX BR-0008: a custom shader flagged ggStockPipeline (GG's "Tree Animate Doublesided",
+					// customShaderID 1) also lands here. DX11 built its pipelines with AddPipelineDesc(PBR, OPAQUE,
+					// DOUBLESIDED) and swapped only the vertex shader; the DX12 API has no AddPipelineDesc, so GG's
+					// port registered vertex-shader-only shells (no pixel shader, depth disabled) and every mesh set
+					// to the shader drew NOTHING - no colour, no depth, no shadow (tester trees vanished). Its DX12
+					// vertex shader is the stock one anyway (the sway comes from the engine wind, GG 3.58b), so the
+					// stock pipeline with DX11's three forced choices is the whole shader.
+					const bool ggStockCustom = material.customShaderID >= 0 && material.customShaderID < (int)customShaders.size()
+						&& customShaders[material.customShaderID].ggStockPipeline;
+					uint32_t ggShaderType = ggStockCustom ? (uint32_t)MaterialComponent::SHADERTYPE_PBR : material.shaderType;
 					uint32_t ggTessellation = tessellatorRequested;
 					if (gg_sq_objects != 0)
 					{
@@ -4368,8 +4383,8 @@ void RenderMeshes(
 					}
 
 					variant.bits.shadertype = ggShaderType;
-					variant.bits.blendmode = material.GetBlendMode();
-					variant.bits.cullmode = (mesh.IsDoubleSided() || material.IsDoubleSided() || (shadowRendering && mesh.IsDoubleSidedShadow())) ? (uint32_t)CullMode::NONE : (uint32_t)CullMode::BACK;
+					variant.bits.blendmode = ggStockCustom ? (uint32_t)BLENDMODE_OPAQUE : material.GetBlendMode();
+					variant.bits.cullmode = (ggStockCustom || mesh.IsDoubleSided() || material.IsDoubleSided() || (shadowRendering && mesh.IsDoubleSidedShadow())) ? (uint32_t)CullMode::NONE : (uint32_t)CullMode::BACK;
 					variant.bits.tessellation = ggTessellation;
 					variant.bits.alphatest = material.IsAlphaTestEnabled() || forceAlphaTestForDithering;
 					variant.bits.sample_count = renderpass_info.sample_count;
@@ -5250,22 +5265,40 @@ void UpdateVisibility(Visibility& vis)
 	// finalize stream compaction:
 	vis.visibleObjects.resize((size_t)vis.object_counter.load());
 	vis.visibleLights.resize((size_t)vis.light_counter.load());
-	// GGMAX: nearest first (directional lights ahead of all), so the lights the entity array cannot take are the farthest
+	// GGMAX: the lights in view before BR-0006's trim below (our own nearest-first sort of 2026-10-21 gave way to its)
 	gg_lights_visible = (uint32_t)vis.visibleLights.size();
-	if (vis.visibleLights.size() > 32)
+
+	// GGMAX BR-0006: nearest lights first, as the DX11 fork sorted them. The list is filled by parallel jobs and appended in
+	// completion order, so it changed every frame, and every consumer that keeps only the first N - the frame's entity
+	// array (SHADER_ENTITY_COUNT = 256; a tester's level had 348 visible lights), the 64 lights a forward batch can index -
+	// dropped a DIFFERENT set each frame: nearby flame lights blinked off in about one frame in four. Directional lights
+	// first (DX11 keyed them 0), then by distance from the camera, ties by index; a NaN position after every finite one.
+	if (vis.visibleLights.size() > 1 && vis.camera != nullptr)
 	{
-		const XMVECTOR eye = vis.camera->GetEye();
-		static thread_local wi::vector<std::pair<float, uint32_t>> keyed;
-		keyed.clear();
-		keyed.reserve(vis.visibleLights.size());
-		for (uint32_t lightIndex : vis.visibleLights)
+		const XMFLOAT3 eye = vis.camera->Eye;
+		const auto& lights = vis.scene->lights;
+		auto key = [&](uint32_t i) {
+			if (lights[i].GetType() == LightComponent::DIRECTIONAL)
+				return -1.0f;
+			const float d = wi::math::DistanceSquared(eye, lights[i].position);
+			return d == d ? d : std::numeric_limits<float>::max();
+		};
+		std::sort(vis.visibleLights.begin(), vis.visibleLights.end(), [&](uint32_t a, uint32_t b) {
+			const float ka = key(a), kb = key(b);
+			return ka < kb || (ka == kb && a < b);
+		});
+
+		// Keep only the lights the entity array can take after the decals and env probes UpdatePerFrameData writes first:
+		// it writes lights in TYPE groups (spot before point), so without this every visible spot light, however far,
+		// displaced nearer point lights, where DX11 kept the nearest of any type - and the dropped lights still competed
+		// for shadow-atlas space. One slot stays free: a full array lets the next group overwrite its last entry.
+		const size_t taken = std::min((size_t)MAX_SHADER_DECAL_COUNT, vis.visibleDecals.size())
+			+ std::min((size_t)MAX_SHADER_PROBE_COUNT, vis.visibleEnvProbes.size()) + 1;
+		const size_t budget = taken < SHADER_ENTITY_COUNT ? SHADER_ENTITY_COUNT - taken : 0;
+		if (gg_light_trim && vis.visibleLights.size() > budget) // GG: gg_light_trim false keeps them all (the sort alone, as before)
 		{
-			const LightComponent& light = vis.scene->lights[lightIndex];
-			const float key = light.GetType() == LightComponent::DIRECTIONAL ? -1.0f : wi::math::DistanceEstimated(XMLoadFloat3(&light.position), eye);
-			keyed.emplace_back(key, lightIndex);
+			vis.visibleLights.resize(budget);
 		}
-		std::sort(keyed.begin(), keyed.end(), [](const std::pair<float, uint32_t>& a, const std::pair<float, uint32_t>& b) { return a.first < b.first; });
-		for (size_t i = 0; i < keyed.size(); ++i) vis.visibleLights[i] = keyed[i].second;
 	}
 
 	if (vis.scene->weather.IsOceanEnabled())
@@ -5492,6 +5525,13 @@ void UpdateVisibility(Visibility& vis)
 			}
 			if (!vis.shadow_packer.rects.empty())
 			{
+				// GGMAX BR-0006: pack in scene order, not visibleLights order (now distance-sorted). stb_rect_pack keeps the
+				// input order of equal-size rects, so a camera-dependent order swapped two same-size casters' atlas places
+				// whenever they swapped distance rank, and the static local-shadow cache (3.29) then re-rendered every local
+				// shadow and the sun. Ids are unique (one rect per light; the rain blocker is -1, first).
+				std::sort(vis.shadow_packer.rects.begin(), vis.shadow_packer.rects.end(),
+					[](const wi::rectpacker::Rect& a, const wi::rectpacker::Rect& b) { return a.id < b.id; });
+
 				// GGMAX 1.58b: atlas cap 8192 -> 16384 (D3D12 max texture dim). At 8192 the five
 				// 2048 sun cascades (10240 wide) could never fit, so the packer's iterative_scaling
 				// silently HALVED them to 1024/cascade — the DX11 build's Texture2DArray ran true
@@ -5794,6 +5834,7 @@ void UpdateVisibility(Visibility& vis)
 			localAtlasFullClear = changed;
 			if (changed)
 			{
+				gg_localShadowFullClearTotal++; // GGMAX BR-0006: harness readout SHADOW_LOCAL_FULLCLEARS_TOTAL
 				localShadowCache = cur; // this frame re-renders the whole set -> adopt as the cached layout
 				localShadowCacheAtlasW = shadowMapAtlas.desc.width;
 				localShadowCacheAtlasH = shadowMapAtlas.desc.height;
@@ -7928,6 +7969,9 @@ void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vi
 		device->EventBegin("Occlusion Culling Objects", cmd);
 		auto gg_range_objects = wi::profiler::BeginRangeGPU("Occlusion Objects", cmd); // GG: the parts' costs apart
 
+		// GGMAX BR-0004: the camera's share of the extrusion magnitude below (the same for every object).
+		const float eye_magnitude = std::max({ std::abs(camera.Eye.x), std::abs(camera.Eye.y), std::abs(camera.Eye.z) });
+
 		for (uint32_t instanceIndex : vis.visibleObjects)
 		{
 			const Scene::OcclusionResult& occlusion_result = vis.scene->occlusion_results_objects[instanceIndex];
@@ -7943,6 +7987,20 @@ void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vi
 					// GG: by a share of the distance from the world origin, so it survives the float's rounding there
 					const float reach = std::max(std::max(std::max(std::abs(aabb._min.x), std::abs(aabb._max.x)), std::max(std::abs(aabb._min.y), std::abs(aabb._max.y))), std::max(std::abs(aabb._min.z), std::abs(aabb._max.z)));
 					grow = std::max(grow, reach * wi::scene::gg_occlusion_box_grow);
+				}
+				else if (wi::scene::gg_occlusion_box_grow < 0)
+				{
+					// GGMAX BR-0004 (Lee 2026-11-04, kept beside ours to compare, gg_occlusion_box_grow -1): by an amount that
+					// grows with the distance from the origin. The box is tested against a depth buffer that already holds the
+					// object itself, so a flat object (a floor tile) stays visible only while the box's top face wins the depth
+					// test against its own surface. Stock 0.001 is lost in float rounding away from the origin (one ulp at
+					// 135,000 = 0.0156): the box and the mesh are both rounded where the camera's view-projection is applied,
+					// at the magnitude of the object's and the camera's coordinates, so the extrusion is 32 * FLT_EPSILON of
+					// the largest of them (0.5 units at 135,000, 0.004 at 1,000; stock 0.001 below 262)
+					const float magnitude = std::max({ eye_magnitude,
+						std::abs(aabb._min.x), std::abs(aabb._min.y), std::abs(aabb._min.z),
+						std::abs(aabb._max.x), std::abs(aabb._max.y), std::abs(aabb._max.z) });
+					grow = std::max(0.001f, magnitude * (32.0f * FLT_EPSILON));
 				}
 				aabb._min.x -= grow;
 				aabb._min.y -= grow;
@@ -8984,6 +9042,10 @@ void GetLocalShadowStats(int& granted, int& capped, int& rendered)
 	granted = localShadowGrantedCount;
 	capped = localShadowCappedCount;
 	rendered = localShadowRenderedCount;
+}
+uint32_t GetLocalShadowFullClearTotal()
+{
+	return gg_localShadowFullClearTotal;
 }
 void SetLocalShadowCachingEnabled(bool value)
 {
