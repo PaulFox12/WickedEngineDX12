@@ -1388,6 +1388,7 @@ bool LoadShader(
 // later is looked for from the current folder, which the game moves)
 static Shader particleCompositePS;
 static Shader ggParticleCompositeCS; // GG: the particles drawn apart laid over the TAA's picture
+static Shader ggHdrProbeCS; // GG: the white screen probe (GG_HdrProbe_*)
 static BlendState particleCompositeBlend;
 static PipelineState PSO_particlecomposite;
 
@@ -1609,6 +1610,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_LENSRAIN], "lensrainCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, particleCompositePS, "particlecompositePS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, ggParticleCompositeCS, "ggparticlecompositeCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, ggHdrProbeCS, "gg_hdrprobeCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE], "aerialPerspectiveCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE], "aerialPerspectiveCS_capture.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE_MSAA], "aerialPerspectiveCS_capture_MSAA.cso"); });
@@ -20188,6 +20190,110 @@ void Postprocess_Sharpen(
 
 	device->EventEnd(cmd);
 }
+// GG: the white screen probe (2026-11-07). Each frame while on, the HDR images the post chain passes through are scanned
+// (GG_HdrProbe_Texture: NaN, infinite and negative pixel counts and the brightest finite value, a slot each) and the eye
+// adaption's exposure and adapted luminance copied beside them; the buffer goes to a readback ring and is read back
+// GetBufferCount() frames later (GG_HdrProbe_Read), for GameGuru to log the frame anything goes bad.
+bool gg_hdr_probe_enabled = true;
+static GPUBuffer ggHdrProbeBuffer;
+static GPUBuffer ggHdrProbeReadback[GraphicsDevice::GetBufferCount()];
+static bool ggHdrProbeReadbackValid[GraphicsDevice::GetBufferCount()] = {};
+static GGHdrProbeResult ggHdrProbeLast;
+static bool ggHdrProbeFrameOpen = false;
+static constexpr uint32_t GG_HDRPROBE_LUMINANCE_OFFSET = GG_HDRPROBE_SLOTS * 16;
+void GG_HdrProbe_Begin(CommandList cmd)
+{
+	ggHdrProbeFrameOpen = false;
+	if (!gg_hdr_probe_enabled || !ggHdrProbeCS.IsValid())
+		return;
+	const uint32_t idx = device->GetBufferIndex();
+	if (!ggHdrProbeBuffer.IsValid())
+	{
+		GPUBufferDesc bd;
+		bd.size = GG_HDRPROBE_LUMINANCE_OFFSET + 16;
+		bd.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
+		bd.misc_flags = ResourceMiscFlag::BUFFER_RAW;
+		device->CreateBufferZeroed(&bd, &ggHdrProbeBuffer);
+		device->SetName(&ggHdrProbeBuffer, "ggHdrProbeBuffer");
+		bd.usage = Usage::READBACK;
+		bd.bind_flags = {};
+		bd.misc_flags = {};
+		for (auto& buf : ggHdrProbeReadback)
+		{
+			device->CreateBufferZeroed(&bd, &buf);
+			device->SetName(&buf, "ggHdrProbeReadback");
+		}
+	}
+	// what this ring slot holds is from GetBufferCount() frames ago, finished by now
+	if (ggHdrProbeReadbackValid[idx] && ggHdrProbeReadback[idx].mapped_data != nullptr)
+	{
+		const uint32_t* u = (const uint32_t*)ggHdrProbeReadback[idx].mapped_data;
+		GGHdrProbeResult r;
+		r.frame = device->GetFrameCount() - GraphicsDevice::GetBufferCount();
+		for (int s = 0; s < GG_HDRPROBE_SLOTS; ++s)
+		{
+			r.nan[s] = u[s * 4 + 0];
+			r.inf[s] = u[s * 4 + 1];
+			r.neg[s] = u[s * 4 + 2];
+			std::memcpy(&r.brightest[s], &u[s * 4 + 3], sizeof(float));
+		}
+		std::memcpy(&r.exposure, &u[GG_HDRPROBE_LUMINANCE_OFFSET / 4 + 0], sizeof(float));
+		std::memcpy(&r.luminance, &u[GG_HDRPROBE_LUMINANCE_OFFSET / 4 + 1], sizeof(float));
+		r.valid = true;
+		ggHdrProbeLast = r;
+	}
+	device->Barrier(GPUBarrier::Buffer(&ggHdrProbeBuffer, ResourceState::SHADER_RESOURCE, ResourceState::UNORDERED_ACCESS), cmd);
+	device->ClearUAV(&ggHdrProbeBuffer, 0, cmd);
+	device->Barrier(GPUBarrier::Memory(&ggHdrProbeBuffer), cmd);
+	ggHdrProbeFrameOpen = true;
+}
+void GG_HdrProbe_Texture(const Texture& input, int slot, CommandList cmd)
+{
+	if (!ggHdrProbeFrameOpen || slot < 0 || slot >= GG_HDRPROBE_SLOTS || !input.IsValid())
+		return;
+	device->EventBegin("GG_HdrProbe", cmd);
+	device->BindComputeShader(&ggHdrProbeCS, cmd);
+	device->BindResource(&input, 0, cmd);
+	const TextureDesc& desc = input.GetDesc();
+	PostProcess postprocess;
+	postprocess.resolution.x = desc.width;
+	postprocess.resolution.y = desc.height;
+	postprocess.resolution_rcp.x = 1.0f / postprocess.resolution.x;
+	postprocess.resolution_rcp.y = 1.0f / postprocess.resolution.y;
+	postprocess.params0 = XMFLOAT4((float)slot, 0, 0, 0);
+	postprocess.params1 = XMFLOAT4(0, 0, 0, 0);
+	device->PushConstants(&postprocess, sizeof(postprocess), cmd);
+	const GPUResource* uavs[] = { &ggHdrProbeBuffer };
+	device->BindUAVs(uavs, 0, arraysize(uavs), cmd);
+	device->Dispatch((desc.width + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, (desc.height + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, 1, cmd);
+	device->Barrier(GPUBarrier::Memory(&ggHdrProbeBuffer), cmd);
+	device->EventEnd(cmd);
+}
+void GG_HdrProbe_End(const GPUBuffer* luminance, CommandList cmd)
+{
+	if (!ggHdrProbeFrameOpen)
+		return;
+	ggHdrProbeFrameOpen = false;
+	const uint32_t idx = device->GetBufferIndex();
+	device->Barrier(GPUBarrier::Buffer(&ggHdrProbeBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::COPY_DST), cmd);
+	if (luminance != nullptr && luminance->IsValid())
+	{
+		// the eye adaption's exposure then adapted luminance (LUMINANCE_BUFFER_OFFSET_EXPOSURE, _LUMINANCE)
+		device->Barrier(GPUBarrier::Buffer(luminance, ResourceState::SHADER_RESOURCE, ResourceState::COPY_SRC), cmd);
+		device->CopyBuffer(&ggHdrProbeBuffer, GG_HDRPROBE_LUMINANCE_OFFSET, luminance, LUMINANCE_BUFFER_OFFSET_EXPOSURE, 8, cmd);
+		device->Barrier(GPUBarrier::Buffer(luminance, ResourceState::COPY_SRC, ResourceState::SHADER_RESOURCE), cmd);
+	}
+	device->Barrier(GPUBarrier::Buffer(&ggHdrProbeBuffer, ResourceState::COPY_DST, ResourceState::COPY_SRC), cmd);
+	device->CopyResource(&ggHdrProbeReadback[idx], &ggHdrProbeBuffer, cmd);
+	device->Barrier(GPUBarrier::Buffer(&ggHdrProbeBuffer, ResourceState::COPY_SRC, ResourceState::SHADER_RESOURCE), cmd);
+	ggHdrProbeReadbackValid[idx] = true;
+}
+bool GG_HdrProbe_Read(GGHdrProbeResult& out)
+{
+	out = ggHdrProbeLast;
+	return out.valid;
+}
+
 void Postprocess_GGParticleComposite(
 	const Texture& input,
 	const Texture* full,

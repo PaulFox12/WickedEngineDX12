@@ -2995,6 +2995,10 @@ namespace wi
 			device->Barrier(GPUBarrier::Image(&rtPostprocess, ResourceState::UNORDERED_ACCESS, rtPostprocess.desc.layout), cmd);
 		}
 
+		// GG: the white screen probe: the lit scene first (slot 0), then the TAA's picture, the bloom and the tone map's input
+		wi::renderer::GG_HdrProbe_Begin(cmd);
+		wi::renderer::GG_HdrProbe_Texture(*rt_read, 0, cmd);
+
 		// 1.) HDR post process chain
 		{
 			if (getFSR2Enabled() && fsr2Resources.IsValid())
@@ -3032,6 +3036,7 @@ namespace wi
 					cmd
 				);
 				rt_first = temporalAAResources.GetCurrent();
+				wi::renderer::GG_HdrProbe_Texture(*rt_first, 1, cmd);
 
 				// GG: the particles drawn apart for the TAA laid over its resolved picture (RenderTransparents), out of its history;
 				// the sharpen filter (there to take off the TAA's softness) sharpens that picture first and not the particles, whose
@@ -3157,6 +3162,7 @@ namespace wi
 					getBloomBeforeExposure(),
 					getBloomStrength()
 				);
+				wi::renderer::GG_HdrProbe_Texture(bloomResources.texture_bloom, 2, cmd);
 			}
 
 			// the screen-space lens flare from the image's bright spots, added to the HDR image the tone map reads, after
@@ -3191,6 +3197,7 @@ namespace wi
 				std::swap(rt_read, rt_write);
 			}
 
+			wi::renderer::GG_HdrProbe_Texture(rt_first == nullptr ? *rt_read : *rt_first, 3, cmd);
 			wi::renderer::Postprocess_Tonemap(
 				rt_first == nullptr ? *rt_read : *rt_first,
 				*rt_write,
@@ -3210,6 +3217,7 @@ namespace wi
 				getHDRCalibration(),
 				getBloomRadius()
 			);
+			wi::renderer::GG_HdrProbe_End(getEyeAdaptionEnabled() ? &luminanceResources.luminance : nullptr, cmd);
 
 			rt_first = nullptr;
 			std::swap(rt_read, rt_write);
