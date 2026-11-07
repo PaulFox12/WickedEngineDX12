@@ -226,6 +226,10 @@ bool gg_pso_trim = true;
 // Harness: SET_SHADOWEXTRUDE <units>. See NIGHT_INVESTIGATIONS_2026-08-12.md section C.
 float gg_shadow_caster_extrude = 4000.0f; // ~101 m; stock behaviour is 1000 u (25 m)
 
+// GG: the sun's feathered shadow filter (shadow_2D_feathered) takes this many taps nearest the camera, one fewer each
+// 333 units out, down to 1; 8 is DX11's. Each tap is a 2x2 gather. Harness: SET_SUNSHADOWTAPS <1-8>.
+int gg_sun_shadow_taps = 8;
+
 // GGMAX 1.79 (low-VRAM preset, batch 3): build object PSOs LAZILY.
 // GGMAX 1.82: DEFAULT ON for everybody. Revert with setup.ini `lazypso=0`.
 //
@@ -6316,6 +6320,7 @@ void UpdatePerFrameData(
 		}
 		frameCB.entityarray_descriptor = device->GetDescriptorIndex(&vis.entityBuffer, SubresourceType::SRV);
 		frameCB.matrixarray_descriptor = device->GetDescriptorIndex(&vis.matrixBuffer, SubresourceType::SRV);
+		frameCB.gg_sun_shadow_taps = std::max(1, std::min(8, gg_sun_shadow_taps));
 		ShaderEntity* entityArray = vis.entityArray.data();
 		float4x4* matrixArray = vis.matrixArray.data();
 

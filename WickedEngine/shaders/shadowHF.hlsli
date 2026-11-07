@@ -332,7 +332,10 @@ inline half3 shadow_2D_feathered(in ShaderEntity light, in float z, in float2 sh
 	// the eye), so they read as screen-attached tile-like divides, and they are shadow-map-
 	// resolution independent — the user-reported warehouse artifact. camera_distance < 0 =
 	// spot/rect caller = constant 8 taps (DX11 spot parity).
-	const int samplenum = camera_distance < 0 ? 8 : (8 - (int)min(camera_distance * 0.003f, 7.0f)); // sun: 8 near .. 1 far (DX11 formula)
+	// GG: the sun's taps near the camera are GetFrame().gg_sun_shadow_taps (8 is DX11's; fewer is cheaper, edges a little
+	// harder), still one fewer each 333 units out down to 1
+	const int sun_taps = GetFrame().gg_sun_shadow_taps > 0 ? min(GetFrame().gg_sun_shadow_taps, 8) : 8;
+	const int samplenum = camera_distance < 0 ? 8 : (sun_taps - (int)min(camera_distance * 0.003f, (float)(sun_taps - 1))); // sun: taps near .. 1 far (DX11 formula)
 
 	float occlusion = 0;
 	[loop]

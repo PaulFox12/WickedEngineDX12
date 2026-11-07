@@ -1415,7 +1415,7 @@ struct alignas(16) FrameCB
 	// load_entity and load_entitymatrix by these bindless descriptors
 	int entityarray_descriptor;
 	int matrixarray_descriptor;
-	int padding_entityarray0;
+	int gg_sun_shadow_taps;	// GG (was padding_entityarray0): the sun's feathered shadow taps near the camera, 1-8 (0 = 8, DX11's)
 	int padding_entityarray1;
 };
 

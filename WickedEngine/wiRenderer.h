@@ -156,6 +156,8 @@ namespace wi::renderer
 	// shadows were still on screen. 0 restores stock. Harness SET_SHADOWEXTRUDE <units>.
 	// ⚠ Raising this pulls more casters into the NEAR cascades — measure before trusting it.
 	extern float gg_shadow_caster_extrude;
+	// GG: the sun's feathered shadow taps nearest the camera (1-8, 8 DX11's); harness SET_SUNSHADOWTAPS
+	extern int gg_sun_shadow_taps;
 	// GGMAX 2.28: per-frame count of objects the DIRECTIONAL cascade cull selected as casters.
 	// The executed-check for gg_shadow_caster_extrude — VISIBLE_OBJECTS cannot see the effect,
 	// so without this an A/B cannot distinguish "no cost" from "the knob did nothing".
