@@ -139,7 +139,18 @@ void main(uint3 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 	for (i = groupIndex; i < CACHE_SIZE; i += POSTPROCESS_BLUR_GAUSSIAN_THREADCOUNT)
 	{
 		const float2 uv = (tile_start + 0.5f + direction * (i - TILE_BORDER)) * postprocess.resolution_rcp;
-		color_cache[i] = input.SampleLevel(sampler_linear_clamp, uv, 0);
+		// GG: taps past the image's edge read black, as GameGuru's DX11 blur: the clamp repeated the edge texel, so a bright
+		// light cut by the screen's edge counted as reaching on past it, and each of the bloom's mips multiplied it into a
+		// wash over the whole screen
+		[branch]
+		if (uv.x < 0 || uv.y < 0 || uv.x > 1 || uv.y > 1)
+		{
+			color_cache[i] = 0;
+		}
+		else
+		{
+			color_cache[i] = input.SampleLevel(sampler_linear_clamp, uv, 0);
+		}
 #ifdef BILATERAL
 		depth_cache[i] = texture_lineardepth.SampleLevel(sampler_point_clamp, uv, 0);
 #endif // BILATERAL

@@ -3828,11 +3828,13 @@ namespace wi
 	{
 		eyeAdaptionEnabled = value;
 
-		if (value)
+		// GG: made only when missing; GameGuru switches it on with every visuals push in play, and a new buffer starts the
+		// adapted luminance at 0, the exposure at its 1000x cap: the screen went white for seconds (the user's run, 2026-11-06)
+		if (value && !luminanceResources.luminance.IsValid())
 		{
 			wi::renderer::CreateLuminanceResources(luminanceResources, GetInternalResolution());
 		}
-		else
+		else if (!value)
 		{
 			luminanceResources = {};
 		}
