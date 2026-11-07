@@ -85,7 +85,9 @@ struct Surface
 	half3 B;				// bitangent
 	half4 sss;				// subsurface scattering color * amount
 	half4 sss_inv;			// 1 / (1 + sss)
-	uint layerMask;			// the engine-side layer mask
+	uint layerMask;			// the engine-side layer mask (material & instance: what the decals test)
+	uint lightMask;			// GG: the instance's layers alone, what the lights and probes test; the material's mask is GameGuru's
+							// decal refusal (bit 30 alone), which ANDed with the instance's left a refusing model unlit
 	half3 facenormal;		// surface normal without normal map
 	uint uid_validate;
 	float hit_depth;
@@ -150,6 +152,7 @@ struct Surface
 		sss = 0;
 		sss_inv = 1;
 		layerMask = ~0;
+		lightMask = ~0;
 		facenormal = 0;
 		gi = 0;
 		bumpColor = 0;
@@ -371,6 +374,7 @@ struct Surface
 		create(material);
 
 		layerMask = material.layerMask & inst.layerMask;
+		lightMask = inst.layerMask;
 
 		i0 = prim.i0();
 		i1 = prim.i1();

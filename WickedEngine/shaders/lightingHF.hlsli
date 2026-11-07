@@ -85,7 +85,7 @@ inline void light_directional(in ShaderEntity light, in Surface surface, inout L
 {
 	if (shadow_mask <= 0.001)
 		return; // shadow mask zero
-	if ((light.layerMask & surface.layerMask) == 0)
+	if ((light.layerMask & surface.lightMask) == 0)
 		return; // layer mismatch
 
 	surface.P = gg_weapon_shadow_P(surface); // GGMAX 2.14 — before gg_camera_distance and the cascade lookups
@@ -266,7 +266,7 @@ inline void light_point(in ShaderEntity light, in Surface surface, inout Lightin
 {
 	if (shadow_mask <= 0.001)
 		return; // shadow mask zero
-	if ((light.layerMask & surface.layerMask) == 0)
+	if ((light.layerMask & surface.lightMask) == 0)
 		return; // layer mismatch
 
 	surface.P = gg_weapon_shadow_P(surface); // GGMAX 2.14 — before Lunnormalized / shadow_cube
@@ -397,7 +397,7 @@ inline void light_spot(in ShaderEntity light, in Surface surface, inout Lighting
 {
 	if (shadow_mask <= 0.001)
 		return; // shadow mask zero
-	if ((light.layerMask & surface.layerMask) == 0)
+	if ((light.layerMask & surface.lightMask) == 0)
 		return; // layer mismatch
 
 	surface.P = gg_weapon_shadow_P(surface); // GGMAX 2.14 — before Lunnormalized / the spot shadow lookup
@@ -501,7 +501,7 @@ inline void light_rect(in ShaderEntity light, in Surface surface, inout Lighting
 #ifndef DISABLE_AREA_LIGHTS
 	if (shadow_mask <= 0.001)
 		return; // shadow mask zero
-	if ((light.layerMask & surface.layerMask) == 0)
+	if ((light.layerMask & surface.lightMask) == 0)
 		return; // layer mismatch
 	
 	const half4 quaternion = light.GetQuaternion();
@@ -763,7 +763,7 @@ inline half3 EnvironmentReflection_Global(in Surface surface)
 // return:				color of the environment map (rgb), blend factor of the environment map (a)
 inline half4 EnvironmentReflection_Local(in TextureCube<half4> cubemap, in Surface surface, in ShaderEntity probe, in float4x4 probeProjection, in half3 clipSpacePos)
 {
-	if ((probe.layerMask & surface.layerMask) == 0)
+	if ((probe.layerMask & surface.lightMask) == 0)
 		return 0; // early exit: layer mismatch
 
 	// GGMAX 2.89 (#157): ISOLATION — drop local probes so everything falls through to the

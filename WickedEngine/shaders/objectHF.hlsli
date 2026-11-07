@@ -895,6 +895,7 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 #endif // WATER
 
 	surface.layerMask = material.layerMask & meshinstance.layerMask;
+	surface.lightMask = meshinstance.layerMask;
 
 
 	half4 surfaceMap = 1;
