@@ -20199,16 +20199,54 @@ static GPUBuffer ggHdrProbeBuffer;
 static GPUBuffer ggHdrProbeReadback[GraphicsDevice::GetBufferCount()];
 static bool ggHdrProbeReadbackValid[GraphicsDevice::GetBufferCount()] = {};
 static GGHdrProbeResult ggHdrProbeLast;
-static bool ggHdrProbeFrameOpen = false;
+static std::atomic<bool> ggHdrProbeReady{ false };
 static constexpr uint32_t GG_HDRPROBE_LUMINANCE_OFFSET = GG_HDRPROBE_SLOTS * 16;
+// Begin (the clear) is recorded in the transparent pass's command list and End (the copy out) in the post chain's; the two
+// lists are recorded on different threads, so nothing here passes state between them on the CPU: each call stands alone,
+// gated on the switch and on the buffers, which End makes once
+static bool GG_HdrProbe_On()
+{
+	return gg_hdr_probe_enabled && ggHdrProbeCS.IsValid() && ggHdrProbeReady.load();
+}
 void GG_HdrProbe_Begin(CommandList cmd)
 {
-	ggHdrProbeFrameOpen = false;
+	if (!GG_HdrProbe_On())
+		return;
+	device->Barrier(GPUBarrier::Buffer(&ggHdrProbeBuffer, ResourceState::SHADER_RESOURCE, ResourceState::UNORDERED_ACCESS), cmd);
+	device->ClearUAV(&ggHdrProbeBuffer, 0, cmd);
+	device->Barrier(GPUBarrier::Memory(&ggHdrProbeBuffer), cmd);
+}
+void GG_HdrProbe_Texture(const Texture& input, int slot, CommandList cmd, uint32_t stride)
+{
+	if (!GG_HdrProbe_On() || slot < 0 || slot >= GG_HDRPROBE_SLOTS || !input.IsValid())
+		return;
+	if (stride < 1) stride = 1;
+	device->EventBegin("GG_HdrProbe", cmd);
+	device->BindComputeShader(&ggHdrProbeCS, cmd);
+	device->BindResource(&input, 0, cmd);
+	const TextureDesc& desc = input.GetDesc();
+	PostProcess postprocess;
+	postprocess.resolution.x = desc.width;
+	postprocess.resolution.y = desc.height;
+	postprocess.resolution_rcp.x = 1.0f / postprocess.resolution.x;
+	postprocess.resolution_rcp.y = 1.0f / postprocess.resolution.y;
+	postprocess.params0 = XMFLOAT4((float)slot, (float)stride, 0, 0);
+	postprocess.params1 = XMFLOAT4(0, 0, 0, 0);
+	device->PushConstants(&postprocess, sizeof(postprocess), cmd);
+	const GPUResource* uavs[] = { &ggHdrProbeBuffer };
+	device->BindUAVs(uavs, 0, arraysize(uavs), cmd);
+	const uint32_t w = (desc.width + stride - 1) / stride, h = (desc.height + stride - 1) / stride;
+	device->Dispatch((w + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, (h + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, 1, cmd);
+	device->Barrier(GPUBarrier::Memory(&ggHdrProbeBuffer), cmd);
+	device->EventEnd(cmd);
+}
+void GG_HdrProbe_End(const GPUBuffer* luminance, CommandList cmd)
+{
 	if (!gg_hdr_probe_enabled || !ggHdrProbeCS.IsValid())
 		return;
-	const uint32_t idx = device->GetBufferIndex();
-	if (!ggHdrProbeBuffer.IsValid())
+	if (!ggHdrProbeReady.load())
 	{
+		// made here once, so the next frame's Begin clears it; this frame records nothing more
 		GPUBufferDesc bd;
 		bd.size = GG_HDRPROBE_LUMINANCE_OFFSET + 16;
 		bd.bind_flags = BindFlag::UNORDERED_ACCESS | BindFlag::SHADER_RESOURCE;
@@ -20223,8 +20261,11 @@ void GG_HdrProbe_Begin(CommandList cmd)
 			device->CreateBufferZeroed(&bd, &buf);
 			device->SetName(&buf, "ggHdrProbeReadback");
 		}
+		ggHdrProbeReady.store(true);
+		return;
 	}
-	// what this ring slot holds is from GetBufferCount() frames ago, finished by now
+	const uint32_t idx = device->GetBufferIndex();
+	// what this ring slot holds is from GetBufferCount() frames ago, finished by now; read before this frame's copy into it
 	if (ggHdrProbeReadbackValid[idx] && ggHdrProbeReadback[idx].mapped_data != nullptr)
 	{
 		const uint32_t* u = (const uint32_t*)ggHdrProbeReadback[idx].mapped_data;
@@ -20242,39 +20283,6 @@ void GG_HdrProbe_Begin(CommandList cmd)
 		r.valid = true;
 		ggHdrProbeLast = r;
 	}
-	device->Barrier(GPUBarrier::Buffer(&ggHdrProbeBuffer, ResourceState::SHADER_RESOURCE, ResourceState::UNORDERED_ACCESS), cmd);
-	device->ClearUAV(&ggHdrProbeBuffer, 0, cmd);
-	device->Barrier(GPUBarrier::Memory(&ggHdrProbeBuffer), cmd);
-	ggHdrProbeFrameOpen = true;
-}
-void GG_HdrProbe_Texture(const Texture& input, int slot, CommandList cmd)
-{
-	if (!ggHdrProbeFrameOpen || slot < 0 || slot >= GG_HDRPROBE_SLOTS || !input.IsValid())
-		return;
-	device->EventBegin("GG_HdrProbe", cmd);
-	device->BindComputeShader(&ggHdrProbeCS, cmd);
-	device->BindResource(&input, 0, cmd);
-	const TextureDesc& desc = input.GetDesc();
-	PostProcess postprocess;
-	postprocess.resolution.x = desc.width;
-	postprocess.resolution.y = desc.height;
-	postprocess.resolution_rcp.x = 1.0f / postprocess.resolution.x;
-	postprocess.resolution_rcp.y = 1.0f / postprocess.resolution.y;
-	postprocess.params0 = XMFLOAT4((float)slot, 0, 0, 0);
-	postprocess.params1 = XMFLOAT4(0, 0, 0, 0);
-	device->PushConstants(&postprocess, sizeof(postprocess), cmd);
-	const GPUResource* uavs[] = { &ggHdrProbeBuffer };
-	device->BindUAVs(uavs, 0, arraysize(uavs), cmd);
-	device->Dispatch((desc.width + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, (desc.height + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, 1, cmd);
-	device->Barrier(GPUBarrier::Memory(&ggHdrProbeBuffer), cmd);
-	device->EventEnd(cmd);
-}
-void GG_HdrProbe_End(const GPUBuffer* luminance, CommandList cmd)
-{
-	if (!ggHdrProbeFrameOpen)
-		return;
-	ggHdrProbeFrameOpen = false;
-	const uint32_t idx = device->GetBufferIndex();
 	device->Barrier(GPUBarrier::Buffer(&ggHdrProbeBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::COPY_DST), cmd);
 	if (luminance != nullptr && luminance->IsValid())
 	{
@@ -20287,6 +20295,10 @@ void GG_HdrProbe_End(const GPUBuffer* luminance, CommandList cmd)
 	device->CopyResource(&ggHdrProbeReadback[idx], &ggHdrProbeBuffer, cmd);
 	device->Barrier(GPUBarrier::Buffer(&ggHdrProbeBuffer, ResourceState::COPY_SRC, ResourceState::SHADER_RESOURCE), cmd);
 	ggHdrProbeReadbackValid[idx] = true;
+}
+void GG_HdrProbe_ShadowAtlas(int slot, CommandList cmd)
+{
+	GG_HdrProbe_Texture(shadowMapAtlas, slot, cmd, 4);
 }
 bool GG_HdrProbe_Read(GGHdrProbeResult& out)
 {

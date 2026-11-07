@@ -2212,6 +2212,12 @@ namespace wi
 			);
 			wi::renderer::BindCommonResources(cmd);
 
+			// GG: the white screen probe starts here: the lit scene after the opaque pass alone (slot 4) and the shadow
+			// atlas (slot 5), before the light shafts, volumetrics, transparents and particles go on
+			wi::renderer::GG_HdrProbe_Begin(cmd);
+			wi::renderer::GG_HdrProbe_Texture(rtMain, 4, cmd);
+			wi::renderer::GG_HdrProbe_ShadowAtlas(5, cmd);
+
 			RenderLightShafts(cmd);
 
 			RenderVolumetrics(cmd);
@@ -2995,8 +3001,8 @@ namespace wi
 			device->Barrier(GPUBarrier::Image(&rtPostprocess, ResourceState::UNORDERED_ACCESS, rtPostprocess.desc.layout), cmd);
 		}
 
-		// GG: the white screen probe: the lit scene first (slot 0), then the TAA's picture, the bloom and the tone map's input
-		wi::renderer::GG_HdrProbe_Begin(cmd);
+		// GG: the white screen probe (begun with the transparents): the lit scene with them (slot 0), then the TAA's picture,
+		// the bloom and the tone map's input
 		wi::renderer::GG_HdrProbe_Texture(*rt_read, 0, cmd);
 
 		// 1.) HDR post process chain

@@ -13,8 +13,11 @@ RWByteAddressBuffer output : register(u0);
 [numthreads(POSTPROCESS_BLOCKSIZE, POSTPROCESS_BLOCKSIZE, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-	bool inside = DTid.x < (uint)postprocess.resolution.x && DTid.y < (uint)postprocess.resolution.y;
-	float3 c = inside ? input[DTid.xy].rgb : 0;
+	// params0.y: read every n-th texel each way (a big shadow atlas), 1 every texel
+	const uint stride = max(1u, (uint)postprocess.params0.y);
+	const uint2 texel = DTid.xy * stride;
+	bool inside = texel.x < (uint)postprocess.resolution.x && texel.y < (uint)postprocess.resolution.y;
+	float3 c = inside ? input[texel].rgb : 0;
 	bool is_nan = false, is_inf = false, is_neg = false;
 	[unroll]
 	for (uint i = 0; i < 3; ++i)

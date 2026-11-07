@@ -1105,10 +1105,11 @@ namespace wi::renderer
 	);
 	// GG: rain on the lens, drawn after the tone map (lensrainCS.hlsl): params0 amount, drop size, flow x and y; params1
 	// slide, refraction, fog, time; the fog reads the image blurred a little (blurNear) and much (blurFar)
-	// GG: the white screen probe (gg_hdrprobeCS.hlsl, 2026-11-07): slots 0 the lit scene, 1 the TAA's picture, 2 the bloom,
-	// 3 what the tone map reads; each slot's NaN, infinite and negative pixel counts and its brightest finite value, with the
-	// eye adaption's exposure and adapted luminance, read back GetBufferCount() frames later
-	static constexpr int GG_HDRPROBE_SLOTS = 4;
+	// GG: the white screen probe (gg_hdrprobeCS.hlsl, 2026-11-07): slots 0 the lit scene with the transparents, 1 the TAA's
+	// picture, 2 the bloom, 3 what the tone map reads, 4 the lit scene after the opaque pass alone, 5 the shadow atlas (its
+	// depths); each slot's NaN, infinite and negative pixel counts and its brightest finite value, with the eye adaption's
+	// exposure and adapted luminance, read back GetBufferCount() frames later
+	static constexpr int GG_HDRPROBE_SLOTS = 6;
 	struct GGHdrProbeResult
 	{
 		bool valid = false;
@@ -1122,8 +1123,9 @@ namespace wi::renderer
 	};
 	extern bool gg_hdr_probe_enabled;
 	void GG_HdrProbe_Begin(wi::graphics::CommandList cmd);
-	void GG_HdrProbe_Texture(const wi::graphics::Texture& input, int slot, wi::graphics::CommandList cmd);
+	void GG_HdrProbe_Texture(const wi::graphics::Texture& input, int slot, wi::graphics::CommandList cmd, uint32_t stride = 1);
 	void GG_HdrProbe_End(const wi::graphics::GPUBuffer* luminance, wi::graphics::CommandList cmd);
+	void GG_HdrProbe_ShadowAtlas(int slot, wi::graphics::CommandList cmd);
 	bool GG_HdrProbe_Read(GGHdrProbeResult& out);
 	// GG: the particles drawn apart (full: the full resolution ones, half: the half resolution ones, either may be null) laid
 	// over the input, the temporal AA's resolved picture (ggparticlecompositeCS.hlsl)
