@@ -27,7 +27,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	float3 sunDirection;
     {
 		float3 upVector = min(worldPosition / viewHeight, 1.0); // Causes flickering without min(x, 1.0) for untouched/edited directional lights
-		float sunZenithCosAngle = dot(upVector, GetSunDirection());
+		// GG: clamped: the sun direction is half precision, and within about 1.3 degrees of the zenith its y rounds to 1.0, so the
+		// dot product could pass 1 and the sqrt below gave NaN over the sky (the white screen at noon)
+		float sunZenithCosAngle = clamp(dot(upVector, GetSunDirection()), -1.0, 1.0);
 		sunDirection = normalize(float3(sqrt(1.0 - sunZenithCosAngle * sunZenithCosAngle), 0.0, sunZenithCosAngle));
 	}
     
