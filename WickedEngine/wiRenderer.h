@@ -888,7 +888,8 @@ namespace wi::renderer
 		float depthRejection = 8,
 		float unitsPerMetre = 1,	// GG: the world's units in a metre (GameGuru 39.37): the rejection, thickness and falloff are in metres
 		float lightThreshold = 1,	// GG: only pixels brighter than this give light (stock 1: lights only)
-		float strength = 1			// GG: the result scaled
+		float strength = 1,			// GG: the result scaled
+		bool skyLight = true		// GG: whether the sky on screen gives light (stock: yes; its light is in the ambient already)
 	);
 	struct RTReflectionResources
 	{

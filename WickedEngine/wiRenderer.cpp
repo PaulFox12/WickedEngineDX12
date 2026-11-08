@@ -17194,7 +17194,8 @@ void Postprocess_SSGI(
 	float depthRejection,
 	float unitsPerMetre,
 	float lightThreshold,
-	float strength
+	float strength,
+	bool skyLight
 )
 {
 	device->EventBegin("Postprocess_SSGI", cmd);
@@ -17239,8 +17240,9 @@ void Postprocess_SSGI(
 		device->EventBegin("SSGI - deinterleave", cmd);
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI_DEINTERLEAVE], cmd);
 
-		// GG: the brightness a pixel must pass to give light
+		// GG: the brightness a pixel must pass to give light, and whether the sky gives none
 		postprocess.params1.x = lightThreshold;
+		postprocess.params1.y = skyLight ? 0.0f : 1.0f;
 		device->PushConstants(&postprocess, sizeof(postprocess), cmd);
 
 		device->BindResource(&input, 0, cmd);

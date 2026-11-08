@@ -71,6 +71,7 @@ void main(uint3 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex, uint3 GTid : 
     float3 color = Unpack_R11G11B10_FLOAT(shared_colors[ldsIndex]);
 
 	color = all(color <= postprocess.params1.x) ? 0 : color; // cut out pixels that are not acting as lights (GG: the threshold a setting, stock 1)
+	color = (postprocess.params1.y > 0 && depth == 0) ? 0 : color; // GG: the sky (reversed depth 0) gives no light when asked: its light is in the ambient already
 	color *= 0.96; // accumulation energy loss
 	color = max(0, color);
 

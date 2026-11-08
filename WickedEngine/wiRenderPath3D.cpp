@@ -2414,7 +2414,8 @@ namespace wi
 				getSSGIDepthRejection(),
 				getSSGIUnitsPerMetre(),
 				getSSGILightThreshold(),
-				getSSGIStrength()
+				getSSGIStrength(),
+				getSSGISkyLight()
 			);
 		}
 	}
