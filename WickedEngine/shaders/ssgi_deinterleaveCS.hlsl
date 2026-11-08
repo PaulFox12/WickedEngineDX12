@@ -57,10 +57,10 @@ void main(uint3 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex, uint3 GTid : 
 	const float2 prevUV1 = uv1 + velocity1;
 	const float2 prevUV2 = uv2 + velocity2;
 	const float2 prevUV3 = uv3 + velocity3;
-    shared_colors[destIdx + 0]		= Pack_R11G11B10_FLOAT(clamp(texture_input.SampleLevel(sampler_linear_clamp, prevUV0, 0), 0, 1000));
-    shared_colors[destIdx + 8]		= Pack_R11G11B10_FLOAT(clamp(texture_input.SampleLevel(sampler_linear_clamp, prevUV1, 0), 0, 1000));
-    shared_colors[destIdx + 128]	= Pack_R11G11B10_FLOAT(clamp(texture_input.SampleLevel(sampler_linear_clamp, prevUV2, 0), 0, 1000));
-    shared_colors[destIdx + 136]	= Pack_R11G11B10_FLOAT(clamp(texture_input.SampleLevel(sampler_linear_clamp, prevUV3, 0), 0, 1000));
+    shared_colors[destIdx + 0]		= Pack_R11G11B10_FLOAT(clamp(texture_input.SampleLevel(sampler_linear_clamp, prevUV0, 0), 0, postprocess.params1.z)); // GG: the brightest light a pixel gives (stock 1000)
+    shared_colors[destIdx + 8]		= Pack_R11G11B10_FLOAT(clamp(texture_input.SampleLevel(sampler_linear_clamp, prevUV1, 0), 0, postprocess.params1.z));
+    shared_colors[destIdx + 128]	= Pack_R11G11B10_FLOAT(clamp(texture_input.SampleLevel(sampler_linear_clamp, prevUV2, 0), 0, postprocess.params1.z));
+    shared_colors[destIdx + 136]	= Pack_R11G11B10_FLOAT(clamp(texture_input.SampleLevel(sampler_linear_clamp, prevUV3, 0), 0, postprocess.params1.z));
 	
     GroupMemoryBarrierWithGroupSync();
 

@@ -88,6 +88,7 @@ namespace wi
 		float ssgiLightThreshold = 1;	// GG: the brightness a pixel must pass to give light (stock 1)
 		float ssgiStrength = 1;			// GG: the result scaled
 		bool ssgiSkyLight = true;		// GG: whether the sky on screen gives light (stock yes)
+		float ssgiLightCap = 1000;		// GG: the brightest light a pixel gives (stock 1000)
 		wi::renderer::Tonemap tonemap = wi::renderer::Tonemap::ACES;
 		float hdr_calibration = 1;
 
@@ -324,6 +325,7 @@ namespace wi
 		constexpr float getSSGILightThreshold() const { return ssgiLightThreshold; }
 		constexpr float getSSGIStrength() const { return ssgiStrength; }
 		constexpr bool getSSGISkyLight() const { return ssgiSkyLight; }
+		constexpr float getSSGILightCap() const { return ssgiLightCap; }
 		constexpr wi::renderer::Tonemap getTonemap() const { return tonemap; }
 
 		constexpr bool getAOEnabled() const { return ao != AO_DISABLED; }
@@ -405,6 +407,7 @@ namespace wi
 		constexpr void setSSGILightThreshold(float value) { ssgiLightThreshold = value; }
 		constexpr void setSSGIStrength(float value) { ssgiStrength = value; }
 		constexpr void setSSGISkyLight(bool value) { ssgiSkyLight = value; }
+		constexpr void setSSGILightCap(float value) { ssgiLightCap = value; }
 		constexpr void setTonemap(wi::renderer::Tonemap value) { tonemap = value; }
 		constexpr void setVisibilityComputeShadingEnabled(bool value) { visibility_shading_in_compute = value; }
 

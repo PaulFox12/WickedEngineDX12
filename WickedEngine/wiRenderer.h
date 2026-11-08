@@ -889,7 +889,9 @@ namespace wi::renderer
 		float unitsPerMetre = 1,	// GG: the world's units in a metre (GameGuru 39.37): the rejection, thickness and falloff are in metres
 		float lightThreshold = 1,	// GG: only pixels brighter than this give light (stock 1: lights only)
 		float strength = 1,			// GG: the result scaled
-		bool skyLight = true		// GG: whether the sky on screen gives light (stock: yes; its light is in the ambient already)
+		bool skyLight = true,		// GG: whether the sky on screen gives light (stock: yes; its light is in the ambient already)
+		float lightCap = 1000		// GG: the brightest light a pixel gives (stock 1000); the GI reads the frame before, its own bounce in it, so a
+								// strength over 1 with lamp-bright pixels ran away into a white haze
 	);
 	struct RTReflectionResources
 	{

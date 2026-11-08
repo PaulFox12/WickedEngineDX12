@@ -17195,7 +17195,8 @@ void Postprocess_SSGI(
 	float unitsPerMetre,
 	float lightThreshold,
 	float strength,
-	bool skyLight
+	bool skyLight,
+	float lightCap
 )
 {
 	device->EventBegin("Postprocess_SSGI", cmd);
@@ -17243,6 +17244,7 @@ void Postprocess_SSGI(
 		// GG: the brightness a pixel must pass to give light, and whether the sky gives none
 		postprocess.params1.x = lightThreshold;
 		postprocess.params1.y = skyLight ? 0.0f : 1.0f;
+		postprocess.params1.z = lightCap;
 		device->PushConstants(&postprocess, sizeof(postprocess), cmd);
 
 		device->BindResource(&input, 0, cmd);
