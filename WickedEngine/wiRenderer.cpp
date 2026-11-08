@@ -17191,10 +17191,14 @@ void Postprocess_SSGI(
 	const Texture& input_normal,
 	const Texture& output,
 	CommandList cmd,
-	float depthRejection
+	float depthRejection,
+	float unitsPerMetre,
+	float lightThreshold,
+	float strength
 )
 {
 	device->EventBegin("Postprocess_SSGI", cmd);
+	if (unitsPerMetre <= 0) unitsPerMetre = 1;
 	auto profilerRange = wi::profiler::BeginRangeGPU("SSGI", cmd);
 
 	{
@@ -17234,6 +17238,10 @@ void Postprocess_SSGI(
 	{
 		device->EventBegin("SSGI - deinterleave", cmd);
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI_DEINTERLEAVE], cmd);
+
+		// GG: the brightness a pixel must pass to give light
+		postprocess.params1.x = lightThreshold;
+		device->PushConstants(&postprocess, sizeof(postprocess), cmd);
 
 		device->BindResource(&input, 0, cmd);
 
@@ -17281,7 +17289,12 @@ void Postprocess_SSGI(
 	{
 		device->EventBegin("SSGI - diffuse", cmd);
 
-		postprocess.params0.w = 1.0f / depthRejection;
+		postprocess.params0.w = 1.0f / (depthRejection * unitsPerMetre);
+		// GG: the march's thickness (0.1 m), the falloff's metres and the strength, in the world's units
+		postprocess.params1.x = 0.1f * unitsPerMetre;
+		postprocess.params1.y = 1.0f / unitsPerMetre;
+		postprocess.params1.z = strength;
+		postprocess.params1.w = 0;
 
 		// Wide sampling passes:
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI_WIDE], cmd);
@@ -17404,6 +17417,9 @@ void Postprocess_SSGI(
 
 	{
 		device->EventBegin("SSGI - upsample", cmd);
+
+		// GG: the bilateral depth weight's falloff (0.1 a metre) in the world's units
+		postprocess.params0.z = 0.1f / unitsPerMetre;
 
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI_UPSAMPLE_WIDE], cmd);
 

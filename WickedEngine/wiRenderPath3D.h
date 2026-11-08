@@ -84,6 +84,9 @@ namespace wi
 		float raytracedReflectionsRange = 10000.0f;
 		float reflectionRoughnessCutoff = 0.6f;
 		float ssgiDepthRejection = 8;
+		float ssgiUnitsPerMetre = 1;	// GG: the world's units in a metre (GameGuru 39.37)
+		float ssgiLightThreshold = 1;	// GG: the brightness a pixel must pass to give light (stock 1)
+		float ssgiStrength = 1;			// GG: the result scaled
 		wi::renderer::Tonemap tonemap = wi::renderer::Tonemap::ACES;
 		float hdr_calibration = 1;
 
@@ -316,6 +319,9 @@ namespace wi
 		constexpr float getRaytracedReflectionsRange() const { return raytracedReflectionsRange; }
 		constexpr float getReflectionRoughnessCutoff() const { return reflectionRoughnessCutoff; }
 		constexpr float getSSGIDepthRejection() const { return ssgiDepthRejection; }
+		constexpr float getSSGIUnitsPerMetre() const { return ssgiUnitsPerMetre; }
+		constexpr float getSSGILightThreshold() const { return ssgiLightThreshold; }
+		constexpr float getSSGIStrength() const { return ssgiStrength; }
 		constexpr wi::renderer::Tonemap getTonemap() const { return tonemap; }
 
 		constexpr bool getAOEnabled() const { return ao != AO_DISABLED; }
@@ -393,6 +399,9 @@ namespace wi
 		constexpr void setRaytracedReflectionsRange(float value) { raytracedReflectionsRange = value; }
 		constexpr void setReflectionRoughnessCutoff(float value) { reflectionRoughnessCutoff = value; }
 		constexpr void setSSGIDepthRejection(float value) { ssgiDepthRejection = value; }
+		constexpr void setSSGIUnitsPerMetre(float value) { ssgiUnitsPerMetre = value; }
+		constexpr void setSSGILightThreshold(float value) { ssgiLightThreshold = value; }
+		constexpr void setSSGIStrength(float value) { ssgiStrength = value; }
 		constexpr void setTonemap(wi::renderer::Tonemap value) { tonemap = value; }
 		constexpr void setVisibilityComputeShadingEnabled(bool value) { visibility_shading_in_compute = value; }
 

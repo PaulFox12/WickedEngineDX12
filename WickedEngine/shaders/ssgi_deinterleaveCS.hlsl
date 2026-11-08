@@ -1,6 +1,8 @@
 #include "globals.hlsli"
 #include "ShaderInterop_Postprocess.h"
 
+PUSHCONSTANT(postprocess, PostProcess);
+
 Texture2D<float3> texture_input : register(t0);
 
 RWTexture2DArray<float>		atlas2x_depth : register(u0);
@@ -68,7 +70,7 @@ void main(uint3 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex, uint3 GTid : 
     float2 normal = unpack_half2(shared_normals[ldsIndex]);
     float3 color = Unpack_R11G11B10_FLOAT(shared_colors[ldsIndex]);
 
-	color = all(color <= 1) ? 0 : color; // cut out pixels that are not acting as lights
+	color = all(color <= postprocess.params1.x) ? 0 : color; // cut out pixels that are not acting as lights (GG: the threshold a setting, stock 1)
 	color *= 0.96; // accumulation energy loss
 	color = max(0, color);
 

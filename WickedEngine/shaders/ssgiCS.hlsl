@@ -43,7 +43,7 @@ float3 compute_diffuse(
 	sample_position.z = cache_z[t];
 	sample_position.xy = unpack_half2(cache_xy[t]);
     const float3 origin_to_sample = sample_position - origin_position;
-    float occlusion = saturate(dot(origin_normal, origin_to_sample));		// normal falloff
+    float occlusion = saturate(dot(origin_normal, origin_to_sample * postprocess.params1.y));		// normal falloff (GG: in metres)
     occlusion *= saturate(1 + origin_to_sample.z * postprocess.params0.w);	// depth rejection
 	
 	if(occlusion > 0)
@@ -80,7 +80,7 @@ float3 compute_diffuse(
 			const float z = lerp(origin_z, sample_z, dt);
 
 			const float sz = cache_z[tt];
-			if(sz < z - 0.1)
+			if(sz < z - postprocess.params1.x) // GG: the thickness in the world's units (stock 0.1)
 			{
 				c = cache_rgb[tt];
 				break;
@@ -185,6 +185,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 Gid : SV_GroupID, uint2 GTid :
 	{
 		diffuse = diffuse / sum;
 	}
+	diffuse *= postprocess.params1.z; // GG: the strength (stock 1)
 
 	// interleave result:
     output_diffuse[interleaved_pixel] = float4(diffuse, 1);

@@ -2217,6 +2217,11 @@ namespace wi
 			wi::renderer::GG_HdrProbe_Begin(cmd);
 			wi::renderer::GG_HdrProbe_Texture(rtMain, 4, cmd);
 			wi::renderer::GG_HdrProbe_ShadowAtlas(5, cmd);
+			if (getSSGIEnabled() && rtSSGI.IsValid())
+			{
+				wi::renderer::GG_HdrProbe_Texture(rtSSGI, 6, cmd);
+				wi::renderer::GG_HdrProbe_Texture(rtSceneCopy, 7, cmd);
+			}
 
 			RenderLightShafts(cmd);
 
@@ -2406,7 +2411,10 @@ namespace wi
 				visibilityResources.texture_normals,
 				rtSSGI,
 				cmd,
-				getSSGIDepthRejection()
+				getSSGIDepthRejection(),
+				getSSGIUnitsPerMetre(),
+				getSSGILightThreshold(),
+				getSSGIStrength()
 			);
 		}
 	}
@@ -2720,7 +2728,9 @@ namespace wi
 			wi::renderer::BindCommonResources(cmd);
 		}
 
-		if (visibility_main.IsTransparentsVisible())
+		// GG: the screen-space GI reads the lit scene from this copy (the frame before's); made only for transparents it
+		// stayed black in views without them, and the GI found no light to bounce
+		if (visibility_main.IsTransparentsVisible() || getSSGIEnabled())
 		{
 			RenderSceneMIPChain(cmd);
 		}

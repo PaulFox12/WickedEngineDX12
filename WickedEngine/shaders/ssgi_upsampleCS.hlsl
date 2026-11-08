@@ -29,7 +29,7 @@ inline uint coord_to_cache(int2 coord)
 	return flatten2D(clamp(coord, 0, TILE_SIZE - 1), TILE_SIZE);
 }
 
-static const float depthThreshold = 0.1;
+#define depthThreshold postprocess.params0.z // GG: 0.1 a metre in the world's units (stock 0.1)
 static const float normalThreshold = 64;
 
 [numthreads(POSTPROCESS_BLOCKSIZE, POSTPROCESS_BLOCKSIZE, 1)]

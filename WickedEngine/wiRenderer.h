@@ -885,7 +885,10 @@ namespace wi::renderer
 		const wi::graphics::Texture& input_normal,
 		const wi::graphics::Texture& output,
 		wi::graphics::CommandList cmd,
-		float depthRejection = 8
+		float depthRejection = 8,
+		float unitsPerMetre = 1,	// GG: the world's units in a metre (GameGuru 39.37): the rejection, thickness and falloff are in metres
+		float lightThreshold = 1,	// GG: only pixels brighter than this give light (stock 1: lights only)
+		float strength = 1			// GG: the result scaled
 	);
 	struct RTReflectionResources
 	{
@@ -1107,9 +1110,10 @@ namespace wi::renderer
 	// slide, refraction, fog, time; the fog reads the image blurred a little (blurNear) and much (blurFar)
 	// GG: the white screen probe (gg_hdrprobeCS.hlsl, 2026-11-07): slots 0 the lit scene with the transparents, 1 the TAA's
 	// picture, 2 the bloom, 3 what the tone map reads, 4 the lit scene after the opaque pass alone, 5 the shadow atlas (its
-	// depths); each slot's NaN, infinite and negative pixel counts and its brightest finite value, with the eye adaption's
-	// exposure and adapted luminance, read back GetBufferCount() frames later
-	static constexpr int GG_HDRPROBE_SLOTS = 6;
+	// depths), 6 the screen-space GI's result, 7 the scene copy it reads (the frame before's); each slot's NaN, infinite and
+	// negative pixel counts and its brightest finite value, with the eye adaption's exposure and adapted luminance, read
+	// back GetBufferCount() frames later
+	static constexpr int GG_HDRPROBE_SLOTS = 8;
 	struct GGHdrProbeResult
 	{
 		bool valid = false;
