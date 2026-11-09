@@ -54,11 +54,6 @@ float4 main(PSIn input) : SV_TARGET
 	Lighting lighting;
 	lighting.create(0, 0, GetAmbient(surface.N), 0);
 
-	// GG: the sun's glint as the game's weather allows (SetWaterSunGlint, SetOvercast), and dimmed by the haze as the sky
-	// dims the sun's disc (skyPS: the sky blended to the fog colour by Fog Opacity), so the reflection is never brighter
-	// than the sun it reflects; the lamps' reflections kept
-	gg_directional_specular_scale = saturate(GetWeather().gg_water_glint) * (1.0f - saturate(GetWeather().gg_overcast)) *
-		(1.0f - saturate(GetWeather().gg_fog_opacity));
 	TiledLighting(surface, lighting, GetFlatTileIndex(pixel));
 
 	const float bump_strength = 0.1;
