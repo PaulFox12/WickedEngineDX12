@@ -1642,6 +1642,10 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		coverage_alpha = (half)saturate((gg_alpha - (float)alphatest) / gg_alpha_width + 0.5);
 		coverage_test = 0.5;
 	}
+	// GG: a cutout over 1 passes nothing (an .fpe alphaRef 0 hides a slot, as DX11's clip() did); the soft edge above put up to half
+	// coverage on it where the alpha varies, so a hidden slot glittered
+	if (alphatest > 1)
+		coverage_alpha = 0;
 	coverage = AlphaToCoverage(coverage_alpha, coverage_test, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
 #else
 	coverage = AlphaToCoverage(color.a, alphatest, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
