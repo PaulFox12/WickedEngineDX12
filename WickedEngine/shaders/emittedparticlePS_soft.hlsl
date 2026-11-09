@@ -1,6 +1,7 @@
 #define TRANSPARENT // uses transparent light lists
 #define LIGHTING_SCATTER
 #include "globals.hlsli"
+#include "ggEmitterRS.hlsli"
 #include "emittedparticleHF.hlsli"
 #include "ShaderInterop_EmittedParticle.h"
 #include "objectHF.hlsli"

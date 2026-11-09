@@ -1,4 +1,5 @@
 #include "globals.hlsli"
+#include "ggEmitterRS.hlsli"
 #include "emittedparticleHF.hlsli"
 #include "ShaderInterop_EmittedParticle.h"
 #include "shadowHF.hlsli"

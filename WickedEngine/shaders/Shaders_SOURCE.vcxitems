@@ -27,6 +27,7 @@
     <None Include="$(MSBuildThisFileDirectory)cylinder.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)depthoffieldHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)emittedparticleHF.hlsli" />
+    <None Include="$(MSBuildThisFileDirectory)ggEmitterRS.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)fogHF.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)fxaa.hlsli" />
     <None Include="$(MSBuildThisFileDirectory)globals.hlsli" />

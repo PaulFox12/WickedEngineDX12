@@ -1,4 +1,5 @@
 #include "globals.hlsli"
+#include "ggEmitterRS.hlsli"
 #include "ShaderInterop_EmittedParticle.h"
 
 ByteAddressBuffer counterBuffer : register(t0);

@@ -1,4 +1,5 @@
 #include "globals.hlsli"
+#include "ggEmitterRS.hlsli"
 #include "ShaderInterop_GPUSortLib.h"
 
 ByteAddressBuffer counterBuffer : register(t0);

@@ -1,4 +1,5 @@
 #include "globals.hlsli"
+#include "ggEmitterRS.hlsli"
 
 float4 main() : SV_TARGET
 {

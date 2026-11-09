@@ -4,6 +4,7 @@
 #define DISABLE_VOXELGI
 #endif // EMITTEDPARTICLE_LIGHTING
 #include "globals.hlsli"
+#include "ggEmitterRS.hlsli"
 #include "ShaderInterop_EmittedParticle.h"
 #include "emittedparticleHF.hlsli"
 #ifdef EMITTEDPARTICLE_LIGHTING

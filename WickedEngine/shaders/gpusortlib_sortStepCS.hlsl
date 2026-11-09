@@ -21,6 +21,7 @@
 //
 
 #include "globals.hlsli"
+#include "ggEmitterRS.hlsli"
 #include "ShaderInterop_GPUSortLib.h"
 
 //--------------------------------------------------------------------------------------
