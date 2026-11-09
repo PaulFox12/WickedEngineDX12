@@ -1646,6 +1646,12 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	// coverage on it where the alpha varies, so a hidden slot glittered
 	if (alphatest > 1)
 		coverage_alpha = 0;
+	// GG: under TAA a cutout surface is cut plainly each frame, not dithered with blue noise: the camera's jitter already moves
+	// the cut every frame for the TAA to average, and the dither on top broke thin markings far off (a zebra crossing's
+	// stripes, its alpha mipped near the cutout) into speckles the TAA's neighbourhood clamp kept
+	if (alphatest > 0 && dithering <= 0 && (GetFrame().options & OPTION_BIT_TEMPORALAA_ENABLED))
+		coverage = coverage_alpha >= 0.5 ? ~0u : 0u;
+	else
 	coverage = AlphaToCoverage(coverage_alpha, coverage_test, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
 #else
 	coverage = AlphaToCoverage(color.a, alphatest, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
