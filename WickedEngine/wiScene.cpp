@@ -6677,6 +6677,7 @@ namespace wi::scene
 
 			const TransformComponent& transform = *transforms.GetComponent(entity);
 			emitter.UpdateCPU(transform, dt);
+			emitter.PrepareConstants(uint32_t(objects.GetCount() + hairs.GetCount() + args.jobIndex)); // GG: the same index UpdateGPU is given
 			if (emitter.IsInactive()) // check after UpdateCPU
 				return; // can skip writing TLAS instace below
 
@@ -6899,6 +6900,7 @@ namespace wi::scene
 			transform.translation_local.z = camera.Eye.z + camera.At.z * 10;
 			transform.UpdateTransform();
 			rainEmitter.UpdateCPU(transform, dt);
+			rainEmitter.PrepareConstants(rainInstanceOffset); // GG
 			rain_blocker_dummy_light.cascade_distances[0] = transform.scale_local.x;
 
 			ShaderMaterial material;

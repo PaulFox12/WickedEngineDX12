@@ -31,32 +31,37 @@ namespace wi
 		};
 
 		ParticleCounters statistics = {};
-		wi::graphics::GPUBuffer statisticsReadbackBuffer[wi::graphics::GraphicsDevice::GetBufferCount()];
+		// GG: where this emitter's counters are read back, a slot of pages all the emitters share (wiEmittedParticle.cpp)
+		struct GGStatSlot;
+		std::shared_ptr<GGStatSlot> statisticsSlot;
 
-		wi::graphics::GPUBuffer particleBuffer;
-		wi::graphics::GPUBuffer aliveList[2];
-		wi::graphics::GPUBuffer deadList;
 		wi::graphics::GPUBuffer distanceBuffer; // for sorting
 		wi::graphics::GPUBuffer sphGridCells;  // for SPH
 		wi::graphics::GPUBuffer sphParticleCells;  // for SPH
 		wi::graphics::GPUBuffer densityBuffer; // for SPH
 		wi::graphics::GPUBuffer counterBuffer;
 		wi::graphics::GPUBuffer indirectBuffers; // kickoffUpdate, simulation, draw
-		wi::graphics::GPUBuffer constantBuffer;
+		// GG: the vertices, the particles and the index lists are sections of this one buffer. A buffer takes at least 64 KB, so a layer
+		// of a hundred particles spent nine of them on about 20 KB of data, and a pooled effect's every layer paid it
 		wi::graphics::GPUBuffer generalBuffer;
 		wi::scene::MeshComponent::BufferView vb_pos;
 		wi::scene::MeshComponent::BufferView vb_nor;
 		wi::scene::MeshComponent::BufferView vb_uvs;
 		wi::scene::MeshComponent::BufferView vb_col;
+		wi::scene::MeshComponent::BufferView sec_particle;
+		wi::scene::MeshComponent::BufferView sec_alive[2];
+		wi::scene::MeshComponent::BufferView sec_dead;
+		wi::scene::MeshComponent::BufferView sec_culled;
+		wi::scene::MeshComponent::BufferView sec_culled2;
 		wi::graphics::GPUBuffer primitiveBuffer; // raytracing
-		wi::graphics::GPUBuffer culledIndirectionBuffer; // rasterization
-		wi::graphics::GPUBuffer culledIndirectionBuffer2; // rasterization
-		wi::graphics::Texture opacityCurveTex;
+		wi::graphics::GPUBuffer culledIndirectionBuffer; // a sorted emitter's list (wi::gpusortlib binds whole buffers), otherwise sec_culled
+		wi::graphics::Texture opacityCurveTex; // shared by the emitters with the same curve
 
 		wi::graphics::RaytracingAccelerationStructure BLAS;
 
 	private:
 		void CreateSelfBuffers();
+		void BindSimulationUAVs(wi::graphics::CommandList cmd) const;
 
 		float emit = 0.0f;
 		int burst = 0;
@@ -64,11 +69,17 @@ namespace wi
 		uint32_t active_frames = 0;
 
 		uint32_t MAX_PARTICLES = 1000;
+		uint32_t sections_capacity = 0; // GG: the particles generalBuffer's sections were made for
+		EmittedParticleCB gg_cb = {}; // GG: this frame's constants, set by PrepareConstants before anything is recorded
+		bool gg_cb_ready = false;
 
 		mutable wi::vector<EmitLocation> emit_locations;
 
 	public:
 		void UpdateCPU(const wi::scene::TransformComponent& transform, float dt);
+		// GG: after UpdateCPU, on the scene's update. The constants were a buffer of 64 KB each, written in UpdateGPU: a draw recorded on
+		// another thread reads them now, and they must not change under it, so they are set before any recording starts
+		void PrepareConstants(uint32_t instanceIndex);
 		void Burst(int num);
 		void Burst(int num, const XMFLOAT3& position, const wi::Color& color = wi::Color::White());
 		void Burst(int num, const XMFLOAT4X4& transform, const wi::Color& color = wi::Color::White());
@@ -240,7 +251,8 @@ namespace wi
 		uint32_t GetMaxParticleCount() const { return MAX_PARTICLES; }
 		uint64_t GetMemorySizeInBytes() const;
 
-		bool IsInactive() const { return active_frames == 0; }
+		// GG: eight frames, more than the readback's lag: the full 32 of active_frames simulated a dead emitter for half a second more
+		bool IsInactive() const { return (active_frames & 0xFF) == 0; }
 
 		// Non-serialized attributes:
 		XMFLOAT3 center;

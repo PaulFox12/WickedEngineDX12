@@ -14,6 +14,8 @@
 #include "wiVector.h"
 
 #include <algorithm>
+#include <mutex>
+#include <unordered_map>
 
 using namespace wi::graphics;
 using namespace wi::scene;
@@ -55,6 +57,74 @@ namespace wi
 
 	static bool ALLOW_MESH_SHADER = false;
 
+	// GG: the counters are read back into slots of pages all the emitters share. A readback buffer each took 64 KB twice over for 24
+	// bytes, 137 MB of system memory at a thousand emitters. The pool is never freed: a scene can be destroyed after statics at exit
+	struct GGStatPage
+	{
+		GPUBuffer buffer[GraphicsDevice::GetBufferCount()];
+	};
+	struct GGStatPool
+	{
+		std::mutex locker;
+		wi::vector<std::pair<GGStatPage*, uint32_t>> free_slots;
+		GGStatPage* page = nullptr;
+		uint32_t next = 0;
+	};
+	static GGStatPool* gg_stat_pool = new GGStatPool;
+	static constexpr uint32_t GG_STAT_PAGE_SIZE = 65536; // the least a buffer takes
+
+	struct EmittedParticleSystem::GGStatSlot
+	{
+		GGStatPage* page = nullptr;
+		uint32_t offset = 0;
+		~GGStatSlot()
+		{
+			std::scoped_lock lock(gg_stat_pool->locker);
+			gg_stat_pool->free_slots.push_back(std::make_pair(page, offset));
+		}
+	};
+
+	static std::shared_ptr<EmittedParticleSystem::GGStatSlot> GG_NewStatSlot()
+	{
+		std::shared_ptr<EmittedParticleSystem::GGStatSlot> slot = std::make_shared<EmittedParticleSystem::GGStatSlot>();
+		std::scoped_lock lock(gg_stat_pool->locker);
+		if (!gg_stat_pool->free_slots.empty())
+		{
+			slot->page = gg_stat_pool->free_slots.back().first;
+			slot->offset = gg_stat_pool->free_slots.back().second;
+			gg_stat_pool->free_slots.pop_back();
+		}
+		else
+		{
+			if (gg_stat_pool->page == nullptr || gg_stat_pool->next + sizeof(ParticleCounters) > GG_STAT_PAGE_SIZE)
+			{
+				GraphicsDevice* device = wi::graphics::GetDevice();
+				GGStatPage* page = new GGStatPage;
+				GPUBufferDesc desc;
+				desc.size = GG_STAT_PAGE_SIZE;
+				desc.usage = Usage::READBACK;
+				desc.bind_flags = BindFlag::NONE;
+				desc.misc_flags = ResourceMiscFlag::NONE;
+				for (int i = 0; i < arraysize(page->buffer); ++i)
+				{
+					device->CreateBuffer(&desc, nullptr, &page->buffer[i]);
+					device->SetName(&page->buffer[i], "EmittedParticleSystem::statisticsPage");
+				}
+				gg_stat_pool->page = page;
+				gg_stat_pool->next = 0;
+			}
+			slot->page = gg_stat_pool->page;
+			slot->offset = gg_stat_pool->next;
+			gg_stat_pool->next += sizeof(ParticleCounters);
+		}
+		// what the slot's last emitter left would read as particles alive
+		for (int i = 0; i < arraysize(slot->page->buffer); ++i)
+		{
+			std::memset((uint8_t*)slot->page->buffer[i].mapped_data + slot->offset, 0, sizeof(ParticleCounters));
+		}
+		return slot;
+	}
+
 
 	void EmittedParticleSystem::SetMaxParticleCount(uint32_t value)
 	{
@@ -66,44 +136,14 @@ namespace wi
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();
 
-		if (particleBuffer.desc.size < MAX_PARTICLES * sizeof(Particle))
+		if (sections_capacity < MAX_PARTICLES)
 		{
+			sections_capacity = MAX_PARTICLES;
 			BLAS = {};
 
 			GPUBufferDesc bd;
 			bd.usage = Usage::DEFAULT;
 			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
-			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
-
-			// Particle buffer:
-			bd.stride = sizeof(Particle);
-			bd.size = bd.stride * MAX_PARTICLES;
-			device->CreateBuffer(&bd, nullptr, &particleBuffer);
-			device->SetName(&particleBuffer, "EmittedParticleSystem::particleBuffer");
-
-			// Alive index lists (double buffered):
-			bd.stride = sizeof(uint32_t);
-			bd.size = bd.stride * MAX_PARTICLES;
-			device->CreateBuffer(&bd, nullptr, &aliveList[0]);
-			device->SetName(&aliveList[0], "EmittedParticleSystem::aliveList[0]");
-			device->CreateBuffer(&bd, nullptr, &aliveList[1]);
-			device->SetName(&aliveList[1], "EmittedParticleSystem::aliveList[1]");
-			device->CreateBuffer(&bd, nullptr, &culledIndirectionBuffer);
-			device->SetName(&culledIndirectionBuffer, "EmittedParticleSystem::culledIndirectionBuffer");
-			device->CreateBuffer(&bd, nullptr, &culledIndirectionBuffer2);
-			device->SetName(&culledIndirectionBuffer2, "EmittedParticleSystem::culledIndirectionBuffer2");
-
-			// Dead index list:
-			auto fill_dead_indices = [&](void* dest) {
-				uint32_t* indices = (uint32_t*)dest;
-				for (uint32_t i = 0; i < MAX_PARTICLES; ++i)
-				{
-					std::memcpy(indices + i, &i, sizeof(uint32_t));
-				}
-			};
-			device->CreateBuffer2(&bd, fill_dead_indices, &deadList);
-			device->SetName(&deadList, "EmittedParticleSystem::deadList");
-
 			bd.misc_flags = ResourceMiscFlag::BUFFER_RAW | ResourceMiscFlag::TYPED_FORMAT_CASTING | ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS;
 			if (device->CheckCapability(GraphicsDeviceCapability::RAYTRACING))
 			{
@@ -111,56 +151,54 @@ namespace wi
 			}
 			const uint64_t alignment = device->GetMinOffsetAlignment(&bd);
 
-			vb_pos.size = sizeof(MeshComponent::Vertex_POS32W) * 4 * MAX_PARTICLES;
-			vb_nor.size = sizeof(MeshComponent::Vertex_NOR) * 4 * MAX_PARTICLES;
-			vb_uvs.size = sizeof(MeshComponent::Vertex_UVS) * 4 * MAX_PARTICLES;
-			vb_col.size = sizeof(MeshComponent::Vertex_COL) * 4 * MAX_PARTICLES;
+			// vb_pos first: the BLAS takes the buffer's start as its vertices
+			uint64_t buffer_offset = 0ull;
+			auto place = [&](MeshComponent::BufferView& view, uint64_t size, uint64_t section_alignment) {
+				buffer_offset = AlignTo(buffer_offset, section_alignment);
+				view.offset = buffer_offset;
+				view.size = size;
+				buffer_offset += size;
+			};
+			place(vb_pos, sizeof(MeshComponent::Vertex_POS32W) * 4 * MAX_PARTICLES, alignment);
+			place(vb_nor, sizeof(MeshComponent::Vertex_NOR) * 4 * MAX_PARTICLES, alignment);
+			place(vb_uvs, sizeof(MeshComponent::Vertex_UVS) * 4 * MAX_PARTICLES, alignment);
+			place(vb_col, sizeof(MeshComponent::Vertex_COL) * 4 * MAX_PARTICLES, alignment);
+			place(sec_particle, sizeof(Particle) * MAX_PARTICLES, sizeof(Particle));
+			place(sec_alive[0], sizeof(uint32_t) * MAX_PARTICLES, alignment);
+			place(sec_alive[1], sizeof(uint32_t) * MAX_PARTICLES, alignment);
+			place(sec_dead, sizeof(uint32_t) * MAX_PARTICLES, alignment);
+			place(sec_culled, sizeof(uint32_t) * MAX_PARTICLES, alignment);
+			place(sec_culled2, sizeof(uint32_t) * MAX_PARTICLES, alignment);
 
-			bd.size =
-				AlignTo(vb_pos.size, alignment) +
-				AlignTo(vb_nor.size, alignment) +
-				AlignTo(vb_uvs.size, alignment) +
-				AlignTo(vb_col.size, alignment)
-			;
-
+			bd.size = buffer_offset;
 			device->CreateBuffer(&bd, nullptr, &generalBuffer);
 			device->SetName(&generalBuffer, "EmittedParticleSystem::generalBuffer");
 
-			uint64_t buffer_offset = 0ull;
+			auto typed_views = [&](MeshComponent::BufferView& view, const Format* format) {
+				view.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, view.offset, view.size, format);
+				view.subresource_uav = device->CreateSubresource(&generalBuffer, SubresourceType::UAV, view.offset, view.size, format); // UAV can't have RGB32_F format!
+				view.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, view.subresource_srv);
+				view.descriptor_uav = device->GetDescriptorIndex(&generalBuffer, SubresourceType::UAV, view.subresource_uav);
+			};
+			typed_views(vb_pos, &MeshComponent::Vertex_POS32W::FORMAT);
+			typed_views(vb_nor, &MeshComponent::Vertex_NOR::FORMAT);
+			typed_views(vb_uvs, &MeshComponent::Vertex_UVS::FORMAT);
+			typed_views(vb_col, &MeshComponent::Vertex_COL::FORMAT);
 
-			buffer_offset = AlignTo(buffer_offset, alignment);
-			vb_pos.offset = buffer_offset;
-			vb_pos.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, vb_pos.offset, vb_pos.size, &MeshComponent::Vertex_POS32W::FORMAT);
-			vb_pos.subresource_uav = device->CreateSubresource(&generalBuffer, SubresourceType::UAV, vb_pos.offset, vb_pos.size, &MeshComponent::Vertex_POS32W::FORMAT); // UAV can't have RGB32_F format!
-			vb_pos.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, vb_pos.subresource_srv);
-			vb_pos.descriptor_uav = device->GetDescriptorIndex(&generalBuffer, SubresourceType::UAV, vb_pos.subresource_uav);
-			buffer_offset += vb_pos.size;
-
-			buffer_offset = AlignTo(buffer_offset, alignment);
-			vb_nor.offset = buffer_offset;
-			vb_nor.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, vb_nor.offset, vb_nor.size, &MeshComponent::Vertex_NOR::FORMAT);
-			vb_nor.subresource_uav = device->CreateSubresource(&generalBuffer, SubresourceType::UAV, vb_nor.offset, vb_nor.size, &MeshComponent::Vertex_NOR::FORMAT);
-			vb_nor.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, vb_nor.subresource_srv);
-			vb_nor.descriptor_uav = device->GetDescriptorIndex(&generalBuffer, SubresourceType::UAV, vb_nor.subresource_uav);
-			buffer_offset += vb_nor.size;
-
-			buffer_offset = AlignTo(buffer_offset, alignment);
-			vb_uvs.offset = buffer_offset;
-			vb_uvs.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, vb_uvs.offset, vb_uvs.size, &MeshComponent::Vertex_UVS::FORMAT);
-			vb_uvs.subresource_uav = device->CreateSubresource(&generalBuffer, SubresourceType::UAV, vb_uvs.offset, vb_uvs.size, &MeshComponent::Vertex_UVS::FORMAT);
-			vb_uvs.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, vb_uvs.subresource_srv);
-			vb_uvs.descriptor_uav = device->GetDescriptorIndex(&generalBuffer, SubresourceType::UAV, vb_uvs.subresource_uav);
-			buffer_offset += vb_uvs.size;
-
-			buffer_offset = AlignTo(buffer_offset, alignment);
-			vb_col.offset = buffer_offset;
-			vb_col.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, vb_col.offset, vb_col.size, &MeshComponent::Vertex_COL::FORMAT);
-			vb_col.subresource_uav = device->CreateSubresource(&generalBuffer, SubresourceType::UAV, vb_col.offset, vb_col.size, &MeshComponent::Vertex_COL::FORMAT);
-			vb_col.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, vb_col.subresource_srv);
-			vb_col.descriptor_uav = device->GetDescriptorIndex(&generalBuffer, SubresourceType::UAV, vb_col.subresource_uav);
-			buffer_offset += vb_col.size;
+			auto structured_views = [&](MeshComponent::BufferView& view, uint32_t stride) {
+				view.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, view.offset, view.size, nullptr, &stride);
+				view.subresource_uav = device->CreateSubresource(&generalBuffer, SubresourceType::UAV, view.offset, view.size, nullptr, &stride);
+			};
+			structured_views(sec_particle, sizeof(Particle));
+			structured_views(sec_alive[0], sizeof(uint32_t));
+			structured_views(sec_alive[1], sizeof(uint32_t));
+			structured_views(sec_dead, sizeof(uint32_t));
+			structured_views(sec_culled, sizeof(uint32_t));
+			structured_views(sec_culled2, sizeof(uint32_t));
 
 			primitiveBuffer = wi::renderer::GetIndexBufferForQuads(MAX_PARTICLES);
+
+			restartPending = true; // the dead list is written in the first UpdateGPU: a copy queue upload stalled the thread for each
 		}
 
 		if (IsSorted() && distanceBuffer.desc.size < MAX_PARTICLES * sizeof(float))
@@ -178,6 +216,12 @@ namespace wi
 			};
 			device->CreateBuffer2(&bd, init_distances, &distanceBuffer);
 			device->SetName(&distanceBuffer, "EmittedParticleSystem::distanceBuffer");
+
+			// GG: wi::gpusortlib binds its list whole
+			bd.stride = sizeof(uint32_t);
+			bd.size = bd.stride * MAX_PARTICLES;
+			device->CreateBuffer(&bd, nullptr, &culledIndirectionBuffer);
+			device->SetName(&culledIndirectionBuffer, "EmittedParticleSystem::culledIndirectionBuffer");
 		}
 
 		if (IsSPHEnabled())
@@ -223,21 +267,15 @@ namespace wi
 
 		if (!counterBuffer.IsValid())
 		{
-			// Particle System statistics:
-			ParticleCounters counters;
-			counters.aliveCount = 0;
-			counters.deadCount = MAX_PARTICLES;
-			counters.realEmitCount = 0;
-			counters.aliveCount_afterSimulation = 0;
-			counters.cellAllocator = 0;
-
+			// Particle System statistics, their first values written in the first UpdateGPU:
 			GPUBufferDesc bd;
 			bd.usage = Usage::DEFAULT;
 			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
-			bd.size = sizeof(counters);
+			bd.size = sizeof(ParticleCounters);
 			bd.misc_flags = ResourceMiscFlag::BUFFER_RAW;
-			device->CreateBuffer(&bd, &counters, &counterBuffer);
+			device->CreateBuffer(&bd, nullptr, &counterBuffer);
 			device->SetName(&counterBuffer, "EmittedParticleSystem::counterBuffer");
+			restartPending = true;
 		}
 
 		if (!indirectBuffers.IsValid())
@@ -254,27 +292,11 @@ namespace wi
 				AlignTo(sizeof(IndirectDrawArgsInstanced), (uint64_t)IndirectDrawArgsAlignment);
 			device->CreateBufferZeroed(&bd, &indirectBuffers);
 			device->SetName(&indirectBuffers, "EmittedParticleSystem::indirectBuffers");
+		}
 
-			// Constant buffer:
-			bd.usage = Usage::DEFAULT;
-			bd.size = sizeof(EmittedParticleCB);
-			bd.bind_flags = BindFlag::CONSTANT_BUFFER;
-			bd.misc_flags = ResourceMiscFlag::NONE;
-			device->CreateBuffer(&bd, nullptr, &constantBuffer);
-			device->SetName(&constantBuffer, "EmittedParticleSystem::constantBuffer");
-
-			// Debug information CPU-readback buffer:
-			{
-				GPUBufferDesc debugBufDesc = counterBuffer.GetDesc();
-				debugBufDesc.usage = Usage::READBACK;
-				debugBufDesc.bind_flags = BindFlag::NONE;
-				debugBufDesc.misc_flags = ResourceMiscFlag::NONE;
-				for (int i = 0; i < arraysize(statisticsReadbackBuffer); ++i)
-				{
-					device->CreateBuffer(&debugBufDesc, nullptr, &statisticsReadbackBuffer[i]);
-					device->SetName(&statisticsReadbackBuffer[i], "EmittedParticleSystem::statisticsReadbackBuffer");
-				}
-			}
+		if (statisticsSlot == nullptr)
+		{
+			statisticsSlot = GG_NewStatSlot();
 		}
 	}
 
@@ -309,26 +331,19 @@ namespace wi
 
 	uint64_t EmittedParticleSystem::GetMemorySizeInBytes() const
 	{
-		if (!particleBuffer.IsValid())
+		if (!generalBuffer.IsValid())
 			return 0;
 
 		uint64_t retVal = 0;
 
-		retVal += particleBuffer.GetDesc().size;
-		retVal += aliveList[0].GetDesc().size;
-		retVal += aliveList[1].GetDesc().size;
-		retVal += deadList.GetDesc().size;
+		retVal += generalBuffer.GetDesc().size;
 		retVal += distanceBuffer.GetDesc().size;
 		retVal += sphGridCells.GetDesc().size;
 		retVal += sphParticleCells.GetDesc().size;
 		retVal += densityBuffer.GetDesc().size;
 		retVal += counterBuffer.GetDesc().size;
 		retVal += indirectBuffers.GetDesc().size;
-		retVal += constantBuffer.GetDesc().size;
-		retVal += generalBuffer.GetDesc().size;
 		retVal += culledIndirectionBuffer.GetDesc().size;
-		retVal += culledIndirectionBuffer2.GetDesc().size;
-		retVal += ComputeTextureMemorySizeInBytes(opacityCurveTex.GetDesc());
 
 		return retVal;
 	}
@@ -442,11 +457,11 @@ namespace wi
 		worldMatrix = transform.world;
 
 		// Swap CURRENT alivelist with NEW alivelist
-		std::swap(aliveList[0], aliveList[1]);
+		std::swap(sec_alive[0], sec_alive[1]);
 
 		// Read back statistics (with GPU delay):
 		const uint32_t oldest_stat_index = wi::graphics::GetDevice()->GetBufferIndex();
-		memcpy(&statistics, statisticsReadbackBuffer[oldest_stat_index].mapped_data, sizeof(statistics));
+		memcpy(&statistics, (const uint8_t*)statisticsSlot->page->buffer[oldest_stat_index].mapped_data + statisticsSlot->offset, sizeof(statistics));
 
 		if (statistics.aliveCount > 0 || statistics.aliveCount_afterSimulation > 0)
 		{
@@ -540,11 +555,169 @@ namespace wi
 		if (counterBuffer.IsValid()) restartPending = true;
 	}
 
+	void EmittedParticleSystem::PrepareConstants(uint32_t instanceIndex)
+	{
+		if (IsPaused() || dt <= 0)
+			return;
+
+		GraphicsDevice* device = wi::graphics::GetDevice();
+
+		EmittedParticleCB cb;
+		cb.xEmitBufferOffset = 0;
+		cb.xEmitterBaseMeshUnormRemap.init(); // an emitter from a mesh has these set in UpdateGPU
+		cb.xEmitterMeshGeometryOffset = 0;
+		cb.xEmitterMeshGeometryCount = 0;
+		cb.xEmitterRandomness = wi::random::GetRandom(0.0f, 1.0f);
+		cb.xParticleLifeSpan = life * life_scale; // GG: the layer's life scale
+		cb.xParticleLifeSpanRandomness = random_life;
+		cb.xParticleNormalFactor = normal_factor * speed_scale; // GG: the layer's speed scale
+		cb.xParticleRandomFactor = random_factor;
+		cb.xParticleScaling = scaleX;
+		cb.xParticleSize = size * size_scale * layer_size_scale; // GG: the script's and the layer's size scales
+		cb.xParticleMotionBlurAmount = motionBlurAmount;
+		cb.xParticleRotation = rotation * XM_PI;
+		cb.xParticleMass = mass;
+		cb.xEmitterMaxParticleCount = MAX_PARTICLES;
+		cb.xEmitterFixedTimestep = FIXED_TIMESTEP;
+		cb.xEmitterRestitution = restitution;
+		cb.xEmitterFramesXY = uint2(std::max(1u, framesX), std::max(1u, framesY));
+		cb.xEmitterFrameCount = std::max(1u, frameCount);
+		cb.xEmitterFrameStart = frameStart;
+		cb.xEmitterTexMul = float2(1.0f / (float)cb.xEmitterFramesXY.x, 1.0f / (float)cb.xEmitterFramesXY.y);
+		cb.xEmitterFrameRate = frameRate;
+		cb.xParticleGravity = gravity;
+		cb.xParticleDrag = drag;
+		XMStoreFloat3(&cb.xParticleVelocity, XMVector3TransformNormal(XMLoadFloat3(&velocity), XMLoadFloat4x4(&worldMatrix)) * speed_scale); // GG: the layer's speed scale
+		cb.xParticleRandomColorFactor = random_color;
+		cb.xEmitterLayerMask = layerMask;
+		cb.xEmitterInstanceIndex = instanceIndex;
+
+		// GGMAX 2.00: GameGuru WPE parameters (see PARTICLE_SYSTEM_PLAN.md section 6).
+		cb.xParticleEndColor = XMFLOAT3(endcolor_red, endcolor_green, endcolor_blue);
+		cb.xEmitterFadeinTime = fadein_time;
+		cb.xParticleNormalFactorXYZ = XMFLOAT3(normal_factor_x * speed_scale, normal_factor_y * speed_scale, normal_factor_z * speed_scale);
+		cb.xParticleBurstFactorSpeed = burst_factor_speed;
+		cb.xParticleBurstFactor = XMFLOAT3(burst_factor_x * speed_scale, burst_factor_y * speed_scale, burst_factor_z * speed_scale);
+		cb.xParticleNormalRandom = normal_random;
+		cb.xParticleSinPos = XMFLOAT3(startpos.x * spread_scale, startpos.y * spread_scale, startpos.z * spread_scale); // GG: the layer's spread scale
+		cb.xParticleRotationRandom = rotation_random;
+		cb.xParticleSizeRandom = size_random;
+		cb.xParticleScalingRandom = scaling_random;
+		cb.xParticleStartRotation = start_rotation;
+		cb.xParticleRandomPos = random_position;
+		cb.xParticleRandomPosScale = random_position_scale * spread_scale; // GG: the layer's spread scale, as on DX11
+		cb.xTotalEmitCount = total_emit_count;
+		// GG: the layer's options (wpe_filler_3: bit 1 the spreads turn with the emitter, 2 the trail, 4 no fog), 8 and 16 the blend's
+		// fog form, 32 half resolution, 64 a wrapping volume
+		cb.xParticleLocalOptions = (uint32_t)std::max(0.0f, wpe_filler_3) & 7; // masked, as on DX11: a clamp turned 8 and up into 7 (no fog, a trail)
+		if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_ADDITIVE) cb.xParticleLocalOptions |= 8;
+		else if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_PREMULTIPLIED) cb.xParticleLocalOptions |= 16;
+		if (wi::renderer::GetParticleHalfResolutionEnabled() && IsHalfResolution()) cb.xParticleLocalOptions |= 32;
+		if (IsWrapVolume()) cb.xParticleLocalOptions |= 64;
+		// GG: the sheets put back to their stored values in the shader, unless they are read as stored (gg_particle_plain_sheets)
+		if (gg_reencode_sheet && !wi::scene::gg_particle_plain_sheets) cb.xParticleLocalOptions |= 128;
+		if (gg_reencode_emissive && !wi::scene::gg_particle_plain_sheets) cb.xParticleLocalOptions |= 256;
+		cb.xParticleFadeOutStart = wi::math::Clamp(wpe_filler_1, 0.0f, 0.99f);
+		cb.xParticleMirror = (uint32_t)wi::math::Clamp(wpe_filler_2, 0.0f, 3.0f);
+		cb.xParticleWind = layer_wind;
+		cb.xParticleEmissiveScale = emissive_scale;
+		{
+			// where the emitter was last frame, if last frame it was (a load or a teleport is no trail)
+			const XMFLOAT3 emitterPos = XMFLOAT3(worldMatrix._41, worldMatrix._42, worldMatrix._43);
+			const uint64_t frame = device->GetFrameCount();
+			const bool bPrevValid = prev_emitter_frame + 1 == frame && wi::math::Distance(prev_emitter_pos, emitterPos) < 4000.0f;
+			cb.xEmitterPrevPos = bPrevValid ? prev_emitter_pos : emitterPos;
+			cb.xEmitterPrevValid = bPrevValid ? 1.0f : 0.0f;
+			prev_emitter_pos = emitterPos;
+			prev_emitter_frame = frame;
+		}
+		cb.xEmitterWrapMotion = wrap_motion;
+		cb.xEmitterWrapMotionSet = bWrapMotion ? 1.0f : 0.0f;
+		cb.xParticleColorTint = color_tint;
+		cb.xParticleOpacityScale = opacity_scale;
+		cb.xEmitterKillBoxCount = std::min(killbox_count, (uint32_t)EMITTER_KILLBOX_COUNT);
+		for (uint32_t i = 0; i < cb.xEmitterKillBoxCount; ++i)
+		{
+			cb.xEmitterKillBoxMin[i] = killbox_min[i];
+			cb.xEmitterKillBoxMax[i] = killbox_max[i];
+		}
+		cb.xParticleSpreadScale = spread_scale; // GG: the wrapping volume's box widened as the emit volume
+		cb.xEmitterWorld.Create(worldMatrix); // GG: the wrapping volume's box and a streak's emitter motion
+		cb.xParticleScatter = wi::renderer::GetParticleScatter(); // GG: the sun's forward scattering on the lit layers (0 off)
+
+		cb.xEmitterOptions = 0;
+		if (IsSPHEnabled())
+		{
+			cb.xEmitterOptions |= EMITTER_OPTION_BIT_SPH_ENABLED;
+		}
+		if (IsFrameBlendingEnabled())
+		{
+			cb.xEmitterOptions |= EMITTER_OPTION_BIT_FRAME_BLENDING_ENABLED;
+		}
+		if (ALLOW_MESH_SHADER && device->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
+		{
+			cb.xEmitterOptions |= EMITTER_OPTION_BIT_MESH_SHADER_ENABLED;
+		}
+		if (IsCollidersDisabled())
+		{
+			cb.xEmitterOptions |= EMITTER_OPTION_BIT_COLLIDERS_DISABLED;
+		}
+		if (_flags & FLAG_USE_RAIN_BLOCKER)
+		{
+			cb.xEmitterOptions |= EMITTER_OPTION_BIT_USE_RAIN_BLOCKER;
+		}
+		if (IsTakeColorFromMesh())
+		{
+			cb.xEmitterOptions |= EMITTER_OPTION_BIT_TAKE_COLOR_FROM_MESH;
+		}
+
+		// SPH:
+		cb.xSPH_h = SPH_h;
+		cb.xSPH_h_rcp = 1.0f / SPH_h;
+		cb.xSPH_h2 = SPH_h * SPH_h;
+		cb.xSPH_h3 = cb.xSPH_h2 * SPH_h;
+		const float h6 = cb.xSPH_h2 * cb.xSPH_h2 * cb.xSPH_h2;
+		const float h9 = h6 * cb.xSPH_h3;
+		cb.xSPH_poly6_constant = (315.0f / (64.0f * XM_PI * h9));
+		cb.xSPH_spiky_constant = (-45.0f / (XM_PI * h6));
+		cb.xSPH_visc_constant = (45.0f / (XM_PI * h6));
+		cb.xSPH_K = SPH_K;
+		cb.xSPH_p0 = SPH_p0;
+		cb.xSPH_e = SPH_e;
+		gg_cb = cb;
+		gg_cb_ready = true;
+	}
+
+	void EmittedParticleSystem::BindSimulationUAVs(CommandList cmd) const
+	{
+		GraphicsDevice* device = wi::graphics::GetDevice();
+		device->BindUAV(&generalBuffer, 0, cmd, sec_particle.subresource_uav);
+		device->BindUAV(&generalBuffer, 1, cmd, sec_alive[0].subresource_uav);
+		device->BindUAV(&generalBuffer, 2, cmd, sec_alive[1].subresource_uav);
+		device->BindUAV(&generalBuffer, 3, cmd, sec_dead.subresource_uav);
+		device->BindUAV(&counterBuffer, 4, cmd);
+		device->BindUAV(&indirectBuffers, 5, cmd);
+		device->BindUAV(&distanceBuffer, 6, cmd);
+		device->BindUAV(&generalBuffer, 7, cmd, vb_pos.subresource_uav);
+		device->BindUAV(&generalBuffer, 8, cmd, vb_nor.subresource_uav);
+		device->BindUAV(&generalBuffer, 9, cmd, vb_uvs.subresource_uav);
+		device->BindUAV(&generalBuffer, 10, cmd, vb_col.subresource_uav);
+		if (IsSorted())
+		{
+			device->BindUAV(&culledIndirectionBuffer, 11, cmd);
+		}
+		else
+		{
+			device->BindUAV(&generalBuffer, 11, cmd, sec_culled.subresource_uav);
+		}
+		device->BindUAV(&generalBuffer, 12, cmd, sec_culled2.subresource_uav);
+	}
+
 	void EmittedParticleSystem::UpdateGPU(uint32_t instanceIndex, const MeshComponent* mesh, CommandList cmd) const
 	{
 		if (IsInactive())
 			return;
-		if (!particleBuffer.IsValid())
+		if (!generalBuffer.IsValid())
 			return;
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
@@ -562,7 +735,12 @@ namespace wi
 			static thread_local wi::vector<uint32_t> indices;
 			indices.resize(MAX_PARTICLES);
 			for (uint32_t i = 0; i < MAX_PARTICLES; ++i) indices[i] = i;
-			device->UpdateBuffer(&deadList, indices.data(), cmd, sizeof(uint32_t) * MAX_PARTICLES);
+			device->UpdateBuffer(&generalBuffer, indices.data(), cmd, sizeof(uint32_t) * MAX_PARTICLES, sec_dead.offset);
+			GPUBarrier restart_barriers[] = {
+				GPUBarrier::Buffer(&counterBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS),
+				GPUBarrier::Buffer(&generalBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS),
+			};
+			device->Barrier(restart_barriers, arraysize(restart_barriers), cmd);
 		}
 		device->EventBegin("UpdateEmittedParticles", cmd);
 
@@ -582,172 +760,28 @@ namespace wi
 			}
 			device->BindResource(&alloc.buffer, 0, cmd);
 
-			EmittedParticleCB cb;
-			cb.xEmitBufferOffset = (uint)alloc.offset;
-			if (mesh == nullptr || !IsFormatUnorm(mesh->position_format) || mesh->so_pos.IsValid())
-			{
-				cb.xEmitterBaseMeshUnormRemap.init();
-			}
-			else
-			{
-				XMFLOAT4X4 unormRemap;
-				XMStoreFloat4x4(&unormRemap, mesh->aabb.getUnormRemapMatrix());
-				cb.xEmitterBaseMeshUnormRemap.Create(unormRemap);
-			}
 			if (mesh == nullptr)
 			{
-				cb.xEmitterMeshGeometryOffset = 0;
-				cb.xEmitterMeshGeometryCount = 0;
+				device->BindDynamicConstantBuffer(gg_cb, CB_GETBINDSLOT(EmittedParticleCB), cmd);
 			}
 			else
 			{
+				EmittedParticleCB cb = gg_cb;
+				if (IsFormatUnorm(mesh->position_format) && !mesh->so_pos.IsValid())
+				{
+					XMFLOAT4X4 unormRemap;
+					XMStoreFloat4x4(&unormRemap, mesh->aabb.getUnormRemapMatrix());
+					cb.xEmitterBaseMeshUnormRemap.Create(unormRemap);
+				}
 				uint32_t first_subset = 0;
 				uint32_t last_subset = 0;
 				mesh->GetLODSubsetRange(0, first_subset, last_subset);
 				cb.xEmitterMeshGeometryOffset = mesh->geometryOffset + first_subset;
 				cb.xEmitterMeshGeometryCount = last_subset - first_subset;
-			}
-			cb.xEmitterRandomness = wi::random::GetRandom(0.0f, 1.0f);
-			cb.xParticleLifeSpan = life * life_scale; // GG: the layer's life scale
-			cb.xParticleLifeSpanRandomness = random_life;
-			cb.xParticleNormalFactor = normal_factor * speed_scale; // GG: the layer's speed scale
-			cb.xParticleRandomFactor = random_factor;
-			cb.xParticleScaling = scaleX;
-			cb.xParticleSize = size * size_scale * layer_size_scale; // GG: the script's and the layer's size scales
-			cb.xParticleMotionBlurAmount = motionBlurAmount;
-			cb.xParticleRotation = rotation * XM_PI;
-			cb.xParticleMass = mass;
-			cb.xEmitterMaxParticleCount = MAX_PARTICLES;
-			cb.xEmitterFixedTimestep = FIXED_TIMESTEP;
-			cb.xEmitterRestitution = restitution;
-			cb.xEmitterFramesXY = uint2(std::max(1u, framesX), std::max(1u, framesY));
-			cb.xEmitterFrameCount = std::max(1u, frameCount);
-			cb.xEmitterFrameStart = frameStart;
-			cb.xEmitterTexMul = float2(1.0f / (float)cb.xEmitterFramesXY.x, 1.0f / (float)cb.xEmitterFramesXY.y);
-			cb.xEmitterFrameRate = frameRate;
-			cb.xParticleGravity = gravity;
-			cb.xParticleDrag = drag;
-			XMStoreFloat3(&cb.xParticleVelocity, XMVector3TransformNormal(XMLoadFloat3(&velocity), XMLoadFloat4x4(&worldMatrix)) * speed_scale); // GG: the layer's speed scale
-			cb.xParticleRandomColorFactor = random_color;
-			cb.xEmitterLayerMask = layerMask;
-			cb.xEmitterInstanceIndex = instanceIndex;
-
-			// GGMAX 2.00: GameGuru WPE parameters (see PARTICLE_SYSTEM_PLAN.md section 6).
-			cb.xParticleEndColor = XMFLOAT3(endcolor_red, endcolor_green, endcolor_blue);
-			cb.xEmitterFadeinTime = fadein_time;
-			cb.xParticleNormalFactorXYZ = XMFLOAT3(normal_factor_x * speed_scale, normal_factor_y * speed_scale, normal_factor_z * speed_scale);
-			cb.xParticleBurstFactorSpeed = burst_factor_speed;
-			cb.xParticleBurstFactor = XMFLOAT3(burst_factor_x * speed_scale, burst_factor_y * speed_scale, burst_factor_z * speed_scale);
-			cb.xParticleNormalRandom = normal_random;
-			cb.xParticleSinPos = XMFLOAT3(startpos.x * spread_scale, startpos.y * spread_scale, startpos.z * spread_scale); // GG: the layer's spread scale
-			cb.xParticleRotationRandom = rotation_random;
-			cb.xParticleSizeRandom = size_random;
-			cb.xParticleScalingRandom = scaling_random;
-			cb.xParticleStartRotation = start_rotation;
-			cb.xParticleRandomPos = random_position;
-			cb.xParticleRandomPosScale = random_position_scale * spread_scale; // GG: the layer's spread scale, as on DX11
-			cb.xTotalEmitCount = total_emit_count;
-			// GG: the layer's options (wpe_filler_3: bit 1 the spreads turn with the emitter, 2 the trail, 4 no fog), 8 and 16 the blend's
-			// fog form, 32 half resolution, 64 a wrapping volume
-			cb.xParticleLocalOptions = (uint32_t)std::max(0.0f, wpe_filler_3) & 7; // masked, as on DX11: a clamp turned 8 and up into 7 (no fog, a trail)
-			if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_ADDITIVE) cb.xParticleLocalOptions |= 8;
-			else if (gg_blendmode == (uint32_t)wi::enums::BLENDMODE_PREMULTIPLIED) cb.xParticleLocalOptions |= 16;
-			if (wi::renderer::GetParticleHalfResolutionEnabled() && IsHalfResolution()) cb.xParticleLocalOptions |= 32;
-			if (IsWrapVolume()) cb.xParticleLocalOptions |= 64;
-			// GG: the sheets put back to their stored values in the shader, unless they are read as stored (gg_particle_plain_sheets)
-			if (gg_reencode_sheet && !wi::scene::gg_particle_plain_sheets) cb.xParticleLocalOptions |= 128;
-			if (gg_reencode_emissive && !wi::scene::gg_particle_plain_sheets) cb.xParticleLocalOptions |= 256;
-			cb.xParticleFadeOutStart = wi::math::Clamp(wpe_filler_1, 0.0f, 0.99f);
-			cb.xParticleMirror = (uint32_t)wi::math::Clamp(wpe_filler_2, 0.0f, 3.0f);
-			cb.xParticleWind = layer_wind;
-			cb.xParticleEmissiveScale = emissive_scale;
-			{
-				// where the emitter was last frame, if last frame it was (a load or a teleport is no trail)
-				const XMFLOAT3 emitterPos = XMFLOAT3(worldMatrix._41, worldMatrix._42, worldMatrix._43);
-				const uint64_t frame = device->GetFrameCount();
-				const bool bPrevValid = prev_emitter_frame + 1 == frame && wi::math::Distance(prev_emitter_pos, emitterPos) < 4000.0f;
-				cb.xEmitterPrevPos = bPrevValid ? prev_emitter_pos : emitterPos;
-				cb.xEmitterPrevValid = bPrevValid ? 1.0f : 0.0f;
-				prev_emitter_pos = emitterPos;
-				prev_emitter_frame = frame;
-			}
-			cb.xEmitterWrapMotion = wrap_motion;
-			cb.xEmitterWrapMotionSet = bWrapMotion ? 1.0f : 0.0f;
-			cb.xParticleColorTint = color_tint;
-			cb.xParticleOpacityScale = opacity_scale;
-			cb.xEmitterKillBoxCount = std::min(killbox_count, (uint32_t)EMITTER_KILLBOX_COUNT);
-			for (uint32_t i = 0; i < cb.xEmitterKillBoxCount; ++i)
-			{
-				cb.xEmitterKillBoxMin[i] = killbox_min[i];
-				cb.xEmitterKillBoxMax[i] = killbox_max[i];
-			}
-			cb.xParticleSpreadScale = spread_scale; // GG: the wrapping volume's box widened as the emit volume
-			cb.xEmitterWorld.Create(worldMatrix); // GG: the wrapping volume's box and a streak's emitter motion
-			cb.xParticleScatter = wi::renderer::GetParticleScatter(); // GG: the sun's forward scattering on the lit layers (0 off)
-
-			cb.xEmitterOptions = 0;
-			if (IsSPHEnabled())
-			{
-				cb.xEmitterOptions |= EMITTER_OPTION_BIT_SPH_ENABLED;
-			}
-			if (IsFrameBlendingEnabled())
-			{
-				cb.xEmitterOptions |= EMITTER_OPTION_BIT_FRAME_BLENDING_ENABLED;
-			}
-			if (ALLOW_MESH_SHADER && device->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
-			{
-				cb.xEmitterOptions |= EMITTER_OPTION_BIT_MESH_SHADER_ENABLED;
-			}
-			if (IsCollidersDisabled())
-			{
-				cb.xEmitterOptions |= EMITTER_OPTION_BIT_COLLIDERS_DISABLED;
-			}
-			if (_flags & FLAG_USE_RAIN_BLOCKER)
-			{
-				cb.xEmitterOptions |= EMITTER_OPTION_BIT_USE_RAIN_BLOCKER;
-			}
-			if (IsTakeColorFromMesh())
-			{
-				cb.xEmitterOptions |= EMITTER_OPTION_BIT_TAKE_COLOR_FROM_MESH;
+				device->BindDynamicConstantBuffer(cb, CB_GETBINDSLOT(EmittedParticleCB), cmd);
 			}
 
-			// SPH:
-			cb.xSPH_h = SPH_h;
-			cb.xSPH_h_rcp = 1.0f / SPH_h;
-			cb.xSPH_h2 = SPH_h * SPH_h;
-			cb.xSPH_h3 = cb.xSPH_h2 * SPH_h;
-			const float h6 = cb.xSPH_h2 * cb.xSPH_h2 * cb.xSPH_h2;
-			const float h9 = h6 * cb.xSPH_h3;
-			cb.xSPH_poly6_constant = (315.0f / (64.0f * XM_PI * h9));
-			cb.xSPH_spiky_constant = (-45.0f / (XM_PI * h6));
-			cb.xSPH_visc_constant = (45.0f / (XM_PI * h6));
-			cb.xSPH_K = SPH_K;
-			cb.xSPH_p0 = SPH_p0;
-			cb.xSPH_e = SPH_e;
-
-			device->UpdateBuffer(&constantBuffer, &cb, cmd);
-			{
-				GPUBarrier barriers[] = {
-					GPUBarrier::Buffer(&constantBuffer, ResourceState::COPY_DST, ResourceState::CONSTANT_BUFFER),
-				};
-				device->Barrier(barriers, arraysize(barriers), cmd);
-			}
-
-			device->BindConstantBuffer(&constantBuffer, CB_GETBINDSLOT(EmittedParticleCB), cmd);
-
-			device->BindUAV(&particleBuffer, 0, cmd);
-			device->BindUAV(&aliveList[0], 1, cmd);
-			device->BindUAV(&aliveList[1], 2, cmd);
-			device->BindUAV(&deadList, 3, cmd);
-			device->BindUAV(&counterBuffer, 4, cmd);
-			device->BindUAV(&indirectBuffers, 5, cmd);
-			device->BindUAV(&distanceBuffer, 6, cmd);
-			device->BindUAV(&generalBuffer, 7, cmd, vb_pos.subresource_uav);
-			device->BindUAV(&generalBuffer, 8, cmd, vb_nor.subresource_uav);
-			device->BindUAV(&generalBuffer, 9, cmd, vb_uvs.subresource_uav);
-			device->BindUAV(&generalBuffer, 10, cmd, vb_col.subresource_uav);
-			device->BindUAV(&culledIndirectionBuffer, 11, cmd);
-			device->BindUAV(&culledIndirectionBuffer2, 12, cmd);
+			BindSimulationUAVs(cmd);
 
 			GPUBarrier barrier_indirect_uav = GPUBarrier::Buffer(&indirectBuffers, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS);
 			GPUBarrier barrier_uav_indirect = GPUBarrier::Buffer(&indirectBuffers, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT);
@@ -793,11 +827,8 @@ namespace wi
 				// Assign particles into partitioning grid:
 				device->EventBegin("Particles - Grid Partitioning", cmd);
 				device->BindComputeShader(&sphpartitionCS, cmd);
-				const GPUResource* res_partition[] = {
-					&aliveList[0], // CURRENT alivelist
-					&particleBuffer,
-				};
-				device->BindResources(res_partition, 0, arraysize(res_partition), cmd);
+				device->BindResource(&generalBuffer, 0, cmd, sec_alive[0].subresource_srv); // CURRENT alivelist
+				device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
 				const GPUResource* uav_partition[] = {
 					&counterBuffer,
 					&sphGridCells,
@@ -815,11 +846,8 @@ namespace wi
 				// Each grid cell allocates space for its own particle list:
 				device->EventBegin("Grid - Cell Allocation", cmd);
 				device->BindComputeShader(&sphcellallocationCS, cmd);
-				const GPUResource* res_cellallocation[] = {
-					&aliveList[0], // CURRENT alivelist
-					&particleBuffer,
-				};
-				device->BindResources(res_cellallocation, 0, arraysize(res_cellallocation), cmd);
+				device->BindResource(&generalBuffer, 0, cmd, sec_alive[0].subresource_srv); // CURRENT alivelist
+				device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
 				const GPUResource* uav_cellallocation[] = {
 					&counterBuffer,
 					&sphGridCells,
@@ -837,11 +865,8 @@ namespace wi
 				// Each particle bins itself to a grid cell:
 				device->EventBegin("Particles - Binning", cmd);
 				device->BindComputeShader(&sphbinningCS, cmd);
-				const GPUResource* res_binning[] = {
-					&aliveList[0], // CURRENT alivelist
-					&particleBuffer,
-				};
-				device->BindResources(res_binning, 0, arraysize(res_binning), cmd);
+				device->BindResource(&generalBuffer, 0, cmd, sec_alive[0].subresource_srv); // CURRENT alivelist
+				device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
 				const GPUResource* uav_binning[] = {
 					&counterBuffer,
 					&sphGridCells,
@@ -863,13 +888,10 @@ namespace wi
 				// 5.) Compute particle density field:
 				device->EventBegin("Density Evaluation", cmd);
 				device->BindComputeShader(&sphdensityCS, cmd);
-				const GPUResource* res_density[] = {
-					&aliveList[0], // CURRENT alivelist
-					&particleBuffer,
-					&sphParticleCells,
-					&sphGridCells,
-				};
-				device->BindResources(res_density, 0, arraysize(res_density), cmd);
+				device->BindResource(&generalBuffer, 0, cmd, sec_alive[0].subresource_srv); // CURRENT alivelist
+				device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
+				device->BindResource(&sphParticleCells, 2, cmd);
+				device->BindResource(&sphGridCells, 3, cmd);
 				const GPUResource* uav_density[] = {
 					&counterBuffer,
 					&densityBuffer
@@ -882,18 +904,12 @@ namespace wi
 				// 6.) Compute particle pressure forces:
 				device->EventBegin("Force Evaluation", cmd);
 				device->BindComputeShader(&sphforceCS, cmd);
-				const GPUResource* res_force[] = {
-					&aliveList[0], // CURRENT alivelist
-					&densityBuffer,
-					&sphParticleCells,
-					&sphGridCells,
-				};
-				device->BindResources(res_force, 0, arraysize(res_force), cmd);
-				const GPUResource* uav_force[] = {
-					&counterBuffer,
-					&particleBuffer,
-				};
-				device->BindUAVs(uav_force, 0, arraysize(uav_force), cmd);
+				device->BindResource(&generalBuffer, 0, cmd, sec_alive[0].subresource_srv); // CURRENT alivelist
+				device->BindResource(&densityBuffer, 1, cmd);
+				device->BindResource(&sphParticleCells, 2, cmd);
+				device->BindResource(&sphGridCells, 3, cmd);
+				device->BindUAV(&counterBuffer, 0, cmd);
+				device->BindUAV(&generalBuffer, 1, cmd, sec_particle.subresource_uav);
 				device->DispatchIndirect(&indirectBuffers, ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
 				device->Barrier(GPUBarrier::Memory(), cmd);
 				device->EventEnd(cmd);
@@ -908,19 +924,7 @@ namespace wi
 
 			device->BindResource(&opacityCurveTex, 0, cmd);
 
-			device->BindUAV(&particleBuffer, 0, cmd);
-			device->BindUAV(&aliveList[0], 1, cmd);
-			device->BindUAV(&aliveList[1], 2, cmd);
-			device->BindUAV(&deadList, 3, cmd);
-			device->BindUAV(&counterBuffer, 4, cmd);
-			device->BindUAV(&indirectBuffers, 5, cmd);
-			device->BindUAV(&distanceBuffer, 6, cmd);
-			device->BindUAV(&generalBuffer, 7, cmd, vb_pos.subresource_uav);
-			device->BindUAV(&generalBuffer, 8, cmd, vb_nor.subresource_uav);
-			device->BindUAV(&generalBuffer, 9, cmd, vb_uvs.subresource_uav);
-			device->BindUAV(&generalBuffer, 10, cmd, vb_col.subresource_uav);
-			device->BindUAV(&culledIndirectionBuffer, 11, cmd);
-			device->BindUAV(&culledIndirectionBuffer2, 12, cmd);
+			BindSimulationUAVs(cmd);
 
 			// update CURRENT alive list, write NEW alive list
 			if (IsSorted())
@@ -1003,17 +1007,14 @@ namespace wi
 
 		// Statistics is copied to readback:
 		const uint32_t oldest_stat_index = wi::graphics::GetDevice()->GetBufferIndex();
-		device->CopyResource(&statisticsReadbackBuffer[oldest_stat_index], &counterBuffer, cmd);
+		device->CopyBuffer(&statisticsSlot->page->buffer[oldest_stat_index], statisticsSlot->offset, &counterBuffer, 0, sizeof(ParticleCounters), cmd);
 
 		{
 			const GPUBarrier barriers[] = {
 				GPUBarrier::Buffer(&indirectBuffers, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT),
 				GPUBarrier::Buffer(&counterBuffer, ResourceState::COPY_SRC, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&particleBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&aliveList[1], ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
 				GPUBarrier::Buffer(&generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE),
-				GPUBarrier::Buffer(&culledIndirectionBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
-				GPUBarrier::Buffer(&culledIndirectionBuffer2, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
+				GPUBarrier::Buffer(&culledIndirectionBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE), // a sorted emitter's
 			};
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		}
@@ -1026,7 +1027,7 @@ namespace wi
 	{
 		if (IsInactive())
 			return;
-		if (!particleBuffer.IsValid())
+		if (!generalBuffer.IsValid() || !gg_cb_ready)
 			return; // GG: paused since it was loaded, so no buffers yet (UpdateCPU) and nothing to draw
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		device->EventBegin("EmittedParticle", cmd);
@@ -1045,15 +1046,19 @@ namespace wi
 			device->BindShadingRate(material.shadingRate, cmd);
 		}
 
-		device->BindConstantBuffer(&constantBuffer, CB_GETBINDSLOT(EmittedParticleCB), cmd);
+		device->BindDynamicConstantBuffer(gg_cb, CB_GETBINDSLOT(EmittedParticleCB), cmd);
 
-		const GPUResource* res[] = {
-			&counterBuffer,
-			&particleBuffer,
-			&culledIndirectionBuffer,
-			&culledIndirectionBuffer2,
-		};
-		device->BindResources(res, 0, arraysize(res), cmd);
+		device->BindResource(&counterBuffer, 0, cmd);
+		device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
+		if (IsSorted())
+		{
+			device->BindResource(&culledIndirectionBuffer, 2, cmd);
+		}
+		else
+		{
+			device->BindResource(&generalBuffer, 2, cmd, sec_culled.subresource_srv);
+		}
+		device->BindResource(&generalBuffer, 3, cmd, sec_culled2.subresource_srv);
 
 		if (ALLOW_MESH_SHADER && device->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
 		{
@@ -1076,6 +1081,21 @@ namespace wi
 
 		opacityCurveControlPeakStart = peakStart;
 		opacityCurveControlPeakEnd = peakEnd;
+
+		// GG: one texture per curve: nearly every layer has the same one, and each made its own with a copy queue upload that stalled its thread
+		static std::mutex curve_locker;
+		static std::unordered_map<uint64_t, Texture> curves;
+		uint32_t peak_bits[2];
+		std::memcpy(&peak_bits[0], &peakStart, sizeof(float));
+		std::memcpy(&peak_bits[1], &peakEnd, sizeof(float));
+		const uint64_t curve_key = (uint64_t(peak_bits[0]) << 32) | peak_bits[1];
+		std::scoped_lock curve_lock(curve_locker);
+		auto curve = curves.find(curve_key);
+		if (curve != curves.end())
+		{
+			opacityCurveTex = curve->second;
+			return;
+		}
 
 		uint16_t data[2048];
 		int startup_length = int(peakStart * float(arraysize(data) - 1));
@@ -1108,6 +1128,7 @@ namespace wi
 		initdata.row_pitch = sizeof(data);
 		GetDevice()->CreateTexture(&desc, &initdata, &opacityCurveTex);
 		GetDevice()->SetName(&opacityCurveTex, "EmittedParticleSystem::opacityCurveTex");
+		curves[curve_key] = opacityCurveTex;
 	}
 
 	namespace EmittedParticleSystem_Internal
