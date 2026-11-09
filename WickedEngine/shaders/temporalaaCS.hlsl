@@ -72,6 +72,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 	half3 neighborhoodMax = -10000;
 	half3 current;
 	float bestDepth = 1;
+	float farDepth = 0;
 	const int2 pixel_local = TILE_BORDER + GTid.xy;
 
 	// Search for best velocity and compute color clamping range in 3x3 neighborhood:
@@ -91,6 +92,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 		}
 
 		const half depth = neighbor.w;
+		farDepth = max(farDepth, depth);
 		if (depth < bestDepth)
 		{
 			bestDepth = depth;
@@ -103,11 +105,16 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 
 #if 1
 	// Disocclusion fallback:
-	float depth_current = texture_lineardepth[DTid.xy] * GetCamera().z_far;
-	float depth_history = compute_lineardepth(texture_depth_history.SampleLevel(sampler_point_clamp, prevUV, 0));
-	// GG: 60 units, not 1: a metre in Wicked's scale but an inch in GameGuru's, so a camera moving forward had every near pixel
-	// taken as uncovered and drawn raw, the ground sharp and speckled up to a line a few metres out, which moved with the camera
-	if (length(velocity) > 0.01 && abs(depth_current - depth_history) > 60)
+	// GG: is what the last frame had here the same surface? Either a still surface, where this point was in the last frame's view, or
+	// one moving with the camera, as far away as it is now. A fixed difference can't tell them apart: at 1 unit (a metre in Wicked's
+	// scale, an inch in GameGuru's) the ground under a moving camera drew raw up to a line a few metres out, which moved with the camera;
+	// at 60 a vehicle left its colour on the ground beside its wheels. The neighbours' spread in depth allows for the ground's slope
+	const float depth_current = texture_lineardepth[DTid.xy] * GetCamera().z_far;
+	const float depth_history = compute_lineardepth(texture_depth_history.SampleLevel(sampler_point_clamp, prevUV, 0));
+	const float3 gg_position = reconstruct_position(uv, texture_depth.SampleLevel(sampler_point_clamp, uv, 0));
+	const float depth_still = mul(GetCamera().previous_view_projection, float4(gg_position, 1)).w;
+	const float gg_tolerance = 2 + depth_current * 0.002 + (farDepth - bestDepth) * GetCamera().z_far * 1.5;
+	if (length(velocity) > 0.0005 && min(abs(depth_still - depth_history), abs(depth_current - depth_history)) > gg_tolerance)
 	{
 		output[DTid.xy] = current;
 		//output[DTid.xy] = float3(1, 0, 0);
@@ -121,14 +128,15 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 	// simple correction of image signal incoherency (eg. moving shadows or lighting changes):
 	history.rgb = clamp(history.rgb, neighborhoodMin, neighborhoodMax);
 
-	// GG: the new frame's share grows with the motion up to one pixel and then holds. It came from the fraction of the pixels moved,
-	// so on moving ground it fell back at every whole pixel a frame, a band across the ground at each (and the history is no longer
-	// softened by moving, which the larger share was there to hide)
+	// GG: the new frame's share goes up smoothly with the motion. It came from the fraction of the pixels moved, so on moving ground it
+	// fell back at every whole pixel a frame, a band across the ground at each. Past a few pixels a frame the history only smears
 	const float motion = max(abs(velocity.x) * GetCamera().internal_resolution.x, abs(velocity.y) * GetCamera().internal_resolution.y);
-	half blendfactor = saturate(lerp(0.05, 0.15, saturate(motion)));
+	half blendfactor = saturate(lerp(0.05, 0.15, saturate(motion)) + 0.45 * saturate((motion - 4) / 28));
 
 	// if information can not be found on the screen, revert to aliased image:
-	blendfactor = is_saturated(prevUV) ? blendfactor : 1.0;
+	// GG: tested before the clamp to the scissor, which made this always pass: ground coming up from below the screen took its history
+	// from the screen's bottom row, stretched up as far as it moved in a frame
+	blendfactor = is_saturated(uv + velocity) ? blendfactor : 1.0;
 
 #ifdef HDR_CORRECTION
 	history.rgb = tonemap(history.rgb);
