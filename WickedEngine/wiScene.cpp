@@ -7836,6 +7836,116 @@ namespace wi::scene
 	std::atomic<unsigned long long> gg_dbg_isect_aabbpass{ 0 };   // objects passing AABB+filter -> per-triangle stage
 	std::atomic<unsigned long long> gg_dbg_isect_tris{ 0 };       // triangles actually tested
 	std::atomic<unsigned long long> gg_dbg_isect_skintris{ 0 };   // ...of which CPU-skinned
+	bool gg_force_grid_rays = false;
+
+	// GG: a ray through a terrain chunk without a BVH (MeshComponent::gg_grid_width): the grid's cells walked along the ray in
+	// order (a 2D DDA), each cell's two triangles tested unless the ray passes wholly above or below its four corners, and the
+	// walk stopped at the first cell with a hit, which is the nearest. The same triangles as the BVH finds, so the same answer;
+	// a BVH was about 1.15 MB a chunk, about 1.2 GB over a level. False when the mesh isn't such a grid (the caller goes on)
+	template<typename F>
+	static bool GG_GridIntersects(const MeshComponent& mesh, XMVECTOR rayOrigin_local, XMVECTOR rayDirection_local, const float& bestDistance, F& intersect_triangle)
+	{
+		const int W = (int)mesh.gg_grid_width;
+		if (W < 2 || mesh.vertex_positions.size() != size_t(W) * size_t(W))
+			return false;
+		uint32_t first_subset = 0;
+		uint32_t last_subset = 0;
+		mesh.GetLODSubsetRange(0, first_subset, last_subset);
+		if (first_subset >= mesh.subsets.size())
+			return false;
+		const MeshComponent::MeshSubset& subset = mesh.subsets[first_subset];
+		if (subset.indexCount != uint32_t((W - 1) * (W - 1) * 6) || mesh.indices.size() < size_t(subset.indexOffset) + subset.indexCount)
+			return false;
+		// the layout the walk assumes, checked: quad (x 0, z 0) is topLeft, lowerLeft, lowerRight then topLeft, lowerRight, topRight, and the
+		// quads go along z first (the second is x 0, z 1)
+		const uint32_t* idx = mesh.indices.data() + subset.indexOffset;
+		const uint32_t w = (uint32_t)W;
+		if (idx[0] != w || idx[1] != 0 || idx[2] != 1 || idx[3] != w || idx[4] != 1 || idx[5] != w + 1 || idx[6] != 2 * w || idx[7] != w)
+			return false;
+		const XMFLOAT3* P = mesh.vertex_positions.data();
+		const float x0 = P[0].x;
+		const float z0 = P[0].z;
+		const float s = P[1].x - x0;
+		if (!(s > 0) || std::abs((P[W].z - z0) - s) > s * 0.001f)
+			return false;
+		const float x1 = x0 + s * float(W - 1);
+		const float z1 = z0 + s * float(W - 1);
+		XMFLOAT3 o;
+		XMFLOAT3 d;
+		XMStoreFloat3(&o, rayOrigin_local);
+		XMStoreFloat3(&d, rayDirection_local);
+		const float BIG = std::numeric_limits<float>::max();
+
+		// the ray clipped to the grid's box, its height from the mesh's bounds
+		float tEnter = 0;
+		float tExit = BIG;
+		auto slab = [&](float ro, float rd, float lo, float hi) {
+			if (std::abs(rd) < 1e-12f)
+				return ro >= lo && ro <= hi;
+			float ta = (lo - ro) / rd;
+			float tb = (hi - ro) / rd;
+			if (ta > tb)
+				std::swap(ta, tb);
+			tEnter = std::max(tEnter, ta);
+			tExit = std::min(tExit, tb);
+			return tEnter <= tExit;
+		};
+		const float margin = s * 0.01f;
+		if (!slab(o.x, d.x, x0, x1) || !slab(o.z, d.z, z0, z1) || !slab(o.y, d.y, mesh.aabb.getMin().y - margin, mesh.aabb.getMax().y + margin))
+			return true;
+
+		const int last = W - 2;
+		int i = std::max(0, std::min(last, (int)std::floor((o.x + d.x * tEnter - x0) / s)));
+		int j = std::max(0, std::min(last, (int)std::floor((o.z + d.z * tEnter - z0) / s)));
+		const int stepX = d.x > 0 ? 1 : -1;
+		const int stepZ = d.z > 0 ? 1 : -1;
+		float tMaxX = std::abs(d.x) < 1e-12f ? BIG : (x0 + float(i + (d.x > 0 ? 1 : 0)) * s - o.x) / d.x;
+		float tMaxZ = std::abs(d.z) < 1e-12f ? BIG : (z0 + float(j + (d.z > 0 ? 1 : 0)) * s - o.z) / d.z;
+		const float tDeltaX = std::abs(d.x) < 1e-12f ? BIG : s / std::abs(d.x);
+		const float tDeltaZ = std::abs(d.z) < 1e-12f ? BIG : s / std::abs(d.z);
+		float tCell = tEnter;
+		for (int guard = 0; guard < 4 * W; ++guard)
+		{
+			const float tOut = std::min(std::min(tMaxX, tMaxZ), tExit);
+			const int ll = i + j * W;
+			const float h0 = P[ll].y;
+			const float h1 = P[ll + 1].y;
+			const float h2 = P[ll + W].y;
+			const float h3 = P[ll + W + 1].y;
+			const float hmin = std::min(std::min(h0, h1), std::min(h2, h3)) - margin;
+			const float hmax = std::max(std::max(h0, h1), std::max(h2, h3)) + margin;
+			const float ya = o.y + d.y * tCell;
+			const float yb = o.y + d.y * tOut;
+			if (!(std::min(ya, yb) > hmax || std::max(ya, yb) < hmin))
+			{
+				const float before = bestDistance;
+				const uint32_t q = uint32_t(i) * uint32_t(W - 1) + uint32_t(j);
+				intersect_triangle(first_subset, subset.indexOffset, q * 2);
+				intersect_triangle(first_subset, subset.indexOffset, q * 2 + 1);
+				if (bestDistance < before)
+					return true;
+			}
+			if (tOut >= tExit)
+				break;
+			if (tMaxX < tMaxZ)
+			{
+				i += stepX;
+				tCell = tMaxX;
+				tMaxX += tDeltaX;
+				if (i < 0 || i > last)
+					break;
+			}
+			else
+			{
+				j += stepZ;
+				tCell = tMaxZ;
+				tMaxZ += tDeltaZ;
+				if (j < 0 || j > last)
+					break;
+			}
+		}
+		return true;
+	}
 
 	Scene::RayIntersectionResult Scene::Intersects(const Ray& ray, uint32_t filterMask, uint32_t layerMask, uint32_t lod) const
 	{
@@ -8140,7 +8250,7 @@ namespace wi::scene
 					}
 				};
 
-				if (mesh->bvh.IsValid())
+				if (mesh->bvh.IsValid() && !(gg_force_grid_rays && mesh->gg_grid_width > 0))
 				{
 					Ray ray_local = Ray(rayOrigin_local, rayDirection_local);
 
@@ -8154,6 +8264,10 @@ namespace wi::scene
 						const uint32_t indexOffset = subset.indexOffset;
 						intersect_triangle(subsetIndex, indexOffset, triangleIndex);
 					});
+				}
+				else if (!gg_skinned_candidate && mesh->gg_grid_width > 0 && GG_GridIntersects(*mesh, rayOrigin_local, rayDirection_local, result.distance, intersect_triangle))
+				{
+					// GG: a terrain chunk, its cells walked along the ray (GG_GridIntersects)
 				}
 				else if (armature != nullptr && !armature->boneData.empty() && softbody == nullptr && (mesh->gg_bone_clusters_built || mesh->vertex_boneweights.size() == mesh->vertex_positions.size()))
 				{

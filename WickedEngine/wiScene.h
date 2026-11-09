@@ -805,6 +805,7 @@ namespace wi::scene
 	// held (wiScene.cpp RunMeshUpdateSystem). gg_skin_fresh_guard is the harness A/B lever
 	// (SET_SKINFRESHGUARD); gg_skin_fresh_report prints the event count and the last 8 events.
 	extern bool gg_skin_fresh_guard;
+	extern bool gg_force_grid_rays; // GG: rays walk a terrain chunk's grid even where it has a BVH (harness RAY_GRID_CHECK's second pick)
 	extern std::atomic<uint32_t> gg_skin_fresh_total;
 	extern uint32_t gg_skin_drawn_garbage;     // render-side truth: held meshes drawn from an unwritten half
 	extern uint32_t gg_skin_drawn_stale;       // ... drawn from a written half that is not the newest pose

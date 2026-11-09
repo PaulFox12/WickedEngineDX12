@@ -35,6 +35,12 @@ namespace wi::terrain
 	// the editor/test game always regenerate with BVHs.
 	bool gg_generation_skip_bvh = false;
 
+	// GG: a chunk's triangle BVH was about 1.15 MB (its nodes, leaf indices and a box per triangle; 8,712 triangles), about 1.2 GB
+	// over Outdoors' chunks, and 8.2 ms a chunk to build. A chunk is a grid, so a ray walks the cells it crosses instead
+	// (wiScene's GG_GridIntersects: the same triangles, so the same hits). Off by default; true builds them as before (an A/B lever,
+	// harness SET_CHUNKBVH), and turned off again frees them
+	bool gg_chunk_bvh = false;
+
 	// GGMAX 2.60: skip grass seeding/creation at chunk generation. The Terrain Generator
 	// sets it (user request): grass is invisible at generator view distances, it carries a
 	// known bug there, and the seeding costs ~0.3 ms/chunk. Generator chunks are wiped on
@@ -1075,9 +1081,16 @@ namespace wi::terrain
 				// ~6s of a generator fill). While the generator owns the screen, chunks are MEANT
 				// to be BVH-less (drag picks brute-force; the exit wipe regenerates WITH BVHs), so
 				// the heal honors the same flag. Every other mode: unchanged.
-				if (!gg_generation_skip_bvh && !chunk_mesh->bvh.IsValid())
+				if (!gg_generation_skip_bvh && gg_chunk_bvh && !chunk_mesh->bvh.IsValid())
 				{
 					chunk_mesh->SetBVHEnabled(true);
+				}
+				else if (!gg_chunk_bvh && chunk_mesh->bvh.IsValid())
+				{
+					// GG: the grid walk's turn (gg_chunk_bvh): the BVH's memory given back, not only its leaf boxes cleared
+					chunk_mesh->SetBVHEnabled(false);
+					chunk_mesh->bvh = wi::BVH();
+					wi::vector<wi::primitive::AABB>().swap(chunk_mesh->bvh_leaf_aabbs);
 				}
 			}
 			else
@@ -1346,6 +1359,7 @@ namespace wi::terrain
 						mesh.subsets.back().indexOffset = lod.indexOffset;
 					}
 					mesh.subsets_per_lod = 1;
+					mesh.gg_grid_width = chunk_width; // GG: rays walk this grid (wiScene GG_GridIntersects)
 					mesh.vertex_positions.resize(vertexCount);
 					mesh.vertex_normals.resize(vertexCount);
 					mesh.vertex_tangents.resize(vertexCount);
@@ -1532,7 +1546,7 @@ namespace wi::terrain
 						chunk_data.sphere.center.z += chunk_data.position.z;
 						chunk_data.sphere.radius = mesh.aabb.getRadius();
 						gg_genprof_renderdata_us.fetch_add(uint64_t(gg_t_rd.elapsed_milliseconds() * 1000.0));
-						if (!gg_generation_skip_bvh) // GGMAX 2.58: 8.2 ms/chunk — the generator skips it
+						if (!gg_generation_skip_bvh && gg_chunk_bvh) // GGMAX 2.58: 8.2 ms/chunk — the generator skips it
 						{
 							wi::Timer gg_t_bvh; // GGMAX 2.58a: SetBVHEnabled BUILDS the CPU triangle BVH synchronously
 							mesh.SetBVHEnabled(true);

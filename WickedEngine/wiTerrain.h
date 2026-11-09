@@ -44,6 +44,7 @@ namespace wi::terrain
 	extern float gg_generation_center_override_z;
 	extern bool  gg_generation_center_override_enabled;
 	extern bool gg_generation_skip_bvh; // GGMAX 2.58: generator-only, see wiTerrain.cpp
+	extern bool gg_chunk_bvh; // GG: false (the default), chunks have no triangle BVH: rays walk their grid (wiScene GG_GridIntersects)
 	extern bool gg_generation_skip_grass; // GGMAX 2.60: generator-only, see wiTerrain.cpp
 	void gg_WaitVirtualTextureJob();      // GGMAX 2.94: join the async VT job before any external Terrain teardown
 	extern bool gg_skip_generation_update; // GGMAX 2.94f: set by the GG bridge from its idle gate; skips the ENGINE-side Generation_Update for the same frame

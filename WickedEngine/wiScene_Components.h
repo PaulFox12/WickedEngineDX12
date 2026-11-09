@@ -915,6 +915,9 @@ namespace wi::scene
 		mutable wi::vector<GGBoneCluster> gg_bone_clusters;
 		mutable bool gg_bone_clusters_built = false;
 		void GG_BuildBoneClusters() const;
+		// GG: a terrain chunk's vertices per side: its vertices are a square grid, row by row along x, its first LOD the grid's
+		// quads as two triangles each (wiTerrain's ChunkIndices), so a ray walks the cells it crosses and needs no BVH. 0: not one
+		uint32_t gg_grid_width = 0;
 
 		size_t GetMemoryUsageCPU() const;
 		size_t GetMemoryUsageGPU() const;
