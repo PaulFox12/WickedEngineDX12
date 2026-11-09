@@ -14208,7 +14208,15 @@ void BindCameraCB(
 	XMStoreFloat4x4(&shadercam.previous_inverse_view_projection, camera_previous.GetInvViewProjection());
 	XMStoreFloat4x4(&shadercam.reflection_view_projection, camera_reflection.GetViewProjection());
 	XMStoreFloat4x4(&shadercam.reflection_inverse_view_projection, camera_reflection.GetInvViewProjection());
-	XMStoreFloat4x4(&shadercam.reprojection, camera.GetInvViewProjection() * camera_previous.GetViewProjection());
+	// GG: from the camera's rotations and its move, so its distance from the origin doesn't come into it: the absolute matrices lose most of a pixel 100,000 units out
+	{
+		XMMATRIX ggView = camera.GetView();
+		ggView.r[3] = XMVectorSet(0, 0, 0, 1);
+		XMMATRIX ggViewPrev = camera_previous.GetView();
+		ggViewPrev.r[3] = XMVectorSet(0, 0, 0, 1);
+		const XMVECTOR ggMove = XMVectorSubtract(XMLoadFloat3(&camera.Eye), XMLoadFloat3(&camera_previous.Eye));
+		XMStoreFloat4x4(&shadercam.reprojection, camera.GetInvProjection() * XMMatrixTranspose(ggView) * XMMatrixTranslationFromVector(ggMove) * ggViewPrev * camera_previous.GetProjection());
+	}
 
 	shadercam.focal_length = camera.focal_length;
 	shadercam.aperture_size = camera.aperture_size;

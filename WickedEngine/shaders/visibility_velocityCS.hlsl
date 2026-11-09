@@ -1,4 +1,5 @@
 #define SURFACE_LOAD_ENABLE_WIND
+#define SURFACE_LOAD_GG_MOTION
 #include "globals.hlsli"
 #include "ShaderInterop_Renderer.h"
 #include "surfaceHF.hlsli"
@@ -48,6 +49,8 @@ void main(uint2 DTid : SV_DispatchThreadID)
 
 	// GG: the sky's unless found below (a surface that wouldn't load was left unset)
 	float3 pre = ray.Origin + ray.Direction * GetCamera().z_far;
+	float3 ggMotion = 0;
+	bool ggExact = true;
 	[branch]
 	if (any(primitiveID))
 	{
@@ -62,6 +65,8 @@ void main(uint2 DTid : SV_DispatchThreadID)
 		if (surface.load(prim, ray.Origin, ray.Direction))
 		{
 			pre = surface.pre;
+			ggMotion = surface.gg_motion;
+			ggExact = surface.gg_motion_exact;
 			float4 tmp = mul(GetCamera().view_projection, float4(surface.P, 1));
 			tmp.xyz /= max(0.0001, tmp.w);
 			gg = gg && ggDepth > saturate(tmp.z);
@@ -71,16 +76,32 @@ void main(uint2 DTid : SV_DispatchThreadID)
 	if (gg)
 	{
 		// GG: placed by its depth and moved by the camera as a still surface there, then by its own motion (the sway)
-		pre = reconstruct_position(uv, ggDepth);
 #ifdef VISIBILITY_MSAA
-		pre.xz += input_customMotion.Load(pixel, 0);
+		const float2 ggSway = input_customMotion.Load(pixel, 0);
 #else
-		pre.xz += input_customMotion[pixel];
+		const float2 ggSway = input_customMotion[pixel];
 #endif // VISIBILITY_MSAA
+		pre = reconstruct_position(uv, ggDepth);
+		pre.xz += ggSway;
+		ggMotion = float3(ggSway.x, 0, ggSway.y);
+		ggExact = true;
 	}
 
 	float2 pos2D = clipspace;
-	float4 pos2DPrev = mul(GetCamera().previous_view_projection, float4(pre, 1));
+	float4 pos2DPrev;
+	[branch]
+	if (ggExact)
+	{
+		// GG: this pixel taken back by the camera's rotation and move alone (the reprojection is made from those), then by the surface's own motion. Through
+		// world positions and the absolute matrices the rounding far from the origin put up to half a pixel of noise on every pixel, the sky's too: it softened
+		// the world, and made a gun, which has the sharpest edges and is nearest, shake under the TAA
+		const float ggPixelDepth = texture_depth.SampleLevel(sampler_point_clamp, uv, 0);
+		pos2DPrev = mul(GetCamera().reprojection, float4(clipspace, ggPixelDepth, 1)) * compute_lineardepth(ggPixelDepth) + mul(GetCamera().previous_view_projection, float4(ggMotion, 0));
+	}
+	else
+	{
+		pos2DPrev = mul(GetCamera().previous_view_projection, float4(pre, 1));
+	}
 	if(pos2DPrev.w > 0)
 	{
 		pos2DPrev.xy /= pos2DPrev.w;

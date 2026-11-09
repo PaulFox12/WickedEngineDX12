@@ -352,6 +352,10 @@ struct Surface
 	float4 data1;
 	float4 data2;
 	float3 pre;
+#ifdef SURFACE_LOAD_GG_MOTION
+	float3 gg_motion;
+	bool gg_motion_exact;
+#endif // SURFACE_LOAD_GG_MOTION
 
 	bool preload_internal(PrimitiveID prim)
 	{
@@ -1078,6 +1082,18 @@ struct Surface
 			pre1 = data1.xyz;
 			pre2 = data2.xyz;
 		}
+
+#ifdef SURFACE_LOAD_GG_MOTION
+		// GG: how far this point moved since the last frame, from the mesh's own numbers with the transforms' positions taken apart: a world
+		// position 100,000 units out steps in 1/128 of a unit, most of a pixel on a first-person gun. Wind has its own world space sum, so stays out
+		gg_motion_exact = !material.IsUsingWind();
+		{
+			const float4x4 ggNow = inst.transform.GetMatrix();
+			const float4x4 ggPre = inst.transformPrev.GetMatrix();
+			gg_motion = mul((float3x3)ggPre, attribute_at_bary(pre0, pre1, pre2, bary)) - mul((float3x3)ggNow, attribute_at_bary(data0.xyz, data1.xyz, data2.xyz, bary))
+				+ float3(ggPre[0][3] - ggNow[0][3], ggPre[1][3] - ggNow[1][3], ggPre[2][3] - ggNow[2][3]);
+		}
+#endif // SURFACE_LOAD_GG_MOTION
 
 #ifdef SURFACE_LOAD_ENABLE_WIND
 		// Need interpolated wind transform:
