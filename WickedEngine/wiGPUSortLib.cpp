@@ -44,6 +44,24 @@ namespace wi::gpusortlib
 	}
 
 
+	void SortSmall(
+		const GPUBuffer& comparisonBuffer_read,
+		const GPUBuffer& counterBuffer_read,
+		uint32_t counterReadOffset,
+		const GPUBuffer& indexBuffer_write,
+		CommandList cmd)
+	{
+		GraphicsDevice* device = wi::graphics::GetDevice();
+		SortConstants sort;
+		sort.counterReadOffset = counterReadOffset;
+		device->BindComputeShader(&sortCS, cmd);
+		device->BindResource(&counterBuffer_read, 0, cmd);
+		device->BindResource(&comparisonBuffer_read, 1, cmd);
+		device->BindUAV(&indexBuffer_write, 0, cmd);
+		device->PushConstants(&sort, sizeof(sort), cmd);
+		device->Dispatch(1, 1, 1, cmd);
+	}
+
 	void Sort(
 		uint32_t maxCount, 
 		const GPUBuffer& comparisonBuffer_read, 

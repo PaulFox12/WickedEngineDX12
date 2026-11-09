@@ -7758,22 +7758,22 @@ void UpdateRenderDataAsync(
 	if (!vis.visibleEmitters.empty() || vis.scene->weather.rain_amount > 0)
 	{
 		auto range = wi::profiler::BeginRangeGPU("EmittedParticles - Simulate", cmd);
-		for (uint32_t emitterIndex : vis.visibleEmitters)
+		// GG: a stage at a time over all the emitters, so the GPU waits once per stage and not per emitter
+		for (int stage = 0; stage < wi::EmittedParticleSystem::UPDATEGPU_STAGE_COUNT; ++stage)
 		{
-			const wi::EmittedParticleSystem& emitter = vis.scene->emitters[emitterIndex];
-			Entity entity = vis.scene->emitters.GetEntity(emitterIndex);
-			// GGMAX 2.02: removed a dead `*transforms.GetComponent(entity)` dereference here.
-			// The variable was unused, and an emitter entity without a TransformComponent
-			// (possible via game-side entity assembly) made it a latent null deref in the
-			// per-frame simulate loop.
-			const MeshComponent* mesh = vis.scene->meshes.GetComponent(emitter.meshID);
-			const uint32_t instanceIndex = uint32_t(vis.scene->objects.GetCount() + vis.scene->hairs.GetCount()) + emitterIndex;
-
-			emitter.UpdateGPU(instanceIndex, mesh, cmd);
-		}
-		if (vis.scene->weather.rain_amount > 0)
-		{
-			vis.scene->rainEmitter.UpdateGPU(vis.scene->rainInstanceOffset, nullptr, cmd);
+			const wi::EmittedParticleSystem::UPDATEGPU_STAGE update_stage = (wi::EmittedParticleSystem::UPDATEGPU_STAGE)stage;
+			for (uint32_t emitterIndex : vis.visibleEmitters)
+			{
+				const wi::EmittedParticleSystem& emitter = vis.scene->emitters[emitterIndex];
+				// only the first two stages use the mesh it emits from
+				const MeshComponent* mesh = stage <= wi::EmittedParticleSystem::UPDATEGPU_EMIT ? vis.scene->meshes.GetComponent(emitter.meshID) : nullptr;
+				emitter.UpdateGPU(update_stage, mesh, cmd);
+			}
+			if (vis.scene->weather.rain_amount > 0)
+			{
+				vis.scene->rainEmitter.UpdateGPU(update_stage, nullptr, cmd);
+			}
+			wi::EmittedParticleSystem::UpdateGPU_StageEnd(update_stage, cmd);
 		}
 		wi::profiler::EndRange(range);
 	}

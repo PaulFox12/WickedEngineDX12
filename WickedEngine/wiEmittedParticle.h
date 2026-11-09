@@ -72,6 +72,7 @@ namespace wi
 		uint32_t sections_capacity = 0; // GG: the particles generalBuffer's sections were made for
 		EmittedParticleCB gg_cb = {}; // GG: this frame's constants, set by PrepareConstants before anything is recorded
 		bool gg_cb_ready = false;
+		mutable wi::graphics::GraphicsDevice::GPUAllocation gg_cb_alloc; // this frame's constants for the compute stages
 
 		mutable wi::vector<EmitLocation> emit_locations;
 
@@ -87,6 +88,22 @@ namespace wi
 
 		// Must have a transform and material component, but mesh is optional
 		void UpdateGPU(uint32_t instanceIndex, const wi::scene::MeshComponent* mesh, wi::graphics::CommandList cmd) const;
+		// GG: the same a stage at a time, over all the emitters of a frame: UpdateGPU(stage) for each, then UpdateGPU_StageEnd(stage), for
+		// each stage in order. One emitter at a time waited for the GPU between every dispatch, with barriers only its own buffers needed,
+		// four or more for each of a thousand emitters
+		enum UPDATEGPU_STAGE
+		{
+			UPDATEGPU_BEGIN,
+			UPDATEGPU_EMIT,
+			UPDATEGPU_KICKOFF,
+			UPDATEGPU_SIMULATE,
+			UPDATEGPU_SORT,
+			UPDATEGPU_FINISH,
+			UPDATEGPU_END,
+			UPDATEGPU_STAGE_COUNT,
+		};
+		void UpdateGPU(UPDATEGPU_STAGE stage, const wi::scene::MeshComponent* mesh, wi::graphics::CommandList cmd) const;
+		static void UpdateGPU_StageEnd(UPDATEGPU_STAGE stage, wi::graphics::CommandList cmd);
 		// GG: bHalfResolution into the half resolution target; ggLate into the target drawn apart for the TAA (its blend, the
 		// depth test)
 		void Draw(const wi::scene::MaterialComponent& material, wi::graphics::CommandList cmd, const PARTICLESHADERTYPE* shadertype_override = nullptr, bool bHalfResolution = false, bool ggLate = false) const;

@@ -19,5 +19,15 @@ namespace wi::gpusortlib
 		wi::graphics::CommandList cmd
 	);
 
+	// GG: the same for a dataset of at most 512, which needs one group of the first pass and no arguments worked out on the GPU. No
+	// barriers: a caller with many of these puts one after them all
+	void SortSmall(
+		const wi::graphics::GPUBuffer& comparisonBuffer_read,
+		const wi::graphics::GPUBuffer& counterBuffer_read,
+		uint32_t counterReadOffset,
+		const wi::graphics::GPUBuffer& indexBuffer_write,
+		wi::graphics::CommandList cmd
+	);
+
 	void Initialize();
 };
