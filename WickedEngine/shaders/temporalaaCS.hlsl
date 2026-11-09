@@ -21,6 +21,30 @@ inline uint coord_to_cache(int2 coord)
 	return flatten2D(clamp(coord, 0, TILE_SIZE - 1), TILE_SIZE);
 }
 
+// GG: the history by a Catmull-Rom filter (five taps): a bilinear sample softens it a little every frame it moves
+inline half3 gg_sample_history(float2 uv)
+{
+	const float2 resolution = 1.0 / postprocess.resolution_rcp;
+	const float2 position = uv * resolution;
+	const float2 center = floor(position - 0.5) + 0.5;
+	const float2 f = position - center;
+	const float2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+	const float2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+	const float2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+	const float2 w3 = f * f * (-0.5 + 0.5 * f);
+	const float2 w12 = w1 + w2;
+	const float2 uv0 = (center - 1.0) * postprocess.resolution_rcp;
+	const float2 uv12 = (center + w2 / w12) * postprocess.resolution_rcp;
+	const float2 uv3 = (center + 2.0) * postprocess.resolution_rcp;
+	float3 sum = input_history.SampleLevel(sampler_linear_clamp, float2(uv12.x, uv0.y), 0).rgb * w12.x * w0.y;
+	sum += input_history.SampleLevel(sampler_linear_clamp, float2(uv0.x, uv12.y), 0).rgb * w0.x * w12.y;
+	sum += input_history.SampleLevel(sampler_linear_clamp, float2(uv12.x, uv12.y), 0).rgb * w12.x * w12.y;
+	sum += input_history.SampleLevel(sampler_linear_clamp, float2(uv3.x, uv12.y), 0).rgb * w3.x * w12.y;
+	sum += input_history.SampleLevel(sampler_linear_clamp, float2(uv12.x, uv3.y), 0).rgb * w12.x * w3.y;
+	const float weight = w12.x * w0.y + w0.x * w12.y + w12.x * w12.y + w3.x * w12.y + w12.x * w3.y;
+	return (half3)max(sum / max(weight, 0.0001), 0);
+}
+
 [numthreads(THREADCOUNT, THREADCOUNT, 1)]
 void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 {
@@ -81,7 +105,9 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 	// Disocclusion fallback:
 	float depth_current = texture_lineardepth[DTid.xy] * GetCamera().z_far;
 	float depth_history = compute_lineardepth(texture_depth_history.SampleLevel(sampler_point_clamp, prevUV, 0));
-	if (length(velocity) > 0.01 && abs(depth_current - depth_history) > 1)
+	// GG: 60 units, not 1: a metre in Wicked's scale but an inch in GameGuru's, so a camera moving forward had every near pixel
+	// taken as uncovered and drawn raw, the ground sharp and speckled up to a line a few metres out, which moved with the camera
+	if (length(velocity) > 0.01 && abs(depth_current - depth_history) > 60)
 	{
 		output[DTid.xy] = current;
 		//output[DTid.xy] = float3(1, 0, 0);
@@ -90,16 +116,16 @@ void main(uint3 DTid : SV_DispatchThreadID, uint3 GTid : SV_GroupThreadID, uint3
 #endif
 
 	// we cannot avoid the linear filter here because point sampling could sample irrelevant pixels but we try to correct it later:
-	half3 history = input_history.SampleLevel(sampler_linear_clamp, prevUV, 0).rgb;
+	half3 history = gg_sample_history(prevUV);
 
 	// simple correction of image signal incoherency (eg. moving shadows or lighting changes):
 	history.rgb = clamp(history.rgb, neighborhoodMin, neighborhoodMax);
 
-	// the linear filtering can cause blurry image, try to account for that:
-	half subpixelCorrection = frac(max(abs(velocity.x) * GetCamera().internal_resolution.x, abs(velocity.y) * GetCamera().internal_resolution.y)) * 0.5;
-
-	// compute a nice blend factor:
-	half blendfactor = saturate(lerp(0.05, 0.8, subpixelCorrection));
+	// GG: the new frame's share grows with the motion up to one pixel and then holds. It came from the fraction of the pixels moved,
+	// so on moving ground it fell back at every whole pixel a frame, a band across the ground at each (and the history is no longer
+	// softened by moving, which the larger share was there to hide)
+	const float motion = max(abs(velocity.x) * GetCamera().internal_resolution.x, abs(velocity.y) * GetCamera().internal_resolution.y);
+	half blendfactor = saturate(lerp(0.05, 0.15, saturate(motion)));
 
 	// if information can not be found on the screen, revert to aliased image:
 	blendfactor = is_saturated(prevUV) ? blendfactor : 1.0;
