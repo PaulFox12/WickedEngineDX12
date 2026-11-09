@@ -7,6 +7,7 @@
 #include "ggEmitterRS.hlsli"
 #include "ShaderInterop_EmittedParticle.h"
 #include "emittedparticleHF.hlsli"
+#include "fogHF.hlsli"
 #ifdef EMITTEDPARTICLE_LIGHTING
 #include "shadingHF.hlsli"
 
@@ -134,5 +135,15 @@ VertextoPixel main(uint vid : SV_VertexID, uint instanceID : SV_InstanceID)
 		Out.litCentre = ParticleLight(particle.position, ParticleNormal(float2(0.5, 0.5)));
 	}
 #endif // EMITTEDPARTICLE_LIGHTING
+	// GG: the scene's fog here for the pixel shader, none for a layer that skips it (option bit 4)
+	Out.fog = 0;
+	[branch]
+	if ((xParticleLocalOptions & 4) == 0)
+	{
+		float3 fogV = GetCamera().position - position;
+		const float fogDist = length(fogV);
+		fogV /= max(fogDist, 0.0001);
+		Out.fog = GetFog(fogDist, GetCamera().position, -fogV);
+	}
 	return Out;
 }

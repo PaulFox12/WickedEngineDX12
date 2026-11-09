@@ -199,10 +199,7 @@ float4 main(VertextoPixel input) : SV_TARGET
 	[branch]
 	if ((xParticleLocalOptions & 4) == 0)
 	{
-		float3 fogV = input.GetViewVector();
-		const float fogDist = length(fogV);
-		fogV /= max(fogDist, 0.0001);
-		const half4 fog = GetFog(fogDist, GetCamera().position, -fogV);
+		const half4 fog = input.fog; // the vertex shader's: fog hardly changes across a sprite, and per pixel it was a quarter of the half resolution pass
 #ifdef EMITTEDPARTICLE_DISTORTION
 		color.rgb *= 1 - fog.a;
 #else

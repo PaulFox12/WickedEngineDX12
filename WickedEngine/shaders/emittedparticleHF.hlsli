@@ -21,6 +21,7 @@ struct VertextoPixel
 	float3 litCorner : LITCORNER;
 	nointerpolation float3 litCentre : LITCENTRE;
 #endif // EMITTEDPARTICLE_LIGHTING
+	half4 fog : PARTICLEFOG; // GG: the scene's fog at this corner
 	
 	inline float3 GetPos3D()
 	{
