@@ -30,6 +30,21 @@ float4 main(VertextoPixel input) : SV_TARGET
 	if (xParticleLocalOptions & 32) ScreenCoord *= 2;
 	min16uint2 pixel = input.pos.xy; // no longer pixel center!
 	
+	// GG: the half resolution pass has no depth test, so a sprite's pixels behind the scene and its empty texels paid for all of this
+	// shader and came out as nothing. The fade and the texture's alpha are read first, and such a pixel goes no further. Not on a
+	// premultiplied layer, whose colour adds whatever its alpha
+	const bool ggCanSkip = (xParticleLocalOptions & 32) && !(xParticleLocalOptions & 16);
+	float ggDepthFade = 1;
+	[branch]
+	if (GetCamera().texture_lineardepth_index >= 0)
+	{
+		float4 depthScene = texture_lineardepth.GatherRed(sampler_linear_clamp, ScreenCoord) * GetCamera().z_far;
+		float depthFragment = input.pos.w;
+		ggDepthFade = saturate(1.0 / input.size * (max(max(depthScene.x, depthScene.y), max(depthScene.z, depthScene.w)) - depthFragment));
+	}
+	if (ggCanSkip && ggDepthFade <= 0)
+		return 0;
+
 	write_mipmap_feedback(EmitterGetGeometry().materialIndex, ddx_coarse(input.tex.xyxy), ddy_coarse(input.tex.xyxy));
 	
 	ShaderMaterial material = EmitterGetMaterial();
@@ -64,6 +79,8 @@ float4 main(VertextoPixel input) : SV_TARGET
 	inputColor.a = ((input.color >> 24) & 0xFF) / 255.0f;
 
 	half opacity = color.a * inputColor.a;
+	if (ggCanSkip && opacity * ggDepthFade < 0.002)
+		return 0;
 
 	half3 normal = 0;
 #ifndef EMITTEDPARTICLE_DISTORTION // the "distortion" shader is just using normal map as the color map and uses it for signed blending, this normal logic won't be used for that
@@ -85,13 +102,7 @@ float4 main(VertextoPixel input) : SV_TARGET
 	}
 #endif // EMITTEDPARTICLE_DISTORTION
 	
-	[branch]
-	if (GetCamera().texture_lineardepth_index >= 0)
-	{
-		float4 depthScene = texture_lineardepth.GatherRed(sampler_linear_clamp, ScreenCoord) * GetCamera().z_far;
-		float depthFragment = input.pos.w;
-		opacity *= saturate(1.0 / input.size * (max(max(depthScene.x, depthScene.y), max(depthScene.z, depthScene.w)) - depthFragment));
-	}
+	opacity *= ggDepthFade;
 
 	opacity = saturate(opacity);
 
