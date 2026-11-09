@@ -2512,6 +2512,7 @@ using namespace dx12_internal;
 // GGMAX 2026-08-08: descriptor-ring forensics counters (gpup white-out hunt) — defined early
 // because the binder flush and submit paths below bump them; reported by GG_DumpBinderStats.
 std::atomic<uint64_t> gg_desc_ring_waits{ 0 };
+std::atomic<uint64_t> gg_desc_ring_overruns{ 0 };
 std::atomic<uint64_t> gg_desc_frames_signaled{ 0 };
 
 #ifdef PLATFORM_XBOX
@@ -2808,21 +2809,19 @@ std::mutex queue_locker;
 					const uint64_t offset = heap.allocationOffset.fetch_add(stats.descriptorCopyCount);
 					const uint64_t wrapped_offset = offset % wrap_effective_size;
 					const uint32_t ringoffset = (bindless_capacity + (uint32_t)wrapped_offset) * descriptorSize;
-					const uint64_t wrapped_offset_end = wrapped_offset + stats.descriptorCopyCount;
 
-					// Check that gpu offset doesn't intersect with our newly allocated range, if it does, we need to wait until gpu finishes with it:
-					//	First check is with the cached completed value to avoid API call into fence object
-					uint64_t wrapped_gpu_offset = heap.cached_completedValue % wrap_effective_size;
-					if ((wrapped_offset < wrapped_gpu_offset) && (wrapped_gpu_offset < wrapped_offset_end))
+					// GG: wait while this range would reach past where the GPU has got to. Testing only for a range lying across the GPU's
+					// position let one thread wait while the others recording beside it carried on past, over descriptors the frame before
+					// was still using: with a thousand emitters (a frame using 93% of the ring) that frame's passes read empty descriptors,
+					// and it drew black or lost the passes recorded first
+					const uint64_t offset_end = offset + stats.descriptorCopyCount;
+					if (offset_end > heap.cached_completedValue + wrap_effective_size &&
+						offset_end > heap.fence->GetCompletedValue() + wrap_effective_size)
 					{
-						// Second check is with current fence value with API call:
-						wrapped_gpu_offset = heap.fence->GetCompletedValue() % wrap_effective_size;
-						if ((wrapped_offset < wrapped_gpu_offset) && (wrapped_gpu_offset < wrapped_offset_end))
-						{
-							// Third step is actual wait until GPU updates fence so that requested descriptors are free:
-							gg_desc_ring_waits.fetch_add(1, std::memory_order_relaxed); // GGMAX ring forensics
-							dx12_check(heap.fence->SetEventOnCompletion(heap.fenceValue, nullptr));
-						}
+						gg_desc_ring_waits.fetch_add(1, std::memory_order_relaxed); // GGMAX ring forensics
+						dx12_check(heap.fence->SetEventOnCompletion(heap.fenceValue, nullptr));
+						if (offset_end > heap.fenceValue + wrap_effective_size) // one frame using more than the whole ring overwrites itself
+							gg_desc_ring_overruns.fetch_add(1, std::memory_order_relaxed);
 					}
 
 					gpu_handle.ptr += (size_t)ringoffset;
@@ -8947,12 +8946,13 @@ std::mutex queue_locker;
 			pend_sam = allocationhandler->destroyer_bindless_sam.size();
 		}
 		snprintf(buf, (size_t)bufsize,
-			"descriptor-rings: res off=%llu done=%llu gap=%lld ring=%llu laps=%llu | sam off=%llu done=%llu gap=%lld ring=%llu laps=%llu | waits=%llu frames=%llu | bindless res used=%lld/%d pend=%llu sam used=%lld/%d pend=%llu",
+			"descriptor-rings: res off=%llu done=%llu gap=%lld ring=%llu laps=%llu | sam off=%llu done=%llu gap=%lld ring=%llu laps=%llu | waits=%llu overruns=%llu frames=%llu | bindless res used=%lld/%d pend=%llu sam used=%lld/%d pend=%llu",
 			(unsigned long long)res_off, (unsigned long long)res_done, (long long)(res_off - res_done),
 			(unsigned long long)res_ring, (unsigned long long)(res_ring ? res_off / res_ring : 0),
 			(unsigned long long)sam_off, (unsigned long long)sam_done, (long long)(sam_off - sam_done),
 			(unsigned long long)sam_ring, (unsigned long long)(sam_ring ? sam_off / sam_ring : 0),
 			(unsigned long long)gg_desc_ring_waits.load(std::memory_order_relaxed),
+			(unsigned long long)gg_desc_ring_overruns.load(std::memory_order_relaxed),
 			(unsigned long long)gg_desc_frames_signaled.load(std::memory_order_relaxed),
 			(long long)((long long)BINDLESS_RESOURCE_CAPACITY - (long long)free_res), BINDLESS_RESOURCE_CAPACITY, (unsigned long long)pend_res,
 			(long long)((long long)BINDLESS_SAMPLER_CAPACITY - (long long)free_sam), BINDLESS_SAMPLER_CAPACITY, (unsigned long long)pend_sam);
