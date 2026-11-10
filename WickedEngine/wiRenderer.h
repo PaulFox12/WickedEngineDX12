@@ -56,6 +56,11 @@ namespace wi::renderer
 	// GGMAX: objects whose bounding radius is under this share of their distance from the camera are not drawn in the planar
 	// reflection (0 draws them all; SET_REFLDRAW's fourth value)
 	extern float gg_reflection_min_size;
+	// GGMAX: the SSGI's sampling octaves left out (bit 0 the finest, 2x, to bit 3 the widest, 16x); 0 all drawn
+	extern int gg_ssgi_skip;
+	extern int gg_dred_trace_draws;
+	extern std::string gg_dred_refl_draws;
+	extern std::mutex gg_dred_refl_draws_lock;
 	// GGMAX: the planar reflection's samples per pixel, 1 (the default: drawn straight into the resolved target, as DX11's
 	// reflection is single-sampled) or 4 (stock, resolved after the pass); read where the targets are made
 	// (setReflectionsEnabled)

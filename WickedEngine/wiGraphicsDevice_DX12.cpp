@@ -32,6 +32,9 @@ DEFINE_GUID(D3D12_VIDEO_DECODE_PROFILE_H264, 0x1b81be68, 0xa0c7, 0x11d3, 0xb9, 0
 #include <fstream> // GGMAX 1.51: dred_report.txt post-mortem
 #include <ctime>   // GGMAX 1.51: report timestamp
 #include <psapi.h> // GGMAX 3.141: GetProcessMemoryInfo for the device-removal report
+#include <mutex>
+// GGMAX: the planar reflection's opaque draws traced for dred_report.txt (wiRenderer.cpp)
+namespace wi::renderer { extern int gg_dred_trace_draws; extern std::string gg_dred_refl_draws; extern std::mutex gg_dred_refl_draws_lock; }
 #include <algorithm>
 #include "wiJobSystem.h" // GG: the pipeline cache's warm-up
 #include <unordered_map>
@@ -3300,6 +3303,7 @@ std::mutex queue_locker;
 					pDredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 					pDredSettings->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 					gg_dred_armed = true;
+					wi::renderer::gg_dred_trace_draws = 1;
 					wi::backlog::post("GGMAX 1.51: DRED armed (dred.txt found) — device-removal post-mortem will append to dred_report.txt");
 				}
 				else
@@ -6712,6 +6716,8 @@ std::mutex queue_locker;
 
 		// Start the command list in a default state:
 		dx12_check(commandlist.GetCommandAllocator()->Reset());
+		commandlist.gg_dred_name.clear();
+		commandlist.gg_event_depth = 0;
 
 		if (queue == QUEUE_VIDEO_DECODE)
 		{
@@ -7705,6 +7711,13 @@ std::mutex queue_locker;
 		{
 			if (SUCCEEDED(gg_hr_breadcrumbs))
 			{
+				{
+					// GGMAX: the planar reflection's opaque draws as last recorded (wiRenderer), in the order issued: its list's
+					// draw ops count the same draws, so a hang inside it names the object
+					std::scoped_lock lock(wi::renderer::gg_dred_refl_draws_lock);
+					log += "[GG] Planar reflection opaque draws, last recorded frame:\n";
+					log += wi::renderer::gg_dred_refl_draws;
+				}
 				log += "[DRED] Last tracked GPU operations:\n";
 				if (pDredAutoBreadcrumbsOutput.pHeadAutoBreadcrumbNode == nullptr)
 				{
@@ -9934,7 +9947,18 @@ std::mutex queue_locker;
 			if (wi::helper::StringConvert(name, wtext, arraysize(wtext)) > 0)
 			{
 				commandlist.GetGraphicsCommandList()->BeginEvent(0 /*PIX_EVENT_UNICODE_VERSION*/, wtext, (UINT)((wcslen(wtext) + 1) * sizeof(wchar_t)));
+				// GGMAX: the breadcrumb contexts come back empty on this driver, so the list's debug name carries its outermost
+				// passes in order ("cmd11: Shadowmap Rendering | Z-Prepass | ..."), which the report prints for a hung list
+				if (commandlist.gg_event_depth == 0 && commandlist.gg_dred_name.size() < 400)
+				{
+					if (commandlist.gg_dred_name.empty())
+						commandlist.gg_dred_name = L"cmd" + std::to_wstring(commandlist.id) + L":";
+					commandlist.gg_dred_name += L" ";
+					commandlist.gg_dred_name += wtext;
+					commandlist.GetCommandList()->SetName(commandlist.gg_dred_name.c_str());
+				}
 			}
+			commandlist.gg_event_depth++;
 			return;
 		}
 		wchar_t text[128];
@@ -9951,6 +9975,7 @@ std::mutex queue_locker;
 		if (gg_dred_armed)
 		{
 			commandlist.GetGraphicsCommandList()->EndEvent();
+			if (commandlist.gg_event_depth > 0) commandlist.gg_event_depth--;
 			return;
 		}
 		PIXEndEvent(commandlist.GetGraphicsCommandList());

@@ -552,6 +552,12 @@ int gg_reflection_width = 0;
 int gg_reflection_grass = 1;
 int gg_reflection_trees = 1;
 float gg_reflection_tree_reach = 0.0f; // the reflection's tree billboards only within this of the player (0 all)
+// GGMAX: with DRED armed (dred.txt), the planar reflection's opaque draws of the last recorded frame, one line a draw in
+// the order issued, for dred_report.txt (a hang there names the object); gg_dred_trace_draws is set by the DX12 device
+int gg_dred_trace_draws = 0;
+std::string gg_dred_refl_draws;
+std::mutex gg_dred_refl_draws_lock;
+int gg_ssgi_skip = 0; // GGMAX: SSGI sampling octaves left out, bit 0 the finest (2x) to bit 3 the widest (16x); SET_SSGISKIP
 float gg_reflection_min_size = 0.0025f; // objects whose radius is under this share of their distance are left out of the reflection (0 none)
 int gg_reflection_samples = 1; // GGMAX: 1 as DX11's reflection (0.42 ms of 14.9 saved at start_east, no visible change; 2026-11-04)
 // GGMAX: environment probe captures on (1) or held (0); a lever for the harness, to tell whether a frame drawn from
@@ -4186,6 +4192,25 @@ void RenderMeshes(
 
 	RenderPassInfo renderpass_info = device->GetRenderPassInfo(cmd);
 
+	// GGMAX: the reflection's opaque draws traced for a DRED report (see gg_dred_refl_draws)
+	const bool gg_trace = gg_dred_trace_draws != 0 && renderPass == RENDERPASS_MAIN && (flags & DRAWSCENE_SKIP_PLANAR_REFLECTION_OBJECTS)
+		&& (filterMask & FILTER_OPAQUE) && !(filterMask & FILTER_TRANSPARENT);
+	std::string gg_trace_text;
+	int gg_trace_count = 0;
+	auto gg_trace_draw = [&](const MeshComponent& m, uint32_t meshIndex, uint32_t subsetIndex, const MeshComponent::MeshSubset& sub,
+		uint32_t instances, uint32_t lod, bool backside) {
+		if (!gg_trace || gg_trace_text.size() > 60000)
+			return;
+		const NameComponent* mn = vis.scene->names.GetComponent(vis.scene->meshes.GetEntity(meshIndex));
+		const NameComponent* matn = vis.scene->names.GetComponent(sub.materialID);
+		char line[512];
+		_snprintf_s(line, sizeof(line), _TRUNCATE, "  draw %d: mesh %u %s subset %u indices %u (first %u) instances %u lod %u of %u%s%s material %s\n",
+			gg_trace_count, meshIndex, mn ? mn->name.c_str() : "?", subsetIndex, sub.indexCount, sub.indexOffset, instances, lod, m.GetLODCount(),
+			backside ? " backside" : "", m.GetTessellationFactor() > 0 ? " tessellated" : "", matn ? matn->name.c_str() : "?");
+		gg_trace_text += line;
+		gg_trace_count++;
+	};
+
 	// GGMAX 3.121: Super Quick Objects is a per-LEVEL performance setting. A list drawing with its own frame
 	// constants (GG_SetFrameCBOverride - the Object Library live preview) is a product shot of ONE item and
 	// renders every material in full, whatever the level behind it has ticked.
@@ -4697,6 +4722,7 @@ void RenderMeshes(
 				}
 				else
 				{
+					gg_trace_draw(mesh, instancedBatch.meshIndex, subsetIndex, subset, instancedBatch.instanceCount, instancedBatch.lod, true);
 					device->DrawIndexedInstanced(subset.indexCount, instancedBatch.instanceCount, indexOffset, 0, 0, cmd);
 				}
 			}
@@ -4709,6 +4735,7 @@ void RenderMeshes(
 			}
 			else
 			{
+				gg_trace_draw(mesh, instancedBatch.meshIndex, subsetIndex, subset, instancedBatch.instanceCount, instancedBatch.lod, false);
 				device->DrawIndexedInstanced(subset.indexCount, instancedBatch.instanceCount, indexOffset, 0, 0, cmd);
 			}
 
@@ -4783,6 +4810,12 @@ void RenderMeshes(
 	}
 
 	batch_flush();
+
+	if (gg_trace)
+	{
+		std::scoped_lock lock(gg_dred_refl_draws_lock);
+		gg_dred_refl_draws = gg_trace_text;
+	}
 
 	device->EventEnd(cmd);
 }
@@ -17269,6 +17302,7 @@ void Postprocess_SSGI(
 
 	{
 		device->EventBegin("SSGI - deinterleave", cmd);
+		auto gg_range = wi::profiler::BeginRangeGPU("  SSGI Deinterleave", cmd);
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI_DEINTERLEAVE], cmd);
 
 		// GG: the brightness a pixel must pass to give light, and whether the sky gives none
@@ -17307,6 +17341,7 @@ void Postprocess_SSGI(
 			cmd
 		);
 
+		wi::profiler::EndRange(gg_range);
 		device->EventEnd(cmd);
 	}
 
@@ -17333,8 +17368,10 @@ void Postprocess_SSGI(
 		// Wide sampling passes:
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI_WIDE], cmd);
 
-		// 16x:
+		// 16x: (GGMAX: gg_ssgi_skip bit 8 leaves it out; the upsample adds the octaves, so that octave's light is lost)
+		if ((gg_ssgi_skip & 8) == 0)
 		{
+			auto gg_range = wi::profiler::BeginRangeGPU("  SSGI 16x", cmd);
 			device->BindResource(&res.texture_atlas_depth, 0, cmd, 3);
 			device->BindResource(&res.texture_atlas_color, 1, cmd, 3);
 			device->BindResource(&res.texture_normal_mips, 2, cmd, 3);
@@ -17357,9 +17394,12 @@ void Postprocess_SSGI(
 				16,
 				cmd
 			);
+			wi::profiler::EndRange(gg_range);
 		}
-		// 8x:
+		// 8x: (GGMAX: gg_ssgi_skip bit 4 leaves it out; the upsample adds the octaves, so that octave's light is lost)
+		if ((gg_ssgi_skip & 4) == 0)
 		{
+			auto gg_range = wi::profiler::BeginRangeGPU("  SSGI 8x", cmd);
 			device->BindResource(&res.texture_atlas_depth, 0, cmd, 2);
 			device->BindResource(&res.texture_atlas_color, 1, cmd, 2);
 			device->BindResource(&res.texture_normal_mips, 2, cmd, 2);
@@ -17382,13 +17422,16 @@ void Postprocess_SSGI(
 				16,
 				cmd
 			);
+			wi::profiler::EndRange(gg_range);
 		}
 
 		// Narrow sampling passes:
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI], cmd);
 
-		// 4x:
+		// 4x: (GGMAX: gg_ssgi_skip bit 2 leaves it out; the upsample adds the octaves, so that octave's light is lost)
+		if ((gg_ssgi_skip & 2) == 0)
 		{
+			auto gg_range = wi::profiler::BeginRangeGPU("  SSGI 4x", cmd);
 			device->BindResource(&res.texture_atlas_depth, 0, cmd, 1);
 			device->BindResource(&res.texture_atlas_color, 1, cmd, 1);
 			device->BindResource(&res.texture_normal_mips, 2, cmd, 1);
@@ -17411,10 +17454,13 @@ void Postprocess_SSGI(
 				16,
 				cmd
 			);
+			wi::profiler::EndRange(gg_range);
 		}
 
-		// 2x:
+		// 2x: (GGMAX: gg_ssgi_skip bit 1 leaves it out; the upsample adds the octaves, so that octave's light is lost)
+		if ((gg_ssgi_skip & 1) == 0)
 		{
+			auto gg_range = wi::profiler::BeginRangeGPU("  SSGI 2x", cmd);
 			device->BindResource(&res.texture_atlas_depth, 0, cmd, 0);
 			device->BindResource(&res.texture_atlas_color, 1, cmd, 0);
 			device->BindResource(&res.texture_normal_mips, 2, cmd, 0);
@@ -17437,6 +17483,7 @@ void Postprocess_SSGI(
 				16,
 				cmd
 			);
+			wi::profiler::EndRange(gg_range);
 		}
 
 		device->EventEnd(cmd);
@@ -17451,6 +17498,7 @@ void Postprocess_SSGI(
 
 	{
 		device->EventBegin("SSGI - upsample", cmd);
+		auto gg_range = wi::profiler::BeginRangeGPU("  SSGI Upsample", cmd);
 
 		// GG: the bilateral depth weight's falloff (0.1 a metre) in the world's units
 		postprocess.params0.z = 0.1f / unitsPerMetre;
@@ -17608,6 +17656,7 @@ void Postprocess_SSGI(
 			}
 		}
 
+		wi::profiler::EndRange(gg_range);
 		device->EventEnd(cmd);
 	}
 

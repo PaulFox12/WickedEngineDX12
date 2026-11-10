@@ -190,6 +190,10 @@ namespace wi::graphics
 
 			QUEUE_TYPE queue = {};
 			uint32_t id = 0;
+			// GGMAX: with DRED armed, the outermost passes recorded this time, in the list's debug name (the report names a hung list
+			// by them); the event depth
+			std::wstring gg_dred_name;
+			int gg_event_depth = 0;
 			wi::vector<Semaphore> waits;
 			wi::vector<Semaphore> signals;
 
