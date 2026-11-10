@@ -547,6 +547,12 @@ int gg_shadow_res_steps = 4;
 // GGMAX 3.89: Water Reflection Size. 0 = stock internal-resolution/4 for the planar
 // reflection target. See wiRenderer.h and the only consumer, setReflectionsEnabled.
 int gg_reflection_width = 0;
+// GGMAX: what the planar water reflection draws besides the opaque scene and the sky: the hair-particle grass, and GameGuru's
+// trees (its customDraw_Opaque reflection mode reads gg_reflection_trees); 1 as before (harness SET_REFLDRAW)
+int gg_reflection_grass = 1;
+int gg_reflection_trees = 1;
+float gg_reflection_tree_reach = 0.0f; // the reflection's tree billboards only within this of the player (0 all)
+float gg_reflection_min_size = 0.0025f; // objects whose radius is under this share of their distance are left out of the reflection (0 none)
 int gg_reflection_samples = 1; // GGMAX: 1 as DX11's reflection (0.42 ms of 14.9 saved at start_east, no visible change; 2026-11-04)
 // GGMAX: environment probe captures on (1) or held (0); a lever for the harness, to tell whether a frame drawn from
 // another direction comes from a probe capture
@@ -574,6 +580,8 @@ int gg_dbg_main_opaque_batches = 0;
 int gg_dbg_main_transparent_batches = 0;
 int gg_dbg_refl_opaque_batches = 0;
 int gg_dbg_refl_transparent_batches = 0;
+int gg_dbg_refl_transparent_capture = 0;
+wi::vector<std::pair<uint32_t, float>> gg_dbg_refl_transparent_list;
 static bool localShadowInvalidate = true;           // settings/level change -> next decision forces a full clear
 static uint64_t localShadowDecisionFrame = ~0ull;   // frame the Phase 2 decision was produced
 // GGMAX 2.07c: dir + cone are part of the key — the spot shadow's content depends on the
@@ -10085,8 +10093,16 @@ void DrawScene(
 				if (ggQ) gg_dbg_watch_q[renderPass][GG_Q_FADE].fetch_add(1, std::memory_order_relaxed);
 				continue;
 			}
+			// GGMAX: the planar reflection is drawn at a quarter of the screen's pixels; an object too small to see there is
+			// left out (662 streetlights, 2.1 million triangles, 1.5 ms at the shore, were drawn a few pixels high)
+			if (skip_planar_reflection_objects && gg_reflection_min_size > 0 && object.radius < distance * gg_reflection_min_size)
+			{
+				continue;
+			}
 
 			if (ggQ) gg_dbg_watch_q[renderPass][GG_Q_ADDED].fetch_add(1, std::memory_order_relaxed);
+			if (gg_dbg_refl_transparent_capture && transparent && skip_planar_reflection_objects && renderPass == RENDERPASS_MAIN && !foreground)
+				gg_dbg_refl_transparent_list.push_back(std::make_pair(instanceIndex, distance));
 			if (reflection_lowest_lod)
 			{
 				const MeshComponent& mesh = vis.scene->meshes[object.mesh_index];
@@ -10097,6 +10113,8 @@ void DrawScene(
 				renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits);
 			}
 		}
+		if (gg_dbg_refl_transparent_capture && transparent && skip_planar_reflection_objects && renderPass == RENDERPASS_MAIN && !foreground)
+			gg_dbg_refl_transparent_capture = 0;
 		if (renderPass == RENDERPASS_MAIN && !foreground)
 		{
 			// GG: the queue sizes for DUMP_LODSTATS; the reflection passes are the ones that skip the reflection objects,

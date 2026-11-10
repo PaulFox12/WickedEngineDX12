@@ -50,6 +50,12 @@ namespace wi::renderer
 	// RenderPath3D::setReflectionsEnabled, so every path that re-creates the reflection
 	// targets picks it up for free - including ResizeBuffers and the game's own callers.
 	extern int gg_reflection_width;
+	extern int gg_reflection_grass;
+	extern int gg_reflection_trees;
+	extern float gg_reflection_tree_reach;
+	// GGMAX: objects whose bounding radius is under this share of their distance from the camera are not drawn in the planar
+	// reflection (0 draws them all; SET_REFLDRAW's fourth value)
+	extern float gg_reflection_min_size;
 	// GGMAX: the planar reflection's samples per pixel, 1 (the default: drawn straight into the resolved target, as DX11's
 	// reflection is single-sampled) or 4 (stock, resolved after the pass); read where the targets are made
 	// (setReflectionsEnabled)
@@ -87,6 +93,10 @@ namespace wi::renderer
 	extern int gg_dbg_main_transparent_batches;
 	extern int gg_dbg_refl_opaque_batches;
 	extern int gg_dbg_refl_transparent_batches;
+	// GG: set to 1 and the next planar reflection transparent pass lists its objects (instance index, distance), then clears it
+	// (DUMP_REFLTRANSP)
+	extern int gg_dbg_refl_transparent_capture;
+	extern wi::vector<std::pair<uint32_t, float>> gg_dbg_refl_transparent_list;
 	constexpr wi::graphics::Format format_depthbuffer_main = wi::graphics::Format::D32_FLOAT_S8X24_UINT;
 	constexpr wi::graphics::Format format_rendertarget_main = wi::graphics::Format::R11G11B10_FLOAT;
 	constexpr wi::graphics::Format format_idbuffer = wi::graphics::Format::R32_UINT;

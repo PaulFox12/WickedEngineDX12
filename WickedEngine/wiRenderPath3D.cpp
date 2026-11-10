@@ -1668,7 +1668,7 @@ namespace wi
 					cmd,
 					wi::renderer::DRAWSCENE_OPAQUE |
 					wi::renderer::DRAWSCENE_IMPOSTOR |
-					wi::renderer::DRAWSCENE_HAIRPARTICLE |
+					(wi::renderer::gg_reflection_grass ? wi::renderer::DRAWSCENE_HAIRPARTICLE : 0u) | // GGMAX: SET_REFLDRAW
 					wi::renderer::DRAWSCENE_SKIP_PLANAR_REFLECTION_OBJECTS
 				);
 
@@ -1786,7 +1786,7 @@ namespace wi
 					cmd,
 					wi::renderer::DRAWSCENE_OPAQUE |
 					wi::renderer::DRAWSCENE_IMPOSTOR |
-					wi::renderer::DRAWSCENE_HAIRPARTICLE |
+					(wi::renderer::gg_reflection_grass ? wi::renderer::DRAWSCENE_HAIRPARTICLE : 0u) | // GGMAX: SET_REFLDRAW
 					wi::renderer::DRAWSCENE_SKIP_PLANAR_REFLECTION_OBJECTS
 				);
 				wi::profiler::EndRange(gg_range);
