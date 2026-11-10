@@ -476,8 +476,12 @@ namespace wi::terrain
 	std::atomic<unsigned long long> gg_dbg_vtpop_alloc_fail{ 0 };
 	// GG: the most terrain texture tiles baked a frame (harness SET_VTBUDGET; 0 none, as stock), and the requests left over
 	// for the next frames' feedback because of it. 16 (2026-11-04): driving run 884's road at 20 m/s, frames over 25 ms 804
-	// uncapped, 4 at 16 (the drive granted 12.6 a frame on average, so detail is rarely held back), 5 at 8, 3 at 4
-	uint32_t gg_vt_bake_budget = 16;
+	// uncapped, 4 at 16 (the drive granted 12.6 a frame on average, so detail is rarely held back), 5 at 8, 3 at 4.
+	// 24 (2026-11-10): at speed 16 held back about 100 requests a frame, coarsest first, so the near ground's finest tiles
+	// waited, each drawn whole from its coarser mip: seams across the road where the grain changed (largest step 0.37-0.44
+	// at 16, 0.24 at 24, as with the camera still); the drive at 24 mean 18.4-20.0 ms against 18.9-19.0, frames over 25 ms
+	// 50-134 against 4-6, none over 33. Cheaper tile bakes are the way to take the cost back
+	uint32_t gg_vt_bake_budget = 24;
 	std::atomic<unsigned long long> gg_dbg_vtpop_budget_left{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_coarse_sum{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_coarse_max{ 0 };
