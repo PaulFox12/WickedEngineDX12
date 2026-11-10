@@ -30,6 +30,9 @@
 #include "shaders/ShaderInterop_DDGI.h"
 #include "shaders/ShaderInterop_VXGI.h"
 #include "shaders/ShaderInterop_FSR2.h"
+#include "wiGraphicsDevice_DX12.h" // GGMAX: AMD's FidelityFX upscaler records into the DX12 command list
+#include "gg_ffx/api/include/dx12/ffx_api_dx12.h"
+#include "gg_ffx/upscalers/include/ffx_upscale.h"
 #include "shaders/uvsphere.hlsli"
 #include "shaders/cone.hlsli"
 
@@ -20737,8 +20740,11 @@ static float halton(int32_t index, int32_t base)
 	return result;
 }
 }
+void GG_FSR_SdkDestroyContext(); // GGMAX: below, with AMD's upscaler
 void CreateFSR2Resources(FSR2Resources& res, XMUINT2 render_resolution, XMUINT2 presentation_resolution)
 {
+	// GGMAX: AMD's upscaler context is made again at the new size by the next FSR frame
+	GG_FSR_SdkDestroyContext();
 	using namespace fsr2;
 	res.fsr2_constants = {};
 
@@ -20896,6 +20902,248 @@ void CreateFSR2Resources(FSR2Resources& res, XMUINT2 render_resolution, XMUINT2 
 
 
 }
+// GGMAX: AMD's FidelityFX upscaler (the FSR SDK's signed amd_fidelityfx_loader_dx12.dll and amd_fidelityfx_upscaler_dx12.dll
+// beside the exe): FSR 3.1, or FSR 4 where AMD's driver offers it, in place of the FSR 2.1 shaders below, with the same
+// inputs and jitter. The DLL is loaded at the first FSR frame; without it, or with gg_fsr_sdk 0 (harness SET_FSRSDK), the
+// FSR 2.1 shaders run as before. FSR replaces the TAA (RenderPath3D runs one or the other).
+int gg_fsr_sdk = 1;
+namespace gg_ffx
+{
+	static HMODULE module = nullptr;
+	static bool tried = false;
+	static PfnFfxCreateContext fnCreate = nullptr;
+	static PfnFfxDestroyContext fnDestroy = nullptr;
+	static PfnFfxConfigure fnConfigure = nullptr;
+	static PfnFfxQuery fnQuery = nullptr;
+	static PfnFfxDispatch fnDispatch = nullptr;
+	static ffxContext context = nullptr;
+	static XMUINT2 context_render = {};
+	static XMUINT2 context_display = {};
+	static std::string status = "not used yet";
+	static uint64_t frames = 0;
+
+	static bool Load()
+	{
+		if (tried)
+			return module != nullptr;
+		tried = true;
+		module = LoadLibraryW(L"amd_fidelityfx_loader_dx12.dll");
+		if (module == nullptr)
+		{
+			status = "amd_fidelityfx_loader_dx12.dll not found: the FSR 2.1 shaders";
+			wi::backlog::post("GGMAX FSR: " + status, wi::backlog::LogLevel::Warning);
+			return false;
+		}
+		fnCreate = (PfnFfxCreateContext)GetProcAddress(module, "ffxCreateContext");
+		fnDestroy = (PfnFfxDestroyContext)GetProcAddress(module, "ffxDestroyContext");
+		fnConfigure = (PfnFfxConfigure)GetProcAddress(module, "ffxConfigure");
+		fnQuery = (PfnFfxQuery)GetProcAddress(module, "ffxQuery");
+		fnDispatch = (PfnFfxDispatch)GetProcAddress(module, "ffxDispatch");
+		if (!fnCreate || !fnDestroy || !fnQuery || !fnDispatch)
+		{
+			FreeLibrary(module);
+			module = nullptr;
+			status = "the loader DLL lacks its functions: the FSR 2.1 shaders";
+			wi::backlog::post("GGMAX FSR: " + status, wi::backlog::LogLevel::Warning);
+			return false;
+		}
+		return true;
+	}
+
+	static void DestroyContext()
+	{
+		if (context != nullptr)
+		{
+			wi::graphics::GetDevice()->WaitForGPU();
+			fnDestroy(&context, nullptr);
+			context = nullptr;
+		}
+	}
+
+	// made at the first FSR frame from the render thread; a size change destroys it first from the main thread
+	// (CreateFSR2Resources), as waiting for the GPU can't be done while command lists are being recorded
+	static bool EnsureContext(wi::graphics::GraphicsDevice_DX12* dx12, XMUINT2 render, XMUINT2 display)
+	{
+		if (context != nullptr && context_render.x == render.x && context_render.y == render.y && context_display.x == display.x && context_display.y == display.y)
+			return true;
+		if (context != nullptr)
+		{
+			status = "the context's size is out of date: the FSR 2.1 shaders this frame";
+			return false;
+		}
+
+		ffxCreateBackendDX12Desc backend = {};
+		backend.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
+		backend.device = (ID3D12Device*)dx12->GG_GetNativeDevice();
+
+		ffxCreateContextDescUpscale desc = {};
+		desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
+		desc.header.pNext = &backend.header;
+		// Wicked's depth is reversed (1 near, 0 far) with a far plane, its colour HDR before the tone map; the exposure is
+		// worked out by the upscaler, as the FSR 2.1 shaders did with their luminance pyramid
+		desc.flags = FFX_UPSCALE_ENABLE_HIGH_DYNAMIC_RANGE | FFX_UPSCALE_ENABLE_DEPTH_INVERTED | FFX_UPSCALE_ENABLE_AUTO_EXPOSURE;
+		desc.maxRenderSize.width = render.x;
+		desc.maxRenderSize.height = render.y;
+		desc.maxUpscaleSize.width = display.x;
+		desc.maxUpscaleSize.height = display.y;
+		const ffxReturnCode_t rc = fnCreate(&context, &desc.header, nullptr);
+		if (rc != FFX_API_RETURN_OK || context == nullptr)
+		{
+			context = nullptr;
+			status = "context creation failed (" + std::to_string(rc) + "): the FSR 2.1 shaders";
+			wi::backlog::post("GGMAX FSR: " + status, wi::backlog::LogLevel::Warning);
+			return false;
+		}
+		context_render = render;
+		context_display = display;
+
+		// which upscaler the DLL gave (FSR 3.1, or FSR 4 on a card and driver that offer it)
+		ffxQueryGetProviderVersion query = {};
+		query.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
+		fnQuery(&context, &query.header);
+		const char* version_name = query.versionName;
+		status = std::string("AMD FidelityFX upscaler ") + (version_name ? version_name : "(version unknown)") + ", " +
+			std::to_string(render.x) + "x" + std::to_string(render.y) + " to " + std::to_string(display.x) + "x" + std::to_string(display.y);
+		wi::backlog::post("GGMAX FSR: " + status);
+		return true;
+	}
+
+	static uint32_t FfxState(wi::graphics::ResourceState state)
+	{
+		using wi::graphics::ResourceState;
+		if (has_flag(state, ResourceState::UNORDERED_ACCESS)) return FFX_API_RESOURCE_STATE_UNORDERED_ACCESS;
+		if (has_flag(state, ResourceState::SHADER_RESOURCE)) return FFX_API_RESOURCE_STATE_PIXEL_COMPUTE_READ;
+		if (has_flag(state, ResourceState::SHADER_RESOURCE_COMPUTE)) return FFX_API_RESOURCE_STATE_COMPUTE_READ;
+		if (has_flag(state, ResourceState::COPY_SRC)) return FFX_API_RESOURCE_STATE_COPY_SRC;
+		if (has_flag(state, ResourceState::COPY_DST)) return FFX_API_RESOURCE_STATE_COPY_DEST;
+		if (has_flag(state, ResourceState::RENDERTARGET)) return FFX_API_RESOURCE_STATE_RENDER_TARGET;
+		return FFX_API_RESOURCE_STATE_COMMON;
+	}
+
+	static FfxApiResource Resource(wi::graphics::GraphicsDevice_DX12* dx12, const wi::graphics::Texture& texture, wi::graphics::ResourceState state)
+	{
+		return ffxApiGetResourceDX12((ID3D12Resource*)dx12->GG_GetNativeResource(&texture), FfxState(state));
+	}
+}
+const char* GG_FSR_SdkStatus() { return gg_ffx::status.c_str(); }
+void GG_FSR_SdkDestroyContext() { gg_ffx::DestroyContext(); gg_ffx::frames = 0; }
+uint64_t GG_FSR_SdkFrames() { return gg_ffx::frames; }
+
+// the frame upscaled by AMD's DLL; false (nothing recorded) where it can't be, so the FSR 2.1 shaders run
+static bool GG_Postprocess_FSR_SDK(
+	const FSR2Resources& res,
+	const CameraComponent& camera,
+	const Texture& input_pre_alpha,
+	const Texture& input_post_alpha,
+	const Texture& input_depth,
+	const Texture& input_velocity,
+	const Texture& output,
+	CommandList cmd,
+	float dt,
+	float sharpness
+)
+{
+	// a switch between the DLL and the FSR 2.1 shaders starts the other's history afresh (the 2.1 shaders reset on frame 0;
+	// without it they read history they never wrote, a black frame, 2026-11-10)
+	static bool last_sdk = false;
+	auto use_shaders = [&res]()
+	{
+		if (last_sdk)
+		{
+			res.fsr2_constants.frameIndex = 0;
+			last_sdk = false;
+		}
+		return false;
+	};
+	if (gg_fsr_sdk == 0 || !gg_ffx::Load())
+		return use_shaders();
+	// only the DX12 device has the native handles (Wicked is built without RTTI, so its shader format tells)
+	const ShaderFormat shader_format = device->GetShaderFormat();
+	if (shader_format != ShaderFormat::HLSL6 && shader_format != ShaderFormat::HLSL6_XS)
+	{
+		gg_ffx::status = "not the DX12 device: the FSR 2.1 shaders";
+		return use_shaders();
+	}
+	GraphicsDevice_DX12* dx12 = static_cast<GraphicsDevice_DX12*>(device);
+	const XMUINT2 render = XMUINT2((uint32_t)res.fsr2_constants.renderSize[0], (uint32_t)res.fsr2_constants.renderSize[1]);
+	const XMUINT2 display = XMUINT2((uint32_t)res.fsr2_constants.displaySize[0], (uint32_t)res.fsr2_constants.displaySize[1]);
+	if (render.x == 0 || display.x == 0 || !gg_ffx::EnsureContext(dx12, render, display))
+		return use_shaders();
+	const bool reset_history = !last_sdk || gg_ffx::frames == 0;
+	last_sdk = true;
+
+	device->EventBegin("Postprocess_FSR_SDK", cmd);
+	auto range = wi::profiler::BeginRangeGPU("Postprocess_FSR2", cmd);
+
+	// the reactive mask from the scene before and after its transparents, as the FSR 2.1 shaders made it
+	device->Barrier(GPUBarrier::Image(&res.reactive_mask, res.reactive_mask.desc.layout, ResourceState::UNORDERED_ACCESS), cmd);
+	{
+		ffxDispatchDescUpscaleGenerateReactiveMask reactive = {};
+		reactive.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE_GENERATEREACTIVEMASK;
+		reactive.commandList = dx12->GG_GetNativeCommandList(cmd);
+		reactive.colorOpaqueOnly = gg_ffx::Resource(dx12, input_pre_alpha, input_pre_alpha.desc.layout);
+		reactive.colorPreUpscale = gg_ffx::Resource(dx12, input_post_alpha, input_post_alpha.desc.layout);
+		reactive.outReactive = gg_ffx::Resource(dx12, res.reactive_mask, ResourceState::UNORDERED_ACCESS);
+		reactive.renderSize.width = render.x;
+		reactive.renderSize.height = render.y;
+		reactive.scale = 1.0f;
+		reactive.cutoffThreshold = 0.2f;
+		reactive.binaryValue = 0.9f;
+		reactive.flags = FFX_UPSCALE_AUTOREACTIVEFLAGS_APPLY_TONEMAP | FFX_UPSCALE_AUTOREACTIVEFLAGS_APPLY_THRESHOLD | FFX_UPSCALE_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX;
+		gg_ffx::fnDispatch(&gg_ffx::context, &reactive.header);
+	}
+	device->Barrier(GPUBarrier::Image(&res.reactive_mask, ResourceState::UNORDERED_ACCESS, res.reactive_mask.desc.layout), cmd);
+
+	device->Barrier(GPUBarrier::Image(&output, output.desc.layout, ResourceState::UNORDERED_ACCESS), cmd);
+	ffxDispatchDescUpscale dispatch = {};
+	dispatch.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
+	dispatch.commandList = dx12->GG_GetNativeCommandList(cmd);
+	dispatch.color = gg_ffx::Resource(dx12, input_post_alpha, input_post_alpha.desc.layout);
+	dispatch.depth = gg_ffx::Resource(dx12, input_depth, input_depth.desc.layout);
+	dispatch.motionVectors = gg_ffx::Resource(dx12, input_velocity, input_velocity.desc.layout);
+	dispatch.reactive = gg_ffx::Resource(dx12, res.reactive_mask, res.reactive_mask.desc.layout);
+	dispatch.output = gg_ffx::Resource(dx12, output, ResourceState::UNORDERED_ACCESS);
+	// the camera's jitter in render pixels, as the FSR 2.1 shaders take it; Wicked's velocity is the UV offset to the previous
+	// frame, which the upscaler takes in pixels
+	dispatch.jitterOffset.x = camera.jitter.x * render.x * 0.5f;
+	dispatch.jitterOffset.y = camera.jitter.y * render.y * -0.5f;
+	dispatch.motionVectorScale.x = (float)render.x;
+	dispatch.motionVectorScale.y = (float)render.y;
+	dispatch.renderSize.width = render.x;
+	dispatch.renderSize.height = render.y;
+	dispatch.upscaleSize.width = display.x;
+	dispatch.upscaleSize.height = display.y;
+	dispatch.enableSharpening = sharpness > 0;
+	dispatch.sharpness = std::min(1.0f, std::max(0.0f, sharpness));
+	dispatch.frameTimeDelta = dt * 1000.0f;
+	dispatch.preExposure = 1.0f;
+	dispatch.reset = reset_history;
+	dispatch.cameraNear = camera.zNearP;
+	dispatch.cameraFar = camera.zFarP;
+	dispatch.cameraFovAngleVertical = camera.fov;
+	dispatch.viewSpaceToMetersFactor = 0.0254f; // GameGuru's units are inches
+	const ffxReturnCode_t rc = gg_ffx::fnDispatch(&gg_ffx::context, &dispatch.header);
+	gg_ffx::frames++;
+
+	// the DLL set its own descriptor heaps, root signatures and pipelines on the command list
+	dx12->GG_ResetCommandListStateAfterNative(cmd);
+	device->Barrier(GPUBarrier::Image(&output, ResourceState::UNORDERED_ACCESS, output.desc.layout), cmd);
+	res.fsr2_constants.frameIndex++;
+
+	wi::profiler::EndRange(range);
+	device->EventEnd(cmd);
+	if (rc != FFX_API_RETURN_OK)
+	{
+		static bool reported = false;
+		if (!reported)
+		{
+			reported = true;
+			wi::backlog::post("GGMAX FSR: the upscaler's dispatch returned " + std::to_string(rc), wi::backlog::LogLevel::Warning);
+		}
+	}
+	return true;
+}
+
 XMFLOAT2 FSR2Resources::GetJitter() const
 {
 	int32_t phaseCount = fsr2::ffxFsr2GetJitterPhaseCount(fsr2_constants.renderSize[0], fsr2_constants.displaySize[0]);
@@ -20918,6 +21166,9 @@ void Postprocess_FSR2(
 	float sharpness
 )
 {
+	// GGMAX: AMD's DLL upscales where it is there (FSR 3.1 or 4), the FSR 2.1 shaders below otherwise
+	if (GG_Postprocess_FSR_SDK(res, camera, input_pre_alpha, input_post_alpha, input_depth, input_velocity, output, cmd, dt, sharpness))
+		return;
 	using namespace fsr2;
 	device->EventBegin("Postprocess_FSR2", cmd);
 	auto range = wi::profiler::BeginRangeGPU("Postprocess_FSR2", cmd);

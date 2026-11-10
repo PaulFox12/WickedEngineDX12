@@ -329,6 +329,14 @@ namespace wi::graphics
 		int GetDescriptorIndex(const GPUResource* resource, SubresourceType type, int subresource = -1) const override;
 		int GetDescriptorIndex(const Sampler* sampler) const override;
 
+		// GGMAX: native handles for a vendor library recording into Wicked's command list (AMD's FidelityFX upscaler), and the
+		// command list's cached state dropped after it: such a library sets its own descriptor heaps, root signatures and
+		// pipelines, so Wicked sets its heaps again and binds its root signature, pipeline and tables afresh at the next draw
+		void* GG_GetNativeDevice() const;
+		void* GG_GetNativeCommandList(CommandList cmd) const;
+		void* GG_GetNativeResource(const GPUResource* resource) const;
+		void GG_ResetCommandListStateAfterNative(CommandList cmd);
+
 		void WriteShadingRateValue(ShadingRate rate, void* dest) const override;
 		void WriteTopLevelAccelerationStructureInstance(const RaytracingAccelerationStructureDesc::TopLevel::Instance* instance, void* dest) const override;
 		void WriteShaderIdentifier(const RaytracingPipelineState* rtpso, uint32_t group_index, void* dest) const override;

@@ -6533,6 +6533,47 @@ std::mutex queue_locker;
 		return internal_state->descriptor.index;
 	}
 
+	void* GraphicsDevice_DX12::GG_GetNativeDevice() const
+	{
+		return device.Get();
+	}
+	void* GraphicsDevice_DX12::GG_GetNativeCommandList(CommandList cmd) const
+	{
+		return GetCommandList(cmd).GetGraphicsCommandList();
+	}
+	void* GraphicsDevice_DX12::GG_GetNativeResource(const GPUResource* resource) const
+	{
+		if (resource == nullptr || !resource->IsValid())
+			return nullptr;
+		return to_internal(resource)->resource.Get();
+	}
+	void GraphicsDevice_DX12::GG_ResetCommandListStateAfterNative(CommandList cmd)
+	{
+		CommandList_DX12& commandlist = GetCommandList(cmd);
+		if (commandlist.queue == QUEUE_GRAPHICS || commandlist.queue == QUEUE_COMPUTE)
+		{
+			ID3D12DescriptorHeap* heaps[] = {
+				descriptorheap_res.heap_GPU.Get(),
+				descriptorheap_sam.heap_GPU.Get()
+			};
+			commandlist.GetGraphicsCommandList()->SetDescriptorHeaps(arraysize(heaps), heaps);
+		}
+		commandlist.prev_pt = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+		commandlist.prev_pipeline_hash = {};
+		commandlist.active_pso = nullptr;
+		commandlist.active_cs = nullptr;
+		commandlist.active_rt = nullptr;
+		commandlist.active_rootsig_graphics = nullptr;
+		commandlist.active_rootsig_compute = nullptr;
+		commandlist.dirty_pso = false;
+		// no optimizer: the next pipeline or compute shader bound sets its root signature and marks all its root parameters
+		// dirty (root_mask), so the bound tables and constants go in again
+		commandlist.binder.optimizer_graphics = nullptr;
+		commandlist.binder.optimizer_compute = nullptr;
+		commandlist.binder.dirty_graphics = 0ull;
+		commandlist.binder.dirty_compute = 0ull;
+	}
+
 	void GraphicsDevice_DX12::WriteShadingRateValue(ShadingRate rate, void* dest) const
 	{
 		D3D12_SHADING_RATE _rate = _ConvertShadingRate(rate);
