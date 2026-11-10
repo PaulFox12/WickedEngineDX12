@@ -2810,6 +2810,7 @@ namespace wi::terrain
 		device->EventBegin("Terrain - UpdateVirtualTexturesGPU", cmd);
 		auto range = wi::profiler::BeginRangeGPU("Terrain - UpdateVirtualTexturesGPU", cmd);
 
+		auto gg_range_res = wi::profiler::BeginRangeGPU("TerrainVT - Residency", cmd); // GG: the update split, residency against the bake (2026-11-10)
 		device->EventBegin("Update Residency Maps", cmd);
 		device->BindComputeShader(wi::renderer::GetShader(wi::enums::CSTYPE_VIRTUALTEXTURE_RESIDENCYUPDATE), cmd);
 		for (const VirtualTexture* vt : virtual_textures_in_use)
@@ -2848,6 +2849,8 @@ namespace wi::terrain
 		}
 		device->EventEnd(cmd);
 
+		wi::profiler::EndRange(gg_range_res);
+		auto gg_range_bake = wi::profiler::BeginRangeGPU("TerrainVT - Bake", cmd);
 		device->EventBegin("Render Tile Regions", cmd);
 		wi::renderer::BindCommonResources(cmd);
 		for (const VirtualTexture* vt : virtual_textures_in_use)
@@ -3007,6 +3010,7 @@ namespace wi::terrain
 		}
 		device->Barrier(GPUBarrier::Memory(), cmd);
 		device->EventEnd(cmd);
+		wi::profiler::EndRange(gg_range_bake);
 
 		wi::profiler::EndRange(range);
 		device->EventEnd(cmd);
