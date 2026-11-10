@@ -20921,6 +20921,7 @@ namespace gg_ffx
 	static XMUINT2 context_display = {};
 	static std::string status = "not used yet";
 	static uint64_t frames = 0;
+	static int last_path = 0; // the temporal FSR's last frame: 0 none yet, 1 AMD's DLL, 2 the FSR 2.1 shaders
 
 	static bool Load()
 	{
@@ -21028,6 +21029,7 @@ namespace gg_ffx
 const char* GG_FSR_SdkStatus() { return gg_ffx::status.c_str(); }
 void GG_FSR_SdkDestroyContext() { gg_ffx::DestroyContext(); gg_ffx::frames = 0; }
 uint64_t GG_FSR_SdkFrames() { return gg_ffx::frames; }
+int GG_FSR_LastPath() { return gg_ffx::last_path; }
 
 // the frame upscaled by AMD's DLL; false (nothing recorded) where it can't be, so the FSR 2.1 shaders run
 static bool GG_Postprocess_FSR_SDK(
@@ -21048,6 +21050,7 @@ static bool GG_Postprocess_FSR_SDK(
 	static bool last_sdk = false;
 	auto use_shaders = [&res]()
 	{
+		gg_ffx::last_path = 2;
 		if (last_sdk)
 		{
 			res.fsr2_constants.frameIndex = 0;
@@ -21071,6 +21074,7 @@ static bool GG_Postprocess_FSR_SDK(
 		return use_shaders();
 	const bool reset_history = !last_sdk || gg_ffx::frames == 0;
 	last_sdk = true;
+	gg_ffx::last_path = 1;
 
 	device->EventBegin("Postprocess_FSR_SDK", cmd);
 	auto range = wi::profiler::BeginRangeGPU("Postprocess_FSR2", cmd);
