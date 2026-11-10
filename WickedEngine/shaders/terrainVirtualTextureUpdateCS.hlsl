@@ -5,7 +5,7 @@
 
 PUSHCONSTANT(push, TerrainVirtualTexturePush);
 
-#if !defined(UPDATE_NORMALMAP) && !defined(UPDATE_SURFACEMAP) && !defined(UPDATE_EMISSIVEMAP)
+#if !defined(UPDATE_NORMALMAP) && !defined(UPDATE_SURFACEMAP) && !defined(UPDATE_EMISSIVEMAP) && !defined(UPDATE_ALL)
 #define UPDATE_BASECOLORMAP
 #endif
 
@@ -60,6 +60,8 @@ float3 gg_tile_uv_scale_lod(float2 dim)
 	return float3(repeats, max(0.0, lod));
 }
 
+// GGMAX: one map a pass; terrainVirtualTextureUpdateCS_all.hlsl (UPDATE_ALL) writes all four in one pass with the helpers above
+#ifndef UPDATE_ALL
 [numthreads(8, 8, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
@@ -308,4 +310,4 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	output[write_coord] = CompressBC1Block(block_rgb);
 #endif // UPDATE_EMISSIVEMAP
 }
-
+#endif // UPDATE_ALL

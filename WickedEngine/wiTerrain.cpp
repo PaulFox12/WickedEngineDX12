@@ -482,7 +482,12 @@ namespace wi::terrain
 	// at 16, 0.24 at 24, as with the camera still); the drive at 24 mean 18.4-20.0 ms against 18.9-19.0, frames over 25 ms
 	// 50-134 against 4-6, none over 33. Cheaper tile bakes are the way to take the cost back
 	uint32_t gg_vt_bake_budget = 24;
+	// GG: the tile bake in one pass writing all four maps (true), or one pass a map as stock (false; harness SET_VTONEPASS)
+	bool gg_vt_bake_onepass = true;
 	std::atomic<unsigned long long> gg_dbg_vtpop_budget_left{ 0 };
+	// GG: tiles baked (each tile once, whatever its passes) and of them the ones a whole-chunk repaint asked for (DUMP_VTPOP)
+	std::atomic<unsigned long long> gg_dbg_vtpop_baked{ 0 };
+	std::atomic<unsigned long long> gg_dbg_vtpop_repaint{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_coarse_sum{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_coarse_max{ 0 };
 	std::atomic<unsigned long long> gg_dbg_vtpop_steal_recent{ 0 }; // tiles given out that were in use within 16 frames (maybe on screen: the "random squares")
@@ -2560,6 +2565,7 @@ namespace wi::terrain
 							request.lod = (uint16_t)lod;
 							request.tile_x = tile.x;
 							request.tile_y = tile.y;
+							gg_dbg_vtpop_repaint++;
 						}
 					}
 				}
@@ -2857,7 +2863,11 @@ namespace wi::terrain
 		{
 			if (vt->update_requests.empty())
 				continue;
-			for (uint32_t map_type = 0; map_type < arraysize(atlas.maps); map_type++)
+			gg_dbg_vtpop_baked += vt->update_requests.size();
+			// GGMAX: with gg_vt_bake_onepass the colour map's pass writes all four (terrainVirtualTextureUpdateCS_all.hlsl), the paint,
+			// blend weights, materials and road markings worked out once a texel instead of once a map
+			const uint32_t gg_map_passes = gg_vt_bake_onepass ? 1u : (uint32_t)arraysize(atlas.maps);
+			for (uint32_t map_type = 0; map_type < gg_map_passes; map_type++)
 			{
 				if (!atlas.maps[map_type].texture_raw_block.IsValid())
 					continue; // GGMAX 1.98 (A4): emissive map not created (belt+braces; push.output_texture would be -1 anyway)
@@ -2866,7 +2876,7 @@ namespace wi::terrain
 				switch (map_type)
 				{
 				case MaterialComponent::BASECOLORMAP:
-					device->BindComputeShader(wi::renderer::GetShader(wi::enums::CSTYPE_TERRAIN_VIRTUALTEXTURE_UPDATE_BASECOLORMAP), cmd);
+					device->BindComputeShader(wi::renderer::GetShader(gg_vt_bake_onepass ? wi::enums::CSTYPE_TERRAIN_VIRTUALTEXTURE_UPDATE_ALL : wi::enums::CSTYPE_TERRAIN_VIRTUALTEXTURE_UPDATE_BASECOLORMAP), cmd);
 					push.output_texture = device->GetDescriptorIndex(&atlas.maps[MaterialComponent::BASECOLORMAP].texture_raw_block, SubresourceType::UAV);
 					break;
 				case MaterialComponent::NORMALMAP:
@@ -2895,6 +2905,18 @@ namespace wi::terrain
 
 				auto mem = device->AllocateGPU(sizeof(uint) * (push.blendmap_layers + GG_TERRAIN_PAINT_BLOCK), cmd); // GGMAX: + the paint block
 				gg_WritePaintBlock((uint*)mem.data + push.blendmap_layers, scene, vt->gg_origin, vt->gg_size);
+				if (gg_vt_bake_onepass)
+				{
+					// the one-pass bake's other outputs, in the paint block's slots 48 to 50 (-1 where the atlas has no such map)
+					int gg_outputs[3] = { -1, -1, -1 };
+					const int gg_maps[3] = { MaterialComponent::NORMALMAP, MaterialComponent::SURFACEMAP, MaterialComponent::EMISSIVEMAP };
+					for (int m = 0; m < 3; m++)
+					{
+						if (atlas.maps[gg_maps[m]].texture_raw_block.IsValid())
+							gg_outputs[m] = device->GetDescriptorIndex(&atlas.maps[gg_maps[m]].texture_raw_block, SubresourceType::UAV);
+					}
+					std::memcpy((uint*)mem.data + push.blendmap_layers + 48, gg_outputs, sizeof(gg_outputs));
+				}
 				const uint splineMaterialCount = (uint)splineMaterialEntities.size();
 				const uint baseMaterialCount = push.blendmap_layers - splineMaterialCount;
 				// GGMAX 2.04: an entity in these lists without a live MaterialComponent makes

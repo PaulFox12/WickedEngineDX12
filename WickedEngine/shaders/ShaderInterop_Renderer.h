@@ -1868,7 +1868,7 @@ struct TerrainVirtualTexturePush
 	uint gg_tile_share;	// GGMAX 1.53 (was padding0): bits 24..31 = tiling repeat cap, 16..23 = ladder hold; GGMAX 3.113: bit 0 = SPLAT blend
 };
 // GGMAX: the uints of GameGuru's paint and tiling block after blendmap_buffer's material table (ggTerrainPaintHF.hlsli)
-static const uint GG_TERRAIN_PAINT_BLOCK = 48u; // GGMAX: 46 and 47 the road markings (on, the buffer)
+static const uint GG_TERRAIN_PAINT_BLOCK = 52u; // GGMAX: 46 and 47 the road markings (on, the buffer); 48 to 50 the one-pass bake's normal, surface and emissive outputs
 struct VirtualTextureResidencyUpdateCB
 {
 	uint lodCount;
