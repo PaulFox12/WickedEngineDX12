@@ -40,6 +40,8 @@
 #include <atomic>
 #include <mutex>
 
+namespace wi::graphics { extern std::atomic<uint32_t> gg_dbg_emitters_updated; } // GG: wiGraphicsDevice_DX12.cpp
+
 using namespace wi::primitive;
 using namespace wi::graphics;
 using namespace wi::enums;
@@ -7876,6 +7878,11 @@ void UpdateRenderDataAsync(
 		for (int stage = 0; stage < wi::EmittedParticleSystem::UPDATEGPU_STAGE_COUNT; ++stage)
 		{
 			const wi::EmittedParticleSystem::UPDATEGPU_STAGE update_stage = (wi::EmittedParticleSystem::UPDATEGPU_STAGE)stage;
+			// GG: each stage's share of the recording
+			static const char* const gg_stage_names[wi::EmittedParticleSystem::UPDATEGPU_STAGE_COUNT] = {
+				"EP stage 0 begin (CPU)", "EP stage 1 emit (CPU)", "EP stage 2 kickoff (CPU)", "EP stage 3 simulate (CPU)",
+				"EP stage 4 sort (CPU)", "EP stage 5 finish (CPU)", "EP stage 6 end (CPU)" };
+			auto gg_stage_range = wi::profiler::BeginRangeCPU(gg_stage_names[stage]);
 			for (uint32_t emitterIndex : vis.visibleEmitters)
 			{
 				const wi::EmittedParticleSystem& emitter = vis.scene->emitters[emitterIndex];
@@ -7888,7 +7895,9 @@ void UpdateRenderDataAsync(
 				vis.scene->rainEmitter.UpdateGPU(update_stage, nullptr, cmd);
 			}
 			wi::EmittedParticleSystem::UpdateGPU_StageEnd(update_stage, cmd);
+			wi::profiler::EndRange(gg_stage_range);
 		}
+		wi::graphics::gg_dbg_emitters_updated.store((uint32_t)vis.visibleEmitters.size(), std::memory_order_relaxed);
 		wi::profiler::EndRange(gg_cpu_range);
 		wi::profiler::EndRange(range);
 	}

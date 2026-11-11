@@ -2621,6 +2621,13 @@ using namespace dx12_internal;
 std::atomic<uint64_t> gg_desc_ring_waits{ 0 };
 std::atomic<uint64_t> gg_desc_ring_overruns{ 0 };
 std::atomic<uint64_t> gg_desc_frames_signaled{ 0 };
+// GG: the descriptor binder's flushes timed while gg_dbg_flush_timing is on (QueryPerformanceCounter ticks, calls, descriptors
+// copied into the ring), and the emitters the last particle update went through; harness FLUSH_STATS
+std::atomic<bool> gg_dbg_flush_timing{ false };
+std::atomic<uint64_t> gg_dbg_flush_ticks{ 0 };
+std::atomic<uint64_t> gg_dbg_flush_calls{ 0 };
+std::atomic<uint64_t> gg_dbg_flush_descriptors{ 0 };
+std::atomic<uint32_t> gg_dbg_emitters_updated{ 0 };
 
 #ifdef PLATFORM_XBOX
 std::mutex queue_locker;
@@ -2810,6 +2817,22 @@ std::mutex queue_locker;
 		if (dirty == 0ull)
 			return;
 
+		// GG: the flushes' time, count and table copies while gg_dbg_flush_timing is on (harness FLUSH_STATS)
+		struct GGFlushTimer
+		{
+			LARGE_INTEGER t0;
+			const bool on;
+			GGFlushTimer() : on(gg_dbg_flush_timing.load(std::memory_order_relaxed)) { if (on) QueryPerformanceCounter(&t0); }
+			~GGFlushTimer()
+			{
+				if (!on) return;
+				LARGE_INTEGER t1;
+				QueryPerformanceCounter(&t1);
+				gg_dbg_flush_ticks.fetch_add((uint64_t)(t1.QuadPart - t0.QuadPart), std::memory_order_relaxed);
+				gg_dbg_flush_calls.fetch_add(1, std::memory_order_relaxed);
+			}
+		} gg_flush_timer;
+
 		CommandList_DX12& commandlist = device->GetCommandList(cmd);
 		ID3D12GraphicsCommandList* graphicscommandlist = commandlist.GetGraphicsCommandList();
 		auto pso_internal = graphics ? to_internal(commandlist.active_pso) : to_internal(commandlist.active_cs);
@@ -2914,6 +2937,7 @@ std::mutex queue_locker;
 					assert(wrap_reservation >= stats.descriptorCopyCount); // for correct lockless wrap behaviour
 
 					const uint64_t offset = heap.allocationOffset.fetch_add(stats.descriptorCopyCount);
+					if (gg_flush_timer.on) gg_dbg_flush_descriptors.fetch_add(stats.descriptorCopyCount, std::memory_order_relaxed);
 					const uint64_t wrapped_offset = offset % wrap_effective_size;
 					const uint32_t ringoffset = (bindless_capacity + (uint32_t)wrapped_offset) * descriptorSize;
 
@@ -6904,7 +6928,7 @@ std::mutex queue_locker;
 		// a diagnostic must never be able to hang the thing it is diagnosing.
 		static std::mutex gg_drain_mutex;
 		std::scoped_lock gg_drain_lock(gg_drain_mutex);
-		const UINT64 GG_DRAIN_CAP = 256;
+		const UINT64 GG_DRAIN_CAP = 1024;
 		UINT64 stored = gg_infoQueue->GetNumStoredMessages();
 		if (stored == 0)
 			return;
@@ -6916,8 +6940,20 @@ std::mutex queue_locker;
 			wilog_error("---- D3D12 validation: implausible stored count %llu, reading %llu ----",
 				(unsigned long long)stored, (unsigned long long)count);
 		}
-		wilog_error("---- D3D12 validation layer: %llu message(s)%s at [%s] ----",
-			(unsigned long long)count, (stored > count) ? " (CAPPED)" : "", context ? context : "?");
+		// GG: a level's every frame makes the same warnings, about 190 of them, and each wilog_error writes log.txt again (its
+		// last 500 lines): the layer ran at 2 fps and the log held the last three frames, never the frame that mattered
+		// (2026-11-11). On the frame's drain each distinct message (addresses masked) is logged once and counted, and goes with
+		// its frame to d3d12_validation.txt beside the exe, again at its 10th, 100th... time. A Close() failure and a device
+		// removal still log everything
+		const bool gg_every = context == nullptr || strcmp(context, "frame") != 0;
+		static std::unordered_map<std::string, uint64_t> gg_seen;
+		static bool gg_file_started = false;
+		std::string gg_fresh;
+		if (gg_every)
+		{
+			wilog_error("---- D3D12 validation layer: %llu message(s)%s at [%s] ----",
+				(unsigned long long)count, (stored > count) ? " (CAPPED)" : "", context ? context : "?");
+		}
 		for (UINT64 i = 0; i < count; ++i)
 		{
 			SIZE_T len = 0;
@@ -6927,9 +6963,46 @@ std::mutex queue_locker;
 			D3D12_MESSAGE* msg = reinterpret_cast<D3D12_MESSAGE*>(storage.data());
 			if (FAILED(gg_infoQueue->GetMessage(i, msg, &len)) || msg->pDescription == nullptr)
 				continue;
-			wilog_error("  [D3D12 sev %d id %d] %s", (int)msg->Severity, (int)msg->ID, msg->pDescription);
+			std::string key = std::to_string((int)msg->ID) + " ";
+			for (const char* p = msg->pDescription; *p != 0; )
+			{
+				if (p[0] == '0' && p[1] == 'x')
+				{
+					key += "0x*";
+					p += 2;
+					while (isxdigit((unsigned char)*p)) p++;
+				}
+				else
+				{
+					key += *p++;
+				}
+			}
+			const uint64_t times = ++gg_seen[key];
+			const bool gg_round = times == 1 || times == 10 || times == 100 || times == 1000 || times == 10000 || times == 100000;
+			if (gg_every || times == 1)
+			{
+				wilog_error("  [D3D12 sev %d id %d] %s", (int)msg->Severity, (int)msg->ID, msg->pDescription);
+			}
+			if (gg_every || gg_round)
+			{
+				char head[160];
+				snprintf(head, sizeof(head), "[frame %llu, time %llu, %s] [D3D12 sev %d id %d] ", (unsigned long long)FRAMECOUNT, (unsigned long long)times, context ? context : "?", (int)msg->Severity, (int)msg->ID);
+				gg_fresh += head;
+				gg_fresh += msg->pDescription;
+				gg_fresh += "\n";
+			}
 		}
 		gg_infoQueue->ClearStoredMessages();
+		if (!gg_fresh.empty())
+		{
+			FILE* file = nullptr;
+			if (fopen_s(&file, wi::helper::GetDiagnosticPath("d3d12_validation.txt").c_str(), gg_file_started ? "ab" : "wb") == 0 && file != nullptr)
+			{
+				fwrite(gg_fresh.data(), 1, gg_fresh.size(), file);
+				fclose(file);
+				gg_file_started = true;
+			}
+		}
 	}
 
 	void GraphicsDevice_DX12::SubmitCommandLists()
