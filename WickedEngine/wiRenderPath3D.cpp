@@ -3793,19 +3793,22 @@ namespace wi
 			desc.format = wi::renderer::format_rendertarget_main;
 			desc.width = GetPhysicalWidth();
 			desc.height = GetPhysicalHeight();
-			device->CreateTexture(&desc, nullptr, &rtFSR[0]);
-			device->SetName(&rtFSR[0], "rtFSR[0]");
-			device->CreateTexture(&desc, nullptr, &rtFSR[1]);
-			device->SetName(&rtFSR[1], "rtFSR[1]");
+			// GGMAX: the same targets asked for again are kept (see the release below)
+			if (!(rtFSR[0].IsValid() && rtFSR[1].IsValid() && rtFSR[0].desc.width == desc.width && rtFSR[0].desc.height == desc.height
+				&& rtFSR[0].desc.format == desc.format && rtFSR[0].desc.bind_flags == desc.bind_flags))
+			{
+				device->CreateTexture(&desc, nullptr, &rtFSR[0]);
+				device->SetName(&rtFSR[0], "rtFSR[0]");
+				device->CreateTexture(&desc, nullptr, &rtFSR[1]);
+				device->SetName(&rtFSR[1], "rtFSR[1]");
+			}
 		}
 		else
 		{
-			if (!getFSR2Enabled())
-			{
-				// These are used both for FSR and FSR2
-				rtFSR[0] = {};
-				rtFSR[1] = {};
-			}
+			// GGMAX: the FSR targets are kept when the upscaler goes off (2 x 17 MB at 1440p), not released: six GPU page
+			// faults on 2026-11-11 (Aftermath) were a pixel shader reading the released display-size rtFSR after FSR 3.1 was
+			// switched off or a game left, and the reader is not yet found; a stale read now shows an old frame instead of
+			// removing the device. They go with the other targets (DeleteGPUResources) and are remade at another size.
 		}
 	}
 	void RenderPath3D::setFSR2Enabled(bool value)
@@ -3830,20 +3833,23 @@ namespace wi
 			desc.format = wi::renderer::format_rendertarget_main;
 			desc.width = displayResolution.x;
 			desc.height = displayResolution.y;
-			device->CreateTexture(&desc, nullptr, &rtFSR[0]);
-			device->SetName(&rtFSR[0], "rtFSR[0]");
-			device->CreateTexture(&desc, nullptr, &rtFSR[1]);
-			device->SetName(&rtFSR[1], "rtFSR[1]");
+			// GGMAX: the same targets asked for again are kept (see the release below)
+			if (!(rtFSR[0].IsValid() && rtFSR[1].IsValid() && rtFSR[0].desc.width == desc.width && rtFSR[0].desc.height == desc.height
+				&& rtFSR[0].desc.format == desc.format && rtFSR[0].desc.bind_flags == desc.bind_flags))
+			{
+				device->CreateTexture(&desc, nullptr, &rtFSR[0]);
+				device->SetName(&rtFSR[0], "rtFSR[0]");
+				device->CreateTexture(&desc, nullptr, &rtFSR[1]);
+				device->SetName(&rtFSR[1], "rtFSR[1]");
+			}
 		}
 		else
 		{
 			fsr2Resources = {};
-			if (!getFSREnabled())
-			{
-				// These are used both for FSR and FSR2
-				rtFSR[0] = {};
-				rtFSR[1] = {};
-			}
+			// GGMAX: the FSR targets are kept when the upscaler goes off (2 x 17 MB at 1440p), not released: six GPU page
+			// faults on 2026-11-11 (Aftermath) were a pixel shader reading the released display-size rtFSR after FSR 3.1 was
+			// switched off or a game left, and the reader is not yet found; a stale read now shows an old frame instead of
+			// removing the device. They go with the other targets (DeleteGPUResources) and are remade at another size.
 		}
 
 		// Depending on FSR2 is on/off, these either need to run at display or internal resolution:
