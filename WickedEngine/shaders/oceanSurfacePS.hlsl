@@ -147,13 +147,17 @@ float4 main(PSIn input) : SV_TARGET
 	float foam_wave = pow(saturate(gradient.a), 4) * saturate(exp(-water_depth_foam * 0.1));
 	float foam_combined = saturate(foam_shore + foam_wave);
 	float foam_simplex = 0;
+	float foam_voronoi = 0;
+	[branch]
+	if (xOceanFoamAmount > 0) // GG: no foam asked for (SetWaterFoam 0): its noise isn't worked out
+	{
 	foam_simplex += smoothstep(0, 0.8, noise_simplex_2D(foamP * 1 + GetTime()));
 	foam_simplex += smoothstep(0, 0.8, noise_simplex_2D(foamP * 2 + GetTime()));
 	foam_simplex += smoothstep(0, 0.8, noise_simplex_2D(foamP.yx * 4 - GetTime() * 2));
-	float foam_voronoi = 0;
 	foam_voronoi += smoothstep(0.5, 0.8, noise_voronoi(foamP * 1, GetTime()).x);
 	foam_voronoi += smoothstep(0.5, 0.8, noise_voronoi(foamP * 2, GetTime()).x);
 	foam_voronoi += smoothstep(0.5, 0.8, noise_voronoi(foamP * 4, GetTime()).x);
+	}
 	float foam = 0;
 	foam += foam_voronoi * foam_simplex * foam_combined;
 	foam += smoothstep(0.5, 0.6, saturate(foam_combined + 0.1));
