@@ -589,11 +589,12 @@ bool gg_temporal_upscale = false;
 // GGMAX: SSGI sampling octaves left out, a mask: 1 the finest (2x), 2 the 4x, 4 the 8x, 8 the widest (16x); SET_SSGISKIP
 int gg_ssgi_skip = 0;
 // GGMAX: SSGI works its normals out from the depth buffer when nothing else needs the surface pass's (SSR, ray tracing,
-// screen-space shadows, VXGI off), so that pass is skipped (about 0.65 ms of 10 at 1440p, 2026-11-11). The bounce on distant
-// facades is weaker (no normal maps; about 1 level in 255 on the city's far blocks, not visible unamplified), so it is on by
-// default (the user, 2026-11-11; Lua SetSSGIDepthNormals, harness SET_SSGIDEPTHNORMALS).
+// screen-space shadows, VXGI off), so that pass is skipped (about 0.65 ms of 10 at 1440p, 2026-11-11). Off by default: up
+// close the normals worked out from the depth glitter along a building's edges (0.16% of a still frame changing from frame
+// to frame against 0.00%) and shade its facade differently (baselines/2026-11-11_1707_ssgi_glitter; the user saw the
+// glitter in play). Lua SetSSGIDepthNormals, harness SET_SSGIDEPTHNORMALS.
 // gg_ssgi_normals_from_depth_now: the frame's choice, set by RenderPath3D
-int gg_ssgi_depth_normals = 1;
+int gg_ssgi_depth_normals = 0;
 bool gg_ssgi_normals_from_depth_now = false;
 float gg_reflection_min_size = 0.0025f; // objects whose radius is under this share of their distance are left out of the reflection (0 none)
 int gg_reflection_samples = 1; // GGMAX: 1 as DX11's reflection (0.42 ms of 14.9 saved at start_east, no visible change; 2026-11-04)
