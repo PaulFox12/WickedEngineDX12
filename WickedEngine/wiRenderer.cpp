@@ -586,7 +586,14 @@ float gg_heat_speed = 1.0f;
 std::atomic<int> gg_dbg_lod_fading{ 0 };
 // GG: the temporal upscaler (FSR 3.1) drew last frame, set by RenderPath3D (OPTION_BIT_GG_TEMPORAL_DITHER)
 bool gg_temporal_upscale = false;
-int gg_ssgi_skip = 0; // GGMAX: SSGI sampling octaves left out, bit 0 the finest (2x) to bit 3 the widest (16x); SET_SSGISKIP
+// GGMAX: SSGI sampling octaves left out, a mask: 1 the finest (2x), 2 the 4x, 4 the 8x, 8 the widest (16x); SET_SSGISKIP
+int gg_ssgi_skip = 0;
+// GGMAX: SSGI works its normals out from the depth buffer when nothing else needs the surface pass's (SSR, ray tracing,
+// screen-space shadows, VXGI off), so that pass is skipped (about 0.65 ms of 10 at 1440p, 2026-11-11), but the bounce on
+// distant facades drops to under half (no normal maps, the city view), so it is off by default (harness SET_SSGIDEPTHNORMALS).
+// gg_ssgi_normals_from_depth_now: the frame's choice, set by RenderPath3D
+int gg_ssgi_depth_normals = 0;
+bool gg_ssgi_normals_from_depth_now = false;
 float gg_reflection_min_size = 0.0025f; // objects whose radius is under this share of their distance are left out of the reflection (0 none)
 int gg_reflection_samples = 1; // GGMAX: 1 as DX11's reflection (0.42 ms of 14.9 saved at start_east, no visible change; 2026-11-04)
 // GGMAX: environment probe captures on (1) or held (0); a lever for the harness, to tell whether a frame drawn from
@@ -10132,7 +10139,9 @@ void DrawScene(
 	{
 		if (!occlusion || !vis.scene->ocean.IsOccluded())
 		{
+			auto gg_ocean_range = wi::profiler::BeginRangeGPU("Ocean - Surface", cmd); // GG
 			vis.scene->ocean.Render(*vis.camera, cmd);
+			wi::profiler::EndRange(gg_ocean_range);
 		}
 	}
 
@@ -17407,6 +17416,7 @@ void Postprocess_SSGI(
 		postprocess.params1.x = lightThreshold;
 		postprocess.params1.y = skyLight ? 0.0f : 1.0f;
 		postprocess.params1.z = lightCap;
+		postprocess.params1.w = gg_ssgi_normals_from_depth_now ? 1.0f : 0.0f; // GG: normals from the depth (the surface pass skipped)
 		device->PushConstants(&postprocess, sizeof(postprocess), cmd);
 
 		device->BindResource(&input, 0, cmd);
@@ -17466,7 +17476,7 @@ void Postprocess_SSGI(
 		// Wide sampling passes:
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI_WIDE], cmd);
 
-		// 16x: (GGMAX: gg_ssgi_skip bit 8 leaves it out; the upsample adds the octaves, so that octave's light is lost)
+		// 16x: (GGMAX: gg_ssgi_skip & 8 leaves it out; the upsample adds the octaves, so that octave's light is lost)
 		if ((gg_ssgi_skip & 8) == 0)
 		{
 			auto gg_range = wi::profiler::BeginRangeGPU("  SSGI 16x", cmd);
@@ -17494,7 +17504,7 @@ void Postprocess_SSGI(
 			);
 			wi::profiler::EndRange(gg_range);
 		}
-		// 8x: (GGMAX: gg_ssgi_skip bit 4 leaves it out; the upsample adds the octaves, so that octave's light is lost)
+		// 8x: (GGMAX: gg_ssgi_skip & 4 leaves it out; the upsample adds the octaves, so that octave's light is lost)
 		if ((gg_ssgi_skip & 4) == 0)
 		{
 			auto gg_range = wi::profiler::BeginRangeGPU("  SSGI 8x", cmd);
@@ -17526,7 +17536,7 @@ void Postprocess_SSGI(
 		// Narrow sampling passes:
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI], cmd);
 
-		// 4x: (GGMAX: gg_ssgi_skip bit 2 leaves it out; the upsample adds the octaves, so that octave's light is lost)
+		// 4x: (GGMAX: gg_ssgi_skip & 2 leaves it out; the upsample adds the octaves, so that octave's light is lost)
 		if ((gg_ssgi_skip & 2) == 0)
 		{
 			auto gg_range = wi::profiler::BeginRangeGPU("  SSGI 4x", cmd);
@@ -17555,7 +17565,7 @@ void Postprocess_SSGI(
 			wi::profiler::EndRange(gg_range);
 		}
 
-		// 2x: (GGMAX: gg_ssgi_skip bit 1 leaves it out; the upsample adds the octaves, so that octave's light is lost)
+		// 2x: (GGMAX: gg_ssgi_skip & 1 leaves it out; the upsample adds the octaves, so that octave's light is lost)
 		if ((gg_ssgi_skip & 1) == 0)
 		{
 			auto gg_range = wi::profiler::BeginRangeGPU("  SSGI 2x", cmd);
@@ -17600,6 +17610,7 @@ void Postprocess_SSGI(
 
 		// GG: the bilateral depth weight's falloff (0.1 a metre) in the world's units
 		postprocess.params0.z = 0.1f / unitsPerMetre;
+		postprocess.params0.w = 0; // GG: the full-resolution normals' flag, set for the last step only
 
 		device->BindComputeShader(&shaders[CSTYPE_POSTPROCESS_SSGI_UPSAMPLE_WIDE], cmd);
 
@@ -17732,6 +17743,7 @@ void Postprocess_SSGI(
 			postprocess.resolution_rcp.y = 1.0f / postprocess.resolution.y;
 			postprocess.params0.x = 1; // range
 			postprocess.params0.y = 1; // spread
+			postprocess.params0.w = gg_ssgi_normals_from_depth_now ? 1.0f : 0.0f; // GG: no full-resolution normals, weigh by depth
 			const TextureDesc& desc2 = res.texture_diffuse_mips.desc;
 			postprocess.params1.x = float(desc2.width);
 			postprocess.params1.y = float(desc2.height);

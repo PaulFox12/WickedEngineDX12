@@ -86,7 +86,9 @@ void main(uint2 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 	
 	const float depth = input_depth_high[pixel];
 	const float linearDepth = compute_lineardepth(depth);
-	const float3 N = decode_oct(input_normal_high[pixel].rg);
+	// GG: params0.w > 0: no full-resolution normals (the surface pass skipped for SSGI): the last step weighs by depth only
+	const bool gg_no_high_normals = postprocess.params0.w > 0;
+	const float3 N = gg_no_high_normals ? float3(0, 1, 0) : decode_oct(input_normal_high[pixel].rg);
 	
 #if 1
 	const int range = int(postprocess.params0.x);
@@ -104,7 +106,7 @@ void main(uint2 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 	const float normalPow = lerp(normalThreshold, 1, curve);
 	//spread *= 1 + curve;
 #else
-	const float normalPow = normalThreshold;
+	const float normalPow = gg_no_high_normals ? 0 : normalThreshold;
 #endif
 
 	const int2 coord_base = GTid.xy / 2 + TILE_BORDER;

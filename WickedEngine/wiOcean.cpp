@@ -227,6 +227,7 @@ namespace wi
 	XMFLOAT3 Ocean::GetDisplacedPosition(const XMFLOAT3& worldPosition) const
 	{
 		XMFLOAT3 ocean_pos = XMFLOAT3(worldPosition.x, params.waterHeight, worldPosition.z);
+		gg_readback_keepalive = 8; // GG: keep the readback going while heights are asked for (more than the buffer count)
 		if (displacement_readback_valid[displacement_readback_index])
 		{
 			const Texture& tex = displacementMap_readback[displacement_readback_index];
@@ -431,6 +432,9 @@ namespace wi
 
 	void Ocean::CopyDisplacementMapReadback(wi::graphics::CommandList cmd) const
 	{
+		if (gg_readback_keepalive == 0)
+			return; // GG: nothing has asked for wave heights lately
+		gg_readback_keepalive--;
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		device->EventBegin("Ocean Readback Copy", cmd);
 		device->CopyResource(&displacementMap_readback[displacement_readback_index], &displacementMap, cmd);

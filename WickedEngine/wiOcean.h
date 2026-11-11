@@ -114,6 +114,9 @@ namespace wi
 		wi::graphics::Texture displacementMap_readback[wi::graphics::GraphicsDevice::GetBufferCount()];		// (RGBA32F)
 		mutable bool displacement_readback_valid[arraysize(displacementMap_readback)] = {};
 		mutable uint32_t displacement_readback_index = 0;
+		// GG (as Janos's fdfa510f): the displacement map is copied back for the CPU only for this many frames after the last
+		// GetDisplacedPosition; GameGuru reads no wave heights, so the 4 MB copy a frame stops
+		mutable uint32_t gg_readback_keepalive = 0;
 
 		void initHeightMap(XMFLOAT2* out_h0, float* out_omega);
 

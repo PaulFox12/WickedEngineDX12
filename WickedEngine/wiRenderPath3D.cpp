@@ -531,6 +531,10 @@ namespace wi
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		wi::renderer::gg_temporal_upscale = getFSR2Enabled(); // GGMAX: FSR 3.1 averages animated dithers (the frame's options)
+		// GGMAX: SSGI takes its normals from the depth when it alone would need the surface pass (gg_ssgi_depth_normals)
+		wi::renderer::gg_ssgi_normals_from_depth_now = wi::renderer::gg_ssgi_depth_normals != 0 && !visibility_shading_in_compute
+			&& !getSSREnabled() && !getRaytracedReflectionEnabled() && !getRaytracedDiffuseEnabled()
+			&& !wi::renderer::GetScreenSpaceShadowsEnabled() && !wi::renderer::GetRaytracedShadowsEnabled() && !wi::renderer::GetVXGIEnabled();
 
 		if (rtMain_render.desc.sample_count != msaaSampleCount)
 		{
@@ -1482,7 +1486,7 @@ namespace wi
 			}
 			else if (
 				getSSREnabled() ||
-				getSSGIEnabled() ||
+				(getSSGIEnabled() && !wi::renderer::gg_ssgi_normals_from_depth_now) ||
 				getRaytracedReflectionEnabled() ||
 				getRaytracedDiffuseEnabled() ||
 				wi::renderer::GetScreenSpaceShadowsEnabled() ||

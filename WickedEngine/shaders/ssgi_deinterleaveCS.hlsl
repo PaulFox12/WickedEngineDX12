@@ -26,6 +26,27 @@ groupshared float shared_depths[256];
 groupshared uint shared_normals[256];
 groupshared uint shared_colors[256];
 
+// GG: a normal worked out from the depth buffer (oct-encoded, world space, facing the camera), for when the surface pass
+// that writes texture_normal is skipped (wi::renderer::gg_ssgi_depth_normals, push params1.w): each side's step taken from
+// the neighbour nearer in depth, so an edge doesn't bend it
+float2 gg_depth_normal(uint2 p, uint2 dim, float2 dim_rcp)
+{
+	const uint2 last = dim - 1;
+	const float z = texture_depth[min(p, last)];
+	const float zr = texture_depth[min(p + uint2(1, 0), last)];
+	const float zl = texture_depth[uint2(p.x > 0 ? p.x - 1 : 0, min(p.y, last.y))];
+	const float zd = texture_depth[min(p + uint2(0, 1), last)];
+	const float zu = texture_depth[uint2(min(p.x, last.x), p.y > 0 ? p.y - 1 : 0)];
+	const float2 uv = (float2(p) + 0.5) * dim_rcp;
+	const float3 P = reconstruct_position(uv, z);
+	const float3 dx = abs(zr - z) < abs(zl - z) ? reconstruct_position(uv + float2(dim_rcp.x, 0), zr) - P : P - reconstruct_position(uv - float2(dim_rcp.x, 0), zl);
+	const float3 dy = abs(zd - z) < abs(zu - z) ? reconstruct_position(uv + float2(0, dim_rcp.y), zd) - P : P - reconstruct_position(uv - float2(0, dim_rcp.y), zu);
+	float3 N = normalize(cross(dy, dx) + 1e-12);
+	if (dot(N, GetCamera().position - P) < 0)
+		N = -N;
+	return encode_oct(N);
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex, uint3 GTid : SV_GroupThreadID, uint3 DTid : SV_DispatchThreadID)
 {
@@ -40,10 +61,22 @@ void main(uint3 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex, uint3 GTid : 
     shared_depths[destIdx + 128] = texture_depth[min(startST | uint2(0, 8), dim - 1)];
     shared_depths[destIdx + 136] = texture_depth[min(startST | uint2(8, 8), dim - 1)];
 
+	[branch]
+	if (postprocess.params1.w > 0)
+	{
+		// GG: normals from the depth (the surface pass skipped)
+		shared_normals[destIdx + 0] = pack_half2(gg_depth_normal(startST | uint2(0, 0), dim, dim_rcp));
+		shared_normals[destIdx + 8] = pack_half2(gg_depth_normal(startST | uint2(8, 0), dim, dim_rcp));
+		shared_normals[destIdx + 128] = pack_half2(gg_depth_normal(startST | uint2(0, 8), dim, dim_rcp));
+		shared_normals[destIdx + 136] = pack_half2(gg_depth_normal(startST | uint2(8, 8), dim, dim_rcp));
+	}
+	else
+	{
     shared_normals[destIdx + 0] = pack_half2(texture_normal[min(startST | uint2(0, 0), dim - 1)]);
     shared_normals[destIdx + 8] = pack_half2(texture_normal[min(startST | uint2(8, 0), dim - 1)]);
     shared_normals[destIdx + 128] = pack_half2(texture_normal[min(startST | uint2(0, 8), dim - 1)]);
     shared_normals[destIdx + 136] = pack_half2(texture_normal[min(startST | uint2(8, 8), dim - 1)]);
+	}
 	
 	const float2 uv0 = float2(startST | uint2(0, 0)) * dim_rcp;
 	const float2 uv1 = float2(startST | uint2(8, 0)) * dim_rcp;
