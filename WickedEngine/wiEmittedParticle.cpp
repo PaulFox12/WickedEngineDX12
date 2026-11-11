@@ -462,6 +462,7 @@ namespace wi
 		// Read back statistics (with GPU delay):
 		const uint32_t oldest_stat_index = wi::graphics::GetDevice()->GetBufferIndex();
 		memcpy(&statistics, (const uint8_t*)statisticsSlot->page->buffer[oldest_stat_index].mapped_data + statisticsSlot->offset, sizeof(statistics));
+		gg_peak_alive = std::max(gg_peak_alive, std::max(statistics.aliveCount, statistics.aliveCount_afterSimulation));
 
 		if (statistics.aliveCount > 0 || statistics.aliveCount_afterSimulation > 0)
 		{

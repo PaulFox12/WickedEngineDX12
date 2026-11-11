@@ -31,6 +31,8 @@ namespace wi
 		};
 
 		ParticleCounters statistics = {};
+		// GG: the most particles alive at once, from the counters read back each frame (harness EMITTER_CENSUS; 0 to reset)
+		uint32_t gg_peak_alive = 0;
 		// GG: where this emitter's counters are read back, a slot of pages all the emitters share (wiEmittedParticle.cpp)
 		struct GGStatSlot;
 		std::shared_ptr<GGStatSlot> statisticsSlot;
