@@ -5919,6 +5919,7 @@ namespace wi::scene
 					device->CreateBuffer(&desc, nullptr, &object.wetmap);
 					device->SetName(&object.wetmap, "wetmap");
 					object.wetmap_cleared = false;
+					object.gg_wetmap_updates = 0;
 				}
 				else if(!object.IsWetmapEnabled() && object.wetmap.IsValid())
 				{
@@ -7054,6 +7055,11 @@ namespace wi::scene
 		if (weather.IsOceanEnabled() || weather.rain_amount > 0)
 		{
 			wetmap_fadeout_time = 60; // allow 60 sec for remaining wetmaps to fade out
+		}
+		gg_rain_wet_time = std::max(0.0f, gg_rain_wet_time - dt);
+		if (weather.rain_amount > 0)
+		{
+			gg_rain_wet_time = 60;
 		}
 	}
 	void Scene::RunSoundUpdateSystem(wi::jobsystem::context& ctx)

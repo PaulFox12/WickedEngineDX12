@@ -1797,6 +1797,9 @@ namespace wi::renderer
 	extern bool gg_force_bindpose_tangents;
 	// GGMAX 1.62e: wetmap update pass kill-switch (streamout-stomp suspect A/B; SET_WETMAPS)
 	extern bool gg_wetmap_updates_enabled;
+	extern bool gg_wetmap_all; // GG: every terrain chunk keeps a wet map and all are updated every frame, as before 2026-11-11 (harness SET_WETMAPS 2)
+	extern float gg_wetmap_reach; // GG: how far over the water's height a wave can wet the ground, in units (harness SET_WETMAPS reach)
+	extern uint32_t gg_wetmap_stats[3]; // GG: the last frame's wet maps: objects holding one, objects and hairs updated
 
 };
 

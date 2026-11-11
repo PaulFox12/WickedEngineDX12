@@ -1283,6 +1283,7 @@ namespace wi::scene
 		uint8_t gg_lod_prev = 0xFF;
 		float gg_lod_fade = 1e9f;
 		mutable bool wetmap_cleared = false;
+		mutable uint8_t gg_wetmap_updates = 0; // GG: the wet map's updates so far, up to 255 (RefreshWetmaps: a new map is updated every frame at first)
 		bool mesh_blend_required = false;
 
 		// these will only be valid for a single frame:

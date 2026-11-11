@@ -293,6 +293,7 @@ namespace wi
 				device->SetName(&generalBuffer, "HairParticleSystem::generalBuffer");
 			}
 			gpu_initialized = false;
+			gg_wetmap_dried = false;
 
 			uint64_t buffer_offset = 0ull;
 

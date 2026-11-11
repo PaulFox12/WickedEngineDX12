@@ -1270,6 +1270,10 @@ bool gg_force_bindpose_tangents = false;
 // GGMAX 1.62e: suspect kill-switch for the streamout-stomping hunt — 0 skips the whole
 // RefreshWetmaps update pass (object + hair loops). Harness SET_WETMAPS <0|1>.
 bool gg_wetmap_updates_enabled = true;
+// GG: the last frame's wet maps (harness SET_WETMAPS with no argument): objects holding one, objects and hairs updated
+uint32_t gg_wetmap_stats[3] = {};
+bool gg_wetmap_all = false;
+float gg_wetmap_reach = 196.85f; // 5 m
 // GG "Laptop" mode: how many frames the delayed FAR cascades (1..N) are held between refreshes.
 // 2 = default delayed shadows (far cascades refresh every other frame); 4 = "twice as aggressive"
 // (the editor "Laptop" checkbox). Clamped >=2 at the setter. Cascade 0 always refreshes every frame,
@@ -14241,12 +14245,30 @@ void RefreshWetmaps(const Visibility& vis, CommandList cmd)
 	WetmapPush push = {};
 	push.rain_amount = vis.scene->weather.rain_amount;
 
+	// GG: an object wholly under the sea stays as wet as it is (nothing dries under water, and that deep the waves don't
+	// change its wetness): after its first updates it is updated one frame in 16, the objects taking turns. Not while rain
+	// wets, which changes every map
+	const bool gg_deep_rule = !gg_wetmap_all && vis.scene->weather.IsOceanEnabled() && vis.scene->gg_rain_wet_time <= 0;
+	const float gg_deep_below = vis.scene->weather.oceanParameters.waterHeight - gg_wetmap_reach;
+	const uint32_t gg_turn = (uint32_t)device->GetFrameCount();
+	uint32_t gg_stats[3] = {};
+
 	// Note: every object wetmap is updated, not just visible
 	for (uint32_t objectIndex = 0; objectIndex < vis.scene->objects.GetCount(); ++objectIndex)
 	{
 		const ObjectComponent& object = vis.scene->objects[objectIndex];
 		if (!object.wetmap.IsValid())
 			continue;
+		gg_stats[0]++;
+		if (gg_deep_rule && object.gg_wetmap_updates >= 8 && ((gg_turn + objectIndex) & 15) != 0 && objectIndex < vis.scene->aabb_objects.size())
+		{
+			const wi::primitive::AABB& aabb = vis.scene->aabb_objects[objectIndex];
+			if (aabb._min.y <= aabb._max.y && aabb._max.y < gg_deep_below)
+				continue;
+		}
+		if (object.gg_wetmap_updates < 255)
+			object.gg_wetmap_updates++;
+		gg_stats[1]++;
 
 		uint32_t vertexCount = uint32_t(object.wetmap.desc.size / GetFormatStride(object.wetmap.desc.format));
 
@@ -14278,11 +14300,26 @@ void RefreshWetmaps(const Visibility& vis, CommandList cmd)
 		// GGMAX 1.50: GG grass (grass_type != 0) is force-dried instead of wetted — culled strands'
 		// zero positions read as underwater and would ratchet to wet~0.8 (dark on reveal). See knob.
 		push.gg_force_dry = (!gg_grass_wetmap && hair.grass_type != 0) ? 1u : 0u;
+		// GG: kept dry, its map needs zeroing once for each buffer made (it was every visible patch every frame)
+		if (push.gg_force_dry != 0 && !gg_wetmap_all)
+		{
+			if (hair.gg_wetmap_dried)
+				continue;
+			hair.gg_wetmap_dried = true;
+		}
+		else
+		{
+			hair.gg_wetmap_dried = false;
+		}
+		gg_stats[2]++;
 		push.instanceID = uint32_t(vis.scene->objects.GetCount() + hairIndex);
 		device->PushConstants(&push, sizeof(push), cmd);
 
 		device->Dispatch((vertexCount + 63u) / 64u, 1, 1, cmd);
 	}
+	gg_wetmap_stats[0] = gg_stats[0];
+	gg_wetmap_stats[1] = gg_stats[1];
+	gg_wetmap_stats[2] = gg_stats[2];
 
 	device->EventEnd(cmd);
 }

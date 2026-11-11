@@ -1110,7 +1110,22 @@ namespace wi::terrain
 			ObjectComponent* chunk_object = scene->objects.GetComponent(chunk_data.entity);
 			if (chunk_object != nullptr)
 			{
-				chunk_object->SetWetmapEnabled(scene->IsWetmapProcessingRequired());
+				// GG: a wet map only for a chunk the sea can reach: its lowest point under the water's height plus the waves' reach.
+				// Every chunk had one, 64 KB each (the least a buffer takes), and all were updated every frame: 69 MB of video
+				// memory and 0.5 ms of GPU on a level with a sea, for the chunks along its shore. Rain (weather.rain_amount, which
+				// GameGuru doesn't set) still wets every chunk, while it falls and for the minute the maps take to dry
+				bool chunk_wetmap = scene->IsWetmapProcessingRequired();
+				if (chunk_wetmap && scene->gg_rain_wet_time <= 0 && !wi::renderer::gg_wetmap_all)
+				{
+					chunk_wetmap = false;
+					const size_t chunk_object_index = scene->objects.GetIndex(chunk_data.entity);
+					if (scene->weather.IsOceanEnabled() && chunk_object_index < scene->aabb_objects.size())
+					{
+						const wi::primitive::AABB& chunk_aabb = scene->aabb_objects[chunk_object_index];
+						chunk_wetmap = chunk_aabb._min.y <= chunk_aabb._max.y && chunk_aabb._min.y < scene->weather.oceanParameters.waterHeight + wi::renderer::gg_wetmap_reach;
+					}
+				}
+				chunk_object->SetWetmapEnabled(chunk_wetmap);
 				chunk_object->emissiveColor.w = virtual_texture_any ? 1.0f : 0.0f; // without virtual textures, emissive will be disabled on the object-level (most likely missing content)
 			}
 

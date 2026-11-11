@@ -476,6 +476,9 @@ namespace wi::scene
 		void UpdateSpringsTopDownRecursive(SpringComponent* parent_spring, SpringComponent& spring);
 
 		float wetmap_fadeout_time = 0;
+		// GG: the seconds left of rain's wetting (weather.rain_amount, and the minute the maps take to dry after it): while above 0
+		// every terrain chunk keeps a wet map, otherwise only those the sea can reach (wiTerrain.cpp)
+		float gg_rain_wet_time = 0;
 		bool IsWetmapProcessingRequired() const;
 
 		void StartBuildTopDownHierarchy();

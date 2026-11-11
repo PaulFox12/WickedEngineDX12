@@ -123,6 +123,8 @@ namespace wi
 		// grass_visibility_texture is per-entity so multiple hair systems can each point at
 		// their own mask; nullptr falls through to a 1x1 placeholder bound by Wicked.
 		uint32_t grass_type = 0;
+		// GG: GameGuru's grass is kept dry (RefreshWetmaps): its wet map is zeroed once for each buffer made, not every frame
+		mutable bool gg_wetmap_dried = false;
 		float grass_map_inv_world_size = 0.0f;
 		float grass_map_origin_x = 0.0f;
 		float grass_map_origin_z = 0.0f;
