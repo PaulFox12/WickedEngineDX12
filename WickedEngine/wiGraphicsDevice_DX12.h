@@ -193,6 +193,7 @@ namespace wi::graphics
 			// GGMAX: with DRED armed, the outermost passes recorded this time, in the list's debug name (the report names a hung list
 			// by them); the event depth
 			std::wstring gg_dred_name;
+			void* gg_aftermath_ctx = nullptr; // GGMAX: Nsight Aftermath context handle (aftermath.txt)
 			int gg_event_depth = 0;
 			wi::vector<Semaphore> waits;
 			wi::vector<Semaphore> signals;

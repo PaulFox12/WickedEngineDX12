@@ -497,6 +497,110 @@ void GG_DumpMAPadding(const char* path)
 // scope on purpose — MSVC binds the header's block-scope extern to the global namespace.
 bool gg_leak_all_destroys = false;
 
+// GGMAX: NVIDIA Nsight Aftermath GPU crash dumps, for hunting a device hang to the shader. Armed only by an empty
+// "aftermath.txt" beside the EXE, with GFSDK_Aftermath_Lib.x64.dll (the Nsight Aftermath SDK 2026.3, NVIDIA's licence)
+// beside it too; loaded at run time, so an EXE without either never touches it. A hang or fault writes
+// aftermath_<time>.nv-gpudmp beside the EXE (open in Nsight Graphics, or decode with the SDK's JSON call); each event
+// (EventBegin) is a marker, so the dump names the pass. The few declarations below are the SDK's, by value.
+namespace gg_aftermath
+{
+	typedef int(__cdecl* PfnEnable)(uint32_t version, uint32_t watchedApis, uint32_t flags, void* gpuCrashDumpCb,
+		void* shaderDebugInfoCb, void* descriptionCb, void* resolveMarkerCb, void* pUserData);
+	typedef int(__cdecl* PfnDx12Init)(uint32_t version, uint32_t flags, ID3D12Device* pDevice);
+	typedef int(__cdecl* PfnCreateContext)(IUnknown* pUnknown, void** pOutHandle);
+	typedef int(__cdecl* PfnSetMarker)(void* handle, const void* pData, uint32_t size);
+	typedef int(__cdecl* PfnStatus)(uint32_t* pStatus);
+	static const uint32_t kVersionApi = 0x21B;          // GFSDK_Aftermath_Version_API (2.27)
+	static const uint32_t kWatchedDX = 0x1;             // GFSDK_Aftermath_GpuCrashDumpWatchedApiFlags_DX
+	static const uint32_t kFeatures = 0x1 | 0x2 | 0x8 | 0x10; // markers, resource tracking, shader debug info, shader errors
+	static const int kSuccess = 0x1;
+	static bool armed = false;
+	static PfnCreateContext fnCreateContext = nullptr;
+	static PfnSetMarker fnSetMarker = nullptr;
+	static PfnStatus fnStatus = nullptr;
+	static PfnDx12Init fnDx12Init = nullptr;
+	static std::mutex lock;
+
+	static std::string ExeDir()
+	{
+		return wi::helper::GetDirectoryFromPath(wi::helper::GetExecutablePath());
+	}
+	static void __cdecl OnCrashDump(const void* pDump, const uint32_t size, void*)
+	{
+		std::scoped_lock lck(lock);
+		char name[64];
+		std::time_t t = std::time(nullptr);
+		std::tm tmv;
+		localtime_s(&tmv, &t);
+		std::strftime(name, sizeof(name), "aftermath_%Y%m%d_%H%M%S.nv-gpudmp", &tmv);
+		std::ofstream f(ExeDir() + name, std::ios::binary);
+		f.write((const char*)pDump, size);
+	}
+	static void __cdecl OnShaderDebugInfo(const void* pInfo, const uint32_t size, void*)
+	{
+		std::scoped_lock lck(lock);
+		static int count = 0;
+		char name[64];
+		snprintf(name, sizeof(name), "aftermath_shader_%04d.nvdbg", count++);
+		std::ofstream f(ExeDir() + name, std::ios::binary);
+		f.write((const char*)pInfo, size);
+	}
+	// before any D3D12 device is made
+	static void Enable()
+	{
+		if (!wi::helper::FileExists(ExeDir() + "aftermath.txt"))
+			return;
+		HMODULE module = LoadLibraryW(L"GFSDK_Aftermath_Lib.x64.dll");
+		if (module == nullptr)
+		{
+			wi::backlog::post("GGMAX Aftermath: aftermath.txt found but GFSDK_Aftermath_Lib.x64.dll did not load", wi::backlog::LogLevel::Warning);
+			return;
+		}
+		PfnEnable fnEnable = (PfnEnable)GetProcAddress(module, "GFSDK_Aftermath_EnableGpuCrashDumps");
+		fnDx12Init = (PfnDx12Init)GetProcAddress(module, "GFSDK_Aftermath_DX12_Initialize");
+		fnCreateContext = (PfnCreateContext)GetProcAddress(module, "GFSDK_Aftermath_DX12_CreateContextHandle");
+		fnSetMarker = (PfnSetMarker)GetProcAddress(module, "GFSDK_Aftermath_SetEventMarker");
+		fnStatus = (PfnStatus)GetProcAddress(module, "GFSDK_Aftermath_GetCrashDumpStatus");
+		if (!fnEnable || !fnDx12Init || !fnCreateContext || !fnSetMarker || !fnStatus)
+		{
+			wi::backlog::post("GGMAX Aftermath: an entry point is missing from the DLL", wi::backlog::LogLevel::Warning);
+			return;
+		}
+		const int r = fnEnable(kVersionApi, kWatchedDX, 0, (void*)&OnCrashDump, (void*)&OnShaderDebugInfo, nullptr, nullptr, nullptr);
+		armed = r == kSuccess;
+		wi::backlog::post(armed ? "GGMAX Aftermath: GPU crash dumps on (aftermath.txt)" : "GGMAX Aftermath: EnableGpuCrashDumps failed",
+			armed ? wi::backlog::LogLevel::Default : wi::backlog::LogLevel::Warning);
+	}
+	// after the device is made
+	static void Initialize(ID3D12Device* pDevice)
+	{
+		if (!armed)
+			return;
+		const int r = fnDx12Init(kVersionApi, kFeatures, pDevice);
+		if (r != kSuccess)
+		{
+			armed = false;
+			char msg[96];
+			snprintf(msg, sizeof(msg), "GGMAX Aftermath: DX12_Initialize failed (0x%x)", (unsigned)r);
+			wi::backlog::post(msg, wi::backlog::LogLevel::Warning);
+		}
+	}
+	// the dump is written on Aftermath's own thread after the removal: wait up to 10 s for it
+	static void WaitForDump()
+	{
+		if (!armed)
+			return;
+		for (int i = 0; i < 100; i++)
+		{
+			uint32_t status = 0;
+			fnStatus(&status);
+			if (status == 0 || status == 2 || status == 4) // not started, failed, finished
+				break;
+			Sleep(100);
+		}
+	}
+}
+
 namespace wi::graphics
 {
 	// GGMAX 1.48a: submit-tail attribution (print-only; read by the game's GET_PERF_DATA).
@@ -3288,6 +3392,9 @@ std::mutex queue_locker;
 			}
 		}
 
+		// GGMAX: Nsight Aftermath, armed by aftermath.txt, before any device is made
+		gg_aftermath::Enable();
+
 		// GGMAX 1.51: arm DRED without the debug layer when dred.txt sits next to the EXE (see knob).
 		if (validationMode == ValidationMode::Disabled)
 		{
@@ -3482,6 +3589,7 @@ std::mutex queue_locker;
 			wilog_messagebox("D3D12: Device couldn't be created!");
 			gg_fatal_device_init();
 		}
+		gg_aftermath::Initialize(device.Get());
 
 		if (validationMode != ValidationMode::Disabled)
 		{
@@ -6718,6 +6826,10 @@ std::mutex queue_locker;
 		dx12_check(commandlist.GetCommandAllocator()->Reset());
 		commandlist.gg_dred_name.clear();
 		commandlist.gg_event_depth = 0;
+		if (gg_aftermath::armed && commandlist.gg_aftermath_ctx == nullptr && queue != QUEUE_VIDEO_DECODE)
+		{
+			gg_aftermath::fnCreateContext(commandlist.GetGraphicsCommandList(), &commandlist.gg_aftermath_ctx);
+		}
 
 		if (queue == QUEUE_VIDEO_DECODE)
 		{
@@ -7496,6 +7608,7 @@ std::mutex queue_locker;
 		// (below). It used to be set right here, so the main thread could see the flag and copy the
 		// message - a plain std::string - while this thread (often a pool thread) was still writing it.
 		gg_removal_at_ms.store(GetTickCount64(), std::memory_order_relaxed);
+		gg_aftermath::WaitForDump(); // GGMAX: Aftermath writes its dump on its own thread
 
 		const char* removedReasonString;
 		HRESULT removedReason = device->GetDeviceRemovedReason();
@@ -9937,6 +10050,11 @@ std::mutex queue_locker;
 		CommandList_DX12& commandlist = GetCommandList(cmd);
 		if (commandlist.queue == QUEUE_VIDEO_DECODE)
 			return;
+		if (gg_aftermath::armed && commandlist.gg_aftermath_ctx != nullptr)
+		{
+			// GGMAX: the pass's name as an Aftermath marker (copied by Aftermath), so a dump names where the GPU stopped
+			gg_aftermath::fnSetMarker(commandlist.gg_aftermath_ctx, name, (uint32_t)strlen(name) + 1);
+		}
 		if (gg_dred_armed)
 		{
 			// GGMAX 2.03: DRED breadcrumb contexts only decode legacy embedded markers, not the
