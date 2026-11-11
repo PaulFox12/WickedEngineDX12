@@ -557,6 +557,21 @@ float gg_reflection_tree_reach = 0.0f; // the reflection's tree billboards only 
 int gg_dred_trace_draws = 0;
 std::string gg_dred_refl_draws;
 std::mutex gg_dred_refl_draws_lock;
+// GGMAX: with DRED armed, a line in the backlog for each render resource remake (window, render path, reflection, SSGI,
+// FSR) with its frame, and the frames around one; the device-removal post writes them to log.txt
+uint64_t gg_rptrace_last = ~0ull;
+void GG_RPTrace(const char* what)
+{
+	if (!gg_dred_trace_draws)
+		return;
+	const uint64_t frame = device ? device->GetFrameCount() : 0;
+	gg_rptrace_last = frame;
+	wi::backlog::post(std::string("GGRP frame ") + std::to_string(frame) + ": " + what, wi::backlog::LogLevel::Warning);
+}
+bool GG_RPTraceNear()
+{
+	return gg_dred_trace_draws && device && gg_rptrace_last != ~0ull && device->GetFrameCount() <= gg_rptrace_last + 4;
+}
 int gg_ssgi_skip = 0; // GGMAX: SSGI sampling octaves left out, bit 0 the finest (2x) to bit 3 the widest (16x); SET_SSGISKIP
 float gg_reflection_min_size = 0.0025f; // objects whose radius is under this share of their distance are left out of the reflection (0 none)
 int gg_reflection_samples = 1; // GGMAX: 1 as DX11's reflection (0.42 ms of 14.9 saved at start_east, no visible change; 2026-11-04)
@@ -8152,7 +8167,7 @@ void OcclusionCulling_Render(const CameraComponent& camera, const Visibility& vi
 
 	wi::profiler::EndRange(range); // Occlusion Culling Render
 }
-void OcclusionCulling_Resolve(const Visibility& vis, CommandList cmd)
+void OcclusionCulling_Resolve(const Visibility& vis, CommandList cmd, bool predicationResolved)
 {
 	if (!GetOcclusionCullingEnabled() || GetFreezeCullingCameraEnabled() || !vis.scene->queryHeap.IsValid())
 	{
@@ -8179,6 +8194,17 @@ void OcclusionCulling_Resolve(const Visibility& vis, CommandList cmd)
 
 	if (device->CheckCapability(GraphicsDeviceCapability::PREDICATION))
 	{
+		// GG: a second resolve in the frame (the lights' went first, GG_OcclusionCulling_ResolveLights) finds the buffer in the
+		// PREDICATION state: stock Wicked resolved once a frame and relied on the buffer decaying to COMMON between frames. Writing
+		// it without this barrier was an unsynchronised write under the shadow maps' predicated draws, and the device hung in the
+		// next lists at random leaving a test game (2026-11-10; the debug layer's ExecuteCommandLists ids 527 and 538)
+		if (predicationResolved)
+		{
+			GPUBarrier barriers[] = {
+				GPUBarrier::Buffer(&vis.scene->queryPredicationBuffer, ResourceState::PREDICATION, ResourceState::COPY_DST),
+			};
+			device->Barrier(barriers, arraysize(barriers), cmd);
+		}
 		// Resolve into predication buffer:
 		device->QueryResolve(
 			&queryHeap,
@@ -8200,6 +8226,17 @@ void OcclusionCulling_Resolve(const Visibility& vis, CommandList cmd)
 // GG: the lights' occlusion queries resolved one by one on the prepass list, so the shadow maps' predication reads this
 // frame's, while the objects' queries are drawn later against a single-sample depth (GG_OcclusionCulling_ObjectsSingleSample,
 // which resolves every query again); the same state pattern as OcclusionCulling_Resolve
+bool GG_OcclusionCulling_LightsResolve(const Visibility& vis)
+{
+	if (!GetOcclusionCullingEnabled() || GetFreezeCullingCameraEnabled() || !vis.scene->queryHeap.IsValid())
+		return false;
+	for (uint32_t lightIndex : vis.visibleLights)
+	{
+		if (vis.scene->lights[lightIndex].occlusionquery >= 0)
+			return true;
+	}
+	return false;
+}
 void GG_OcclusionCulling_ResolveLights(const Visibility& vis, CommandList cmd)
 {
 	if (!GetOcclusionCullingEnabled() || GetFreezeCullingCameraEnabled() || !vis.scene->queryHeap.IsValid())
@@ -8270,7 +8307,8 @@ void GG_OcclusionCulling_ObjectsSingleSample(const CameraComponent& camera, cons
 	PushBarrier(GPUBarrier::Image(&resolved_depth, ResourceState::SHADER_RESOURCE, resolved_depth.desc.layout));
 	FlushBarriers(cmd);
 
-	OcclusionCulling_Resolve(vis, cmd);
+	// the lights' queries were resolved on the prepass list first (the split this path is used with)
+	OcclusionCulling_Resolve(vis, cmd, GG_OcclusionCulling_LightsResolve(vis));
 
 	wi::profiler::EndRange(range);
 	device->EventEnd(cmd);
@@ -21022,6 +21060,7 @@ namespace gg_ffx
 	{
 		if (context != nullptr)
 		{
+			GG_RPTrace("FSR context destroyed");
 			wi::graphics::GetDevice()->WaitForGPU();
 			fnDestroy(&context, nullptr);
 			context = nullptr;

@@ -59,6 +59,8 @@ namespace wi::renderer
 	// GGMAX: the SSGI's sampling octaves left out (bit 0 the finest, 2x, to bit 3 the widest, 16x); 0 all drawn
 	extern int gg_ssgi_skip;
 	extern int gg_dred_trace_draws;
+	void GG_RPTrace(const char* what);
+	bool GG_RPTraceNear();
 	extern std::string gg_dred_refl_draws;
 	extern std::mutex gg_dred_refl_draws_lock;
 	// GGMAX: the planar reflection's samples per pixel, 1 (the default: drawn straight into the resolved target, as DX11's
@@ -1399,7 +1401,12 @@ namespace wi::renderer
 	void GG_OcclusionCulling_ResolveLights(const Visibility& vis, wi::graphics::CommandList cmd);
 	void GG_OcclusionCulling_ObjectsSingleSample(const wi::scene::CameraComponent& camera, const Visibility& vis, const wi::graphics::Texture& resolved_depth,
 		const wi::graphics::Texture& depth_1x, wi::graphics::CommandList cmd);
-	void OcclusionCulling_Resolve(const Visibility& vis, wi::graphics::CommandList cmd);
+	// GG: predicationResolved - GG_OcclusionCulling_ResolveLights already resolved into the predication buffer this frame and left
+	// it in the PREDICATION state, so it is moved back to COPY_DST first
+	void OcclusionCulling_Resolve(const Visibility& vis, wi::graphics::CommandList cmd, bool predicationResolved = false);
+	// GG: whether GG_OcclusionCulling_ResolveLights resolves anything for this visibility (so the predication buffer leaves it in
+	// the PREDICATION state)
+	bool GG_OcclusionCulling_LightsResolve(const Visibility& vis);
 
 	void ComputeReprojectedDepthPyramid(
 		const wi::graphics::Texture& input_depth,

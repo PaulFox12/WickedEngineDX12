@@ -188,6 +188,7 @@ namespace wi
 		if (gg_resize_pending)
 		{
 			gg_resize_pending = false;
+			wi::renderer::GG_RPTrace("SetWindow applied (deferred)");
 			SetWindow(window);
 		}
 

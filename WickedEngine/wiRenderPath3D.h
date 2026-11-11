@@ -120,6 +120,7 @@ namespace wi
 		bool crtFilterEnabled = false;
 
 		mutable bool first_frame = true;
+		uint64_t gg_rp_rebuild_frame = ~0ull;
 		mutable bool prerender_happened = false;
 
 		void RenderCameraComponents(wi::jobsystem::context& ctx) const;

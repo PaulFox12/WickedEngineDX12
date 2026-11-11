@@ -1,5 +1,6 @@
 ﻿#include "wiRenderPath3D.h"
 #include "wiRenderer.h"
+#include "wiBacklog.h"
 #include "wiImage.h"
 #include "wiHelper.h"
 #include "wiTextureHelper.h"
@@ -158,7 +159,12 @@ namespace wi
 
 	void RenderPath3D::ResizeBuffers()
 	{
+		{
+			const XMUINT2 r = GetInternalResolution();
+			wi::renderer::GG_RPTrace((std::string("ResizeBuffers internal ") + std::to_string(r.x) + "x" + std::to_string(r.y)).c_str());
+		}
 		first_frame = true;
+		gg_rp_rebuild_frame = wi::graphics::GetDevice()->GetFrameCount();
 		DeleteGPUResources();
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
@@ -1070,6 +1076,25 @@ namespace wi
 
 	void RenderPath3D::Render() const
 	{
+		// GGMAX: 10 frames after a rebuild the trace is written out (an Error post rewrites log.txt), so a clean exit can be
+		// set beside a hanging one
+		{
+			static uint64_t gg_rp_flushed_for = ~0ull;
+			if (wi::renderer::gg_dred_trace_draws && gg_rp_rebuild_frame != ~0ull && gg_rp_flushed_for != gg_rp_rebuild_frame
+				&& wi::graphics::GetDevice()->GetFrameCount() >= gg_rp_rebuild_frame + 10)
+			{
+				gg_rp_flushed_for = gg_rp_rebuild_frame;
+				wi::backlog::post("GGRP trace written (no hang 10 frames after the rebuild)", wi::backlog::LogLevel::Error);
+			}
+		}
+		if (wi::renderer::GG_RPTraceNear())
+		{
+			wi::renderer::GG_RPTrace((std::string("Render: reflections ") + (getReflectionsEnabled() ? "on" : "off")
+				+ " planar requested " + (visibility_main.IsRequestedPlanarReflections() ? "yes" : "no")
+				+ " refl target " + std::to_string(depthBuffer_Reflection.desc.width) + "x" + std::to_string(depthBuffer_Reflection.desc.height)
+				+ " refl camera " + std::to_string((int)camera_reflection.width) + "x" + std::to_string((int)camera_reflection.height)
+				+ " ssgi " + (getSSGIEnabled() ? "on" : "off") + " fsr " + (getFSR2Enabled() ? "on" : "off")).c_str());
+		}
 		if (!prerender_happened)
 		{
 			// Since 0.71.694: PreRender must be called before Render() because it sets up rendering resources!
@@ -3667,6 +3692,7 @@ namespace wi
 	}
 	void RenderPath3D::setSSGIEnabled(bool value)
 	{
+		wi::renderer::GG_RPTrace(value ? "setSSGIEnabled 1" : "setSSGIEnabled 0");
 		ssgiEnabled = value;
 
 		if (value)
@@ -3747,6 +3773,7 @@ namespace wi
 	}
 	void RenderPath3D::setFSREnabled(bool value)
 	{
+		wi::renderer::GG_RPTrace(value ? "setFSREnabled 1" : "setFSREnabled 0");
 		fsrEnabled = value;
 
 		if (resolutionScale < 1.0f && fsrEnabled)
@@ -3903,6 +3930,7 @@ namespace wi
 			if (rtReflection.IsValid() && rtReflection.desc.width == desc.width && rtReflection.desc.height == desc.height
 				&& rtReflection.desc.format == desc.format && rtReflection.desc.sample_count == desc.sample_count)
 				return;
+			wi::renderer::GG_RPTrace((std::string("reflection targets made ") + std::to_string(desc.width) + "x" + std::to_string(desc.height)).c_str());
 			desc.misc_flags = ResourceMiscFlag::TRANSIENT_ATTACHMENT;
 			desc.layout = ResourceState::RENDERTARGET;
 			device->CreateTexture(&desc, nullptr, &rtReflection);
@@ -3938,6 +3966,7 @@ namespace wi
 		}
 		else
 		{
+			wi::renderer::GG_RPTrace("reflection targets released");
 			rtReflection = {};
 			depthBuffer_Reflection = {};
 			tiledLightResources_planarReflection = {};
