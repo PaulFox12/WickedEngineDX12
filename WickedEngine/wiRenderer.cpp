@@ -7871,6 +7871,7 @@ void UpdateRenderDataAsync(
 	if (!vis.visibleEmitters.empty() || vis.scene->weather.rain_amount > 0)
 	{
 		auto range = wi::profiler::BeginRangeGPU("EmittedParticles - Simulate", cmd);
+		auto gg_cpu_range = wi::profiler::BeginRangeCPU("EmittedParticles - Simulate (CPU)"); // GG: the recording's own cost
 		// GG: a stage at a time over all the emitters, so the GPU waits once per stage and not per emitter
 		for (int stage = 0; stage < wi::EmittedParticleSystem::UPDATEGPU_STAGE_COUNT; ++stage)
 		{
@@ -7888,6 +7889,7 @@ void UpdateRenderDataAsync(
 			}
 			wi::EmittedParticleSystem::UpdateGPU_StageEnd(update_stage, cmd);
 		}
+		wi::profiler::EndRange(gg_cpu_range);
 		wi::profiler::EndRange(range);
 	}
 
@@ -8408,6 +8410,7 @@ void DrawSoftParticles(
 	auto range = distortion ?
 		wi::profiler::BeginRangeGPU("EmittedParticles - Render (Distortion)", cmd) :
 		wi::profiler::BeginRangeGPU("EmittedParticles - Render", cmd);
+	auto gg_cpu_range = wi::profiler::BeginRangeCPU(distortion ? "EmittedParticles - Draw Distortion (CPU)" : "EmittedParticles - Draw (CPU)"); // GG: the recording's own cost
 
 	BindCommonResources(cmd);
 
@@ -8468,6 +8471,7 @@ void DrawSoftParticles(
 
 	device->BindShadingRate(ShadingRate::RATE_1X1, cmd);
 
+	wi::profiler::EndRange(gg_cpu_range);
 	wi::profiler::EndRange(range);
 }
 
@@ -8504,6 +8508,7 @@ bool HasHalfResolutionParticles(const Visibility& vis)
 void DrawSoftParticles_Half(const Visibility& vis, CommandList cmd)
 {
 	auto range = wi::profiler::BeginRangeGPU("EmittedParticles - Render (Half Resolution)", cmd);
+	auto gg_cpu_range = wi::profiler::BeginRangeCPU("EmittedParticles - Draw Half (CPU)"); // GG: the recording's own cost
 	BindCommonResources(cmd);
 	size_t emitterCount = vis.visibleEmitters.size();
 	static thread_local wi::vector<uint32_t> hashes;
@@ -8525,6 +8530,7 @@ void DrawSoftParticles_Half(const Visibility& vis, CommandList cmd)
 		emitter.Draw(*material, cmd, nullptr, true);
 	}
 	device->BindShadingRate(ShadingRate::RATE_1X1, cmd);
+	wi::profiler::EndRange(gg_cpu_range);
 	wi::profiler::EndRange(range);
 }
 
@@ -8541,6 +8547,7 @@ bool HasLateParticles(const Visibility& vis)
 void DrawSoftParticles_Late(const Visibility& vis, CommandList cmd)
 {
 	auto range = wi::profiler::BeginRangeGPU("EmittedParticles - Render (After TAA)", cmd);
+	auto gg_cpu_range = wi::profiler::BeginRangeCPU("EmittedParticles - Draw After TAA (CPU)"); // GG: the recording's own cost
 	BindCommonResources(cmd);
 	size_t emitterCount = vis.visibleEmitters.size();
 	static thread_local wi::vector<uint32_t> hashes;
@@ -8563,6 +8570,7 @@ void DrawSoftParticles_Late(const Visibility& vis, CommandList cmd)
 		emitter.Draw(*material, cmd, nullptr, false, true);
 	}
 	device->BindShadingRate(ShadingRate::RATE_1X1, cmd);
+	wi::profiler::EndRange(gg_cpu_range);
 	wi::profiler::EndRange(range);
 }
 

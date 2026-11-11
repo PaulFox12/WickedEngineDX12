@@ -16,6 +16,10 @@ namespace wi
 
 namespace wi
 {
+	// GG: seconds an emitter with nothing alive and nothing to emit keeps being simulated and drawn before it is parked
+	// (0.25; below 0, the old rule of twice its longest particle life); harness SET_EMITTERPARK
+	extern float gg_emitter_park_wait;
+
 	class EmittedParticleSystem
 	{
 	public:
@@ -79,6 +83,10 @@ namespace wi
 		mutable wi::vector<EmitLocation> emit_locations;
 
 	public:
+		// GG: make its GPU buffers now, before its first resume (Lua WarmEmitterBuffers spreads this over frames, so a pooled
+		// effect's first use doesn't stall the frame making them); nothing if they exist
+		void GG_MakeBuffers() { CreateSelfBuffers(); }
+
 		void UpdateCPU(const wi::scene::TransformComponent& transform, float dt);
 		// GG: after UpdateCPU, on the scene's update. The constants were a buffer of 64 KB each, written in UpdateGPU: a draw recorded on
 		// another thread reads them now, and they must not change under it, so they are set before any recording starts

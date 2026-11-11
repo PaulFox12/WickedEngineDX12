@@ -23,6 +23,8 @@ using namespace wi::enums;
 
 namespace wi
 {
+	float gg_emitter_park_wait = 0.25f;
+
 	static Shader vertexShader;
 	static Shader vertexShader_lighting; // GG: the lit layers' vertex shader, lit at the corners and the centre
 	static Shader meshShader;
@@ -480,8 +482,16 @@ namespace wi
 		else if (bActive)
 		{
 			inactive_timer += dt;
-			const float worst_case_life = life * life_scale * (1.0f + std::abs(random_life) * 0.5f); // GG: the layer's life scale lengthens the wait
-			if (inactive_timer > worst_case_life * 2.0f + 0.1f)
+			// GG: nothing emitted and nothing alive (the count read back a few frames late) for gg_emitter_park_wait seconds
+			// parks it (0.25); below 0, the old rule's twice its longest particle life, which kept a strike's long-lived dust
+			// layers recording every stage for seconds after their last particle died. Any emission wakes it the same frame
+			float wait = gg_emitter_park_wait;
+			if (wait < 0)
+			{
+				const float worst_case_life = life * life_scale * (1.0f + std::abs(random_life) * 0.5f); // GG: the layer's life scale lengthens the wait
+				wait = worst_case_life * 2.0f + 0.1f;
+			}
+			if (inactive_timer > wait)
 			{
 				bActive = false;
 			}
