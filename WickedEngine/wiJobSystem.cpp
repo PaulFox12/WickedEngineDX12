@@ -69,7 +69,7 @@ namespace wi::jobsystem
 				task(args);
 			}
 
-			return ctx->counter.fetch_sub(1, std::memory_order_relaxed); // returns context counter's previous value
+			return ctx->counter.fetch_sub(1, std::memory_order_release); // returns context counter's previous value (Wicked 132e1bf6: release, so a waiter sees the job's writes)
 		}
 	};
 	struct JobQueue
@@ -147,6 +147,7 @@ namespace wi::jobsystem
 		std::atomic<uint8_t> nextQueue{ 0 };
 		std::condition_variable sleepingCondition; // for workers that are sleeping
 		std::mutex sleepingMutex; // for workers that are sleeping
+		uint32_t wakeValue = 0; // bumped under sleepingMutex; a notify alone can be missed (Wicked 132e1bf6)
 		std::condition_variable waitingCondition; // for unblocking a Wait()
 		std::mutex waitingMutex; // for unblocking a Wait()
 		uint8_t mod_lut[256] = {}; // lookup table from atomic uint8_t -> threadID (avoiding modulo)
@@ -165,6 +166,20 @@ namespace wi::jobsystem
 		inline JobQueue& next_queue()
 		{
 			return jobQueuePerThread[next_queue_index()];
+		}
+
+		// Wicked 132e1bf6: a worker could miss a notify that came between its last look at the queues and its wait, and sleep
+		// with jobs queued; the value bumped under the mutex makes the wait see it
+		inline void wake_sleepers(bool notifyAll)
+		{
+			{
+				std::scoped_lock lock(sleepingMutex);
+				wakeValue++;
+			}
+			if (notifyAll)
+				sleepingCondition.notify_all();
+			else
+				sleepingCondition.notify_one();
 		}
 
 		// Start working on a job queue
@@ -228,7 +243,7 @@ namespace wi::jobsystem
 				{
 					for (auto& x : resources)
 					{
-						x.sleepingCondition.notify_all(); // wakes up sleeping worker threads
+						x.wake_sleepers(true); // wakes up sleeping worker threads
 					}
 				}
 			});
@@ -271,7 +286,7 @@ namespace wi::jobsystem
 		wi::Timer timer;
 
 		// Retrieve the number of hardware threads in this system:
-		internal_state.numCores = std::thread::hardware_concurrency();
+		internal_state.numCores = std::max(1u, std::thread::hardware_concurrency());
 
 		for (int prio = 0; prio < int(Priority::Count); ++prio)
 		{
@@ -341,13 +356,17 @@ namespace wi::jobsystem
 					}
 #endif // PLATFORM_LINUX
 
-					while (internal_state.alive.load(std::memory_order_relaxed))
+					uint32_t seenValue = 0;
+					while (internal_state.alive.load(std::memory_order_acquire))
 					{
 						res.work(threadID);
 
 						// finished with jobs, put to sleep
 						std::unique_lock<std::mutex> lock(res.sleepingMutex);
-						res.sleepingCondition.wait(lock);
+						res.sleepingCondition.wait(lock, [&res, &seenValue] {
+							return res.wakeValue != seenValue;
+						});
+						seenValue = res.wakeValue;
 					}
 
 				});
@@ -492,7 +511,7 @@ namespace wi::jobsystem
 		}
 
 		res.next_queue().push_back(job);
-		res.sleepingCondition.notify_one();
+		res.wake_sleepers(false);
 	}
 
 	void Dispatch(context& ctx, uint32_t jobCount, uint32_t groupSize, const job_function_type& task, size_t sharedmemory_size)
@@ -531,9 +550,9 @@ namespace wi::jobsystem
 			}
 		}
 
-		if (res.numThreads > 1)
+		if (res.numThreads > 0)
 		{
-			res.sleepingCondition.notify_all();
+			res.wake_sleepers(true);
 		}
 	}
 
@@ -546,7 +565,7 @@ namespace wi::jobsystem
 	bool IsBusy(const context& ctx)
 	{
 		// Whenever the context label is greater than zero, it means that there is still work that needs to be done
-		return ctx.counter.load(std::memory_order_relaxed) > 0;
+		return ctx.counter.load(std::memory_order_acquire) > 0;
 	}
 
 	void Wait(const context& ctx)
@@ -556,7 +575,7 @@ namespace wi::jobsystem
 			PriorityResources& res = internal_state.resources[int(ctx.priority)];
 
 			// Wake any threads that might be sleeping:
-			res.sleepingCondition.notify_all();
+			res.wake_sleepers(true);
 
 			// work() will pick up any jobs that are on standby and execute them on this thread:
 			const void* outer = waitingFor;

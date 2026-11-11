@@ -535,8 +535,8 @@ inline void write_mipmap_feedback(uint materialIndex, float4 uvsets_dx, float4 u
 	{
 		const float lod_uvset0 = get_lod(65536u, uvsets_dx.xy, uvsets_dy.xy);
 		const float lod_uvset1 = get_lod(65536u, uvsets_dx.zw, uvsets_dy.zw);
-		const uint resolution0 = 65536u >> uint(max(0, lod_uvset0));
-		const uint resolution1 = 65536u >> uint(max(0, lod_uvset1));
+		const uint resolution0 = 65536u >> clamp(uint(lod_uvset0), 1u, 16u); // overflow at lod 0 (Wicked c72837af)
+		const uint resolution1 = 65536u >> clamp(uint(lod_uvset1), 1u, 16u); // overflow at lod 0 (Wicked c72837af)
 		const uint mask = resolution0 | (resolution1 << 16u);
 		const uint wave_mask = WaveActiveBitOr(mask);
 		if(WaveIsFirstLane())

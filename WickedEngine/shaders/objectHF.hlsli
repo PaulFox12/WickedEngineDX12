@@ -1661,6 +1661,10 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 	coverage = AlphaToCoverage(color.a, alphatest, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
 #endif // TRANSPARENT
 #endif // DISABLE_ALPHATEST
+
+#ifdef ENVMAPRENDERING
+	color = clamp(color, 0, 1000); // don't allow very large values in envmap, because it could cause filtering to blow up
+#endif // ENVMAPRENDERING
 	
 	// end point:
 #ifdef PREPASS

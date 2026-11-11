@@ -6595,6 +6595,23 @@ std::mutex queue_locker;
 		auto internal_state = to_internal(resource);
 		internal_state->allocationhandler->destroylocker.lock();
 		internal_state->destroy_subresources();
+		// Wicked bf2f369b: a texture's render target and depth views were left behind (only the SRVs and UAVs were freed)
+		if (resource->IsTexture())
+		{
+			auto texture_internal = to_internal<Texture>(resource);
+			texture_internal->rtv.destroy();
+			texture_internal->dsv.destroy();
+			for (auto& x : texture_internal->subresources_rtv)
+			{
+				x.destroy();
+			}
+			texture_internal->subresources_rtv.clear();
+			for (auto& x : texture_internal->subresources_dsv)
+			{
+				x.destroy();
+			}
+			texture_internal->subresources_dsv.clear();
+		}
 		internal_state->allocationhandler->destroylocker.unlock();
 	}
 
@@ -8450,6 +8467,11 @@ std::mutex queue_locker;
 				{
 					DSV.StencilBeginningAccess = DSV.DepthBeginningAccess;
 					DSV.StencilEndingAccess = DSV.DepthEndingAccess;
+				}
+				else
+				{
+					DSV.StencilBeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS;
+					DSV.StencilEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS;
 				}
 			}
 			break;
