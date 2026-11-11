@@ -47,6 +47,13 @@ namespace wi::scene
 	// GG: the distance between LOD steps (the level's LOD Multiplier times 200, the DX11 rule): LOD 1 past two
 	// steps, LOD 2 past three, LOD 3 past four. Negative keeps the engine's own choice by projected size.
 	float gg_lod_step = -1.0f;
+	// GG: LOD transitions (2026-11-11). A finer LOD comes back only nearer than (1 - gg_lod_hysteresis) of the distance the
+	// coarser came in at, so an object on a boundary doesn't flick; a mesh with outline errors (MeshComponent::gg_lod_error)
+	// takes each LOD where its error reaches gg_lod_pixel_budget pixels on screen; for gg_lod_fade_time seconds after a switch
+	// both LODs draw, dithered in and out on complementary patterns (0 swaps at once). Read by DrawScene and RenderMeshes
+	float gg_lod_hysteresis = 0.1f;
+	float gg_lod_pixel_budget = 1.0f;
+	float gg_lod_fade_time = 0.25f;
 	// GG: terrain chunks (a GameGuru terrain material, MaterialComponent::GG_TERRAIN) choose their LOD by the distance from
 	// the camera to the chunk's nearest point, in steps of gg_terrain_lod_step (0: the chunk's own width): LOD 0 within
 	// one step, 1 within two, 2 within four, 3 beyond; the same whichever way the camera looks. GameGuru's object rule
@@ -5933,8 +5940,10 @@ namespace wi::scene
 					const MaterialComponent* gg_chunk_material = (gg_terrain_lod_step >= 0 && !mesh.subsets.empty()) ? materials.GetComponent(mesh.subsets[0].materialID) : nullptr;
 					if (object.gg_forcelod > 0)
 					{
-						// GG: a forced LOD, whatever the distance; past the mesh's last it draws the last
+						// GG: a forced LOD, whatever the distance; past the mesh's last it draws the last, with no fade
 						object.lod = std::min((uint32_t)object.gg_forcelod - 1, mesh.GetLODCount() - 1);
+						object.gg_lod_prev = (uint8_t)object.lod;
+						object.gg_lod_fade = 1e9f;
 					}
 					else if (gg_chunk_material != nullptr && (gg_chunk_material->_flags & MaterialComponent::GG_TERRAIN))
 					{
@@ -5954,11 +5963,48 @@ namespace wi::scene
 					else if (gg_lod_step >= 0)
 					{
 						const float dist = wi::math::Distance(camera.Eye, object.center);
+						// the distances LOD 1 to 3 come in at: by the mesh's outline errors on screen, else GameGuru's steps
+						float comein[4] = { 0, gg_lod_step * 2, gg_lod_step * 3, gg_lod_step * 4 };
+						if (mesh.gg_lod_error[0] > 0 && camera.height > 0 && camera.fov > 0)
+						{
+							const float scale = std::max(std::max(XMVectorGetX(XMVector3Length(W.r[0])), XMVectorGetX(XMVector3Length(W.r[1]))), XMVectorGetX(XMVector3Length(W.r[2])));
+							const float pixels_per_unit_at_1 = camera.height / (2.0f * std::tan(camera.fov * 0.5f));
+							const float budget = std::max(gg_lod_pixel_budget, 0.05f);
+							for (int k = 1; k <= 3; ++k)
+							{
+								const float err = mesh.gg_lod_error[k - 1] > 0 ? mesh.gg_lod_error[k - 1] : mesh.gg_lod_error[0];
+								comein[k] = std::max(comein[k - 1], err * scale * pixels_per_unit_at_1 / budget);
+							}
+						}
+						const uint32_t lod_count = mesh.GetLODCount();
 						uint32_t lod = 0;
-						if (dist > gg_lod_step * 2) lod = 1;
-						if (dist > gg_lod_step * 3) lod = 2;
-						if (dist > gg_lod_step * 4) lod = 3;
-						object.lod = std::min(lod, mesh.GetLODCount() - 1);
+						if (dist > comein[1]) lod = 1;
+						if (dist > comein[2]) lod = 2;
+						if (dist > comein[3]) lod = 3;
+						lod = std::min(lod, lod_count - 1);
+						// hysteresis: a finer LOD only once nearer than (1 - gg_lod_hysteresis) of where the coarser came in
+						const uint32_t current = std::min((uint32_t)object.lod, lod_count - 1);
+						if (object.gg_lod_prev != 0xFF && lod < current)
+						{
+							uint32_t keep = current;
+							while (keep > lod && dist < comein[keep] * (1.0f - gg_lod_hysteresis))
+								keep--;
+							lod = keep;
+						}
+						if (object.gg_lod_prev == 0xFF)
+						{
+							object.gg_lod_prev = (uint8_t)lod; // the first choice, no fade
+						}
+						else if (lod != current)
+						{
+							object.gg_lod_prev = (uint8_t)current;
+							object.gg_lod_fade = 0;
+						}
+						else if (object.gg_lod_fade < 1e8f)
+						{
+							object.gg_lod_fade += dt;
+						}
+						object.lod = (uint16_t)lod;
 					}
 					else
 					{

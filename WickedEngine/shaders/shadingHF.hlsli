@@ -834,23 +834,39 @@ inline uint AlphaToCoverage(half alpha, half alphaTest, half dithering, float4 s
 	if (GetFrame().options & OPTION_BIT_TEMPORALAA_ENABLED)
 	{
 		// When Temporal AA is enabled, dither the alpha mask with animated blue noise:
-		if (alphaTest > 0 || dithering > 0)
+		if (alphaTest > 0 || dithering != 0)
 		{
-			alpha -= dithering + blue_noise(svposition.xy, svposition.w).x / GetCamera().sample_count;
+			const half gg_noise = blue_noise(svposition.xy, svposition.w).x / GetCamera().sample_count;
+			// GG: a negative dither is an LOD crossfade's LOD come in: it shows where the plain one of the same size hides
+			// (noise over 1 - t), so the two LODs together cover each pixel once
+			if (dithering < 0)
+				alpha += gg_noise - dithering - 2;
+			else
+				alpha -= dithering + gg_noise;
 		}
+	}
+	else if ((GetFrame().options & OPTION_BIT_GG_TEMPORAL_DITHER) && dithering != 0)
+	{
+		// GG: under FSR 3.1 the dither animates as under the TAA (an LOD crossfade, a distance fade), so it resolves to a fade
+		const half gg_noise = blue_noise(svposition.xy, svposition.w).x / GetCamera().sample_count;
+		if (dithering < 0)
+			alpha += gg_noise - dithering - 2;
+		else
+			alpha -= dithering + gg_noise;
 	}
 	else if (GetCamera().sample_count > 1)
 	{
 		// Multisampled transparency:
 		//	alphaTest is not made, pure alpha is used for sample mask
 		//	dithering is modifying final alpha
-		alpha -= dithering;
+		alpha -= dithering < 0 ? 1 + dithering : dithering; // GG: a negative dither shows by its size
 	}
 	else
 	{
 		// Without Temporal AA and MSAA, regular alpha test behaviour will be used:
 		//	emulate clip() behaviour with combined alpha test and dithering
-		const half cutout_pattern = dither(svposition.xy) - dithering;
+		// GG: a negative dither (an LOD crossfade's LOD come in) keeps the pixels the plain one of its size cuts
+		const half cutout_pattern = dithering < 0 ? (-dithering - dither(svposition.xy) - 0.0001) : (dither(svposition.xy) - dithering);
 		if (cutout_pattern < 0)
 		{
 			alpha = 0;

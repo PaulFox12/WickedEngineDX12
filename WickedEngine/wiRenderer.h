@@ -58,6 +58,8 @@ namespace wi::renderer
 	extern float gg_reflection_min_size;
 	// GGMAX: the SSGI's sampling octaves left out (bit 0 the finest, 2x, to bit 3 the widest, 16x); 0 all drawn
 	extern int gg_ssgi_skip;
+	extern bool gg_temporal_upscale;
+	extern std::atomic<int> gg_dbg_lod_fading;
 	// GGMAX: heat shimmer (see wiRenderer.cpp), drawn by GG_DrawHeatShimmer inside the distortion particles' pass
 	extern float gg_heat_strength, gg_heat_start, gg_heat_full, gg_heat_sun_boost, gg_heat_band, gg_heat_scale, gg_heat_speed;
 	void GG_DrawHeatShimmer(wi::graphics::CommandList cmd);

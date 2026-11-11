@@ -530,6 +530,7 @@ namespace wi
 	void RenderPath3D::PreRender()
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();
+		wi::renderer::gg_temporal_upscale = getFSR2Enabled(); // GGMAX: FSR 3.1 averages animated dithers (the frame's options)
 
 		if (rtMain_render.desc.sample_count != msaaSampleCount)
 		{

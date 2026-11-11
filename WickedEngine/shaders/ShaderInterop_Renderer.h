@@ -875,7 +875,7 @@ struct ShaderMeshInstancePointer
 	{
 		data = 0;
 		data |= _instanceIndex & 0xFFFFFF;
-		data |= (camera_index & 0xF) << 24u;
+		data |= (camera_index & 0x7) << 24u; // GG: bit 27 is the complementary dither's (an LOD crossfade's LOD come in)
 		data |= (uint(dither * 15.0f) & 0xF) << 28u;
 	}
 
@@ -886,11 +886,13 @@ struct ShaderMeshInstancePointer
 	}
 	inline uint GetCameraIndex()
 	{
-		return (data >> 24u) & 0xF;
+		return (data >> 24u) & 0x7;
 	}
+	// GG: negative for the complementary pattern (bit 27, an LOD crossfade's LOD come in): -p shows where the plain p hides
 	inline half GetDither()
 	{
-		return half((data >> 28u) & 0xF) / 15.0;
+		const half d = half((data >> 28u) & 0xF) / 15.0;
+		return (data & (1u << 27u)) ? -d : d;
 	}
 #endif // __cplusplus
 };
@@ -1334,6 +1336,8 @@ enum FRAME_OPTIONS
 	// GGMAX 3.114: fog optical depth over the distance PAST fog.start only - DX11 GG's curve (fogHF.hlsli
 	// GetFogAmount). Off = the stock curve. Frame-wide, so the game's custom draws mirror it exactly.
 	OPTION_BIT_GG_DX11_FOG_CURVE = 1 << 27,
+	// GG: a temporal upscaler (FSR 3.1) in place of the TAA: dithers animate with blue noise as under the TAA, so it averages them
+	OPTION_BIT_GG_TEMPORAL_DITHER = 1 << 26,
 };
 
 // ---------- Common Constant buffers: -----------------

@@ -582,6 +582,10 @@ float gg_heat_sun_boost = 2.0f;
 float gg_heat_band = 0.06f;
 float gg_heat_scale = 1.0f;
 float gg_heat_speed = 1.0f;
+// GG: the objects drawn twice this frame for an LOD crossfade (DUMP_LODSTATS)
+std::atomic<int> gg_dbg_lod_fading{ 0 };
+// GG: the temporal upscaler (FSR 3.1) drew last frame, set by RenderPath3D (OPTION_BIT_GG_TEMPORAL_DITHER)
+bool gg_temporal_upscale = false;
 int gg_ssgi_skip = 0; // GGMAX: SSGI sampling octaves left out, bit 0 the finest (2x) to bit 3 the widest (16x); SET_SSGISKIP
 float gg_reflection_min_size = 0.0025f; // objects whose radius is under this share of their distance are left out of the reflection (0 none)
 int gg_reflection_samples = 1; // GGMAX: 1 as DX11's reflection (0.42 ms of 14.9 saved at start_east, no visible change; 2026-11-04)
@@ -4782,7 +4786,9 @@ void RenderMeshes(
 		const ObjectComponent& instance = vis.scene->objects[instanceIndex];
 		const AABB& instanceAABB = vis.scene->aabb_objects[instanceIndex];
 		const uint8_t userStencilRefOverride = instance.userStencilRef;
-		const uint8_t lod = batch.lod_override == 0xFF ? (uint8_t)instance.lod : batch.lod_override;
+		// GG: lod_override's bits 0x20 and 0x40 mark an LOD crossfade's two copies (DrawScene), the LOD in the low bits
+		const uint8_t gg_lod_fade_flags = batch.lod_override == 0xFF ? 0 : (batch.lod_override & 0x60);
+		const uint8_t lod = batch.lod_override == 0xFF ? (uint8_t)instance.lod : (uint8_t)(batch.lod_override & 0x1F);
 
 		// When we encounter a new mesh inside the global instance array, we begin a new RenderBatch:
 		if (meshIndex != instancedBatch.meshIndex ||
@@ -4802,8 +4808,25 @@ void RenderMeshes(
 			instancedBatch.lod = lod;
 		}
 
-		const float dither = gg_no_fade ? instance.GetTransparency() : std::max(instance.GetTransparency(), std::max(0.0f, batch.GetDistance() - instance.fadeDistance) / instance.radius);
-		if (dither > 0.99f)
+		float dither = gg_no_fade ? instance.GetTransparency() : std::max(instance.GetTransparency(), std::max(0.0f, batch.GetDistance() - instance.fadeDistance) / instance.radius);
+		// GG: an LOD crossfade: the LOD left dithers out by the fade's progress p, the LOD come in shows on the complementary
+		// pattern (the instance pointer's invert bit) by p, so together they cover each pixel once
+		bool gg_dither_in = false;
+		if (gg_lod_fade_flags != 0)
+		{
+			const float p = wi::scene::gg_lod_fade_time > 0 ? saturate(instance.gg_lod_fade / wi::scene::gg_lod_fade_time) : 1.0f;
+			if (gg_lod_fade_flags & 0x40)
+			{
+				dither = std::max(dither, p);
+			}
+			else if (p < 0.99f)
+			{
+				gg_dither_in = true;
+				dither = p;
+				instancedBatch.forceAlphatestForDithering = 1;
+			}
+		}
+		if (!gg_dither_in && dither > 0.99f)
 		{
 			continue;
 		}
@@ -4829,6 +4852,8 @@ void RenderMeshes(
 
 			ShaderMeshInstancePointer poi;
 			poi.Create(instanceIndex, camera_index, dither);
+			if (gg_dither_in)
+				poi.data |= 1u << 27u; // GG: the complementary dither (ShaderMeshInstancePointer::GetDither answers it negative)
 
 			// Write into actual GPU-buffer:
 			std::memcpy((ShaderMeshInstancePointer*)instances.data + instanceCount, &poi, sizeof(poi)); // memcpy whole structure into mapped pointer to avoid read from uncached memory
@@ -6159,6 +6184,10 @@ void UpdatePerFrameData(
 	if (GetTemporalAAEnabled())
 	{
 		frameCB.options |= OPTION_BIT_TEMPORALAA_ENABLED;
+	}
+	else if (gg_temporal_upscale)
+	{
+		frameCB.options |= OPTION_BIT_GG_TEMPORAL_DITHER; // GG: FSR 3.1 averages animated dither as the TAA does
 	}
 	if (GetVXGIEnabled())
 	{
@@ -10196,7 +10225,23 @@ void DrawScene(
 			}
 			else
 			{
-				renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits);
+				// GG: an LOD crossfade (wi::scene::gg_lod_fade_time after a switch): the new LOD queued dithering in (lod | 0x20)
+				// and the one it left dithering out (lod | 0x40), on complementary patterns, in the camera's prepass and main
+				// pass only; shadows, reflections and probes switch at once
+				const bool gg_fading = wi::scene::gg_lod_fade_time > 0 && object.gg_lod_fade < wi::scene::gg_lod_fade_time
+					&& object.gg_lod_prev != 0xFF && object.gg_lod_prev != object.lod && !skip_planar_reflection_objects && !foreground
+					&& (renderPass == RENDERPASS_MAIN || renderPass == RENDERPASS_PREPASS || renderPass == RENDERPASS_PREPASS_DEPTHONLY);
+				if (gg_fading)
+				{
+					renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits, 0xFF, (uint8_t)((object.lod & 0x1F) | 0x20));
+					renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits, 0xFF, (uint8_t)((object.gg_lod_prev & 0x1F) | 0x40));
+					if (renderPass == RENDERPASS_MAIN && !transparent)
+						gg_dbg_lod_fading.fetch_add(1, std::memory_order_relaxed);
+				}
+				else
+				{
+					renderQueue.add(object.mesh_index, instanceIndex, distance, object.sort_bits);
+				}
 			}
 		}
 		if (gg_dbg_refl_transparent_capture && transparent && skip_planar_reflection_objects && renderPass == RENDERPASS_MAIN && !foreground)

@@ -350,7 +350,11 @@ struct VertexSurface
 		position = float4(pos_wind.xyz, 1);
 		normal = input.GetNormal();
 		color = half4(material.GetBaseColor() * input.GetInstance().GetColor());
-		color.a *= half(1 - input.GetInstancePointer().GetDither());
+		{
+			// GG: a negative dither is an LOD crossfade's LOD come in, showing by its value
+			const half gg_d = input.GetInstancePointer().GetDither();
+			color.a *= gg_d < 0 ? -gg_d : half(1 - gg_d);
+		}
 
 		[branch]
 		if (material.IsUsingVertexColors())

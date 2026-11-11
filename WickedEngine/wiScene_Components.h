@@ -735,6 +735,9 @@ namespace wi::scene
 
 		float tessellationFactor = 0.0f;
 		uint32_t subsets_per_lod = 0; // this needs to be specified if there are multiple LOD levels
+		// GG: each LOD's worst outline error against LOD 0 in the model's units (DBO block 506), LOD 1 to 3; 0 none, when the
+		// LOD steps by distance (gg_lod_step). With it a LOD comes in where its error reaches gg_lod_pixel_budget on screen
+		float gg_lod_error[3] = { 0, 0, 0 };
 
 		struct MorphTarget
 		{
@@ -1275,6 +1278,10 @@ namespace wi::scene
 
 		uint16_t lod = 0;
 		uint16_t gg_forcelod = 0; // GG: the LOD forced plus one (GameGuru's SetEntityLOD), 0 to choose by distance
+		// GG: the LOD this object left at its last switch (0xFF none yet) and the seconds since, for the dithered crossfade
+		// between the two (gg_lod_fade_time); runtime only
+		uint8_t gg_lod_prev = 0xFF;
+		float gg_lod_fade = 1e9f;
 		mutable bool wetmap_cleared = false;
 		bool mesh_blend_required = false;
 

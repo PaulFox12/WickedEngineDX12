@@ -21,6 +21,11 @@
 
 namespace wi::scene
 {
+	// GG: LOD transitions (wiScene.cpp, 2026-11-11): the hysteresis share, the pixel budget for meshes with outline errors,
+	// the crossfade's seconds (0 none)
+	extern float gg_lod_hysteresis;
+	extern float gg_lod_pixel_budget;
+	extern float gg_lod_fade_time;
 
 	// GGMAX 3.25: Reduction Scale (the slider under "Lower Animation & LUA Speed"). Defined in
 	// wiScene.cpp - see the long note there for the specification and why the phase key is the
