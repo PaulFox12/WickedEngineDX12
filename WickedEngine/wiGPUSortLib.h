@@ -16,7 +16,12 @@ namespace wi::gpusortlib
 		const wi::graphics::GPUBuffer& counterBuffer_read, 
 		uint32_t counterReadOffset, 
 		const wi::graphics::GPUBuffer& indexBuffer_write,
-		wi::graphics::CommandList cmd
+		wi::graphics::CommandList cmd,
+		// GG: views of the two buffers (-1 the whole buffer), and the keys bound as a UAV (comparison_rw): then both can be
+		// sections of one buffer, which is in the UAV state for its index list
+		int comparison_subresource = -1,
+		int index_subresource = -1,
+		bool comparison_rw = false
 	);
 
 	// GG: the same for a dataset of at most 512, which needs one group of the first pass and no arguments worked out on the GPU. No
@@ -26,7 +31,12 @@ namespace wi::gpusortlib
 		const wi::graphics::GPUBuffer& counterBuffer_read,
 		uint32_t counterReadOffset,
 		const wi::graphics::GPUBuffer& indexBuffer_write,
-		wi::graphics::CommandList cmd
+		wi::graphics::CommandList cmd,
+		// GG: views of the two buffers (-1 the whole buffer), and the keys bound as a UAV (comparison_rw): then both can be
+		// sections of one buffer, which is in the UAV state for its index list
+		int comparison_subresource = -1,
+		int index_subresource = -1,
+		bool comparison_rw = false
 	);
 
 	void Initialize();

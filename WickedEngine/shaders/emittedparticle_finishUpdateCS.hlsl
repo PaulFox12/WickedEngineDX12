@@ -2,40 +2,50 @@
 #include "ggEmitterRS.hlsli"
 #include "ShaderInterop_EmittedParticle.h"
 
-ByteAddressBuffer counterBuffer : register(t0);
+// GG: one dispatch for every emitter simulating this frame, a thread an emitter (see the kickoff)
+PUSHCONSTANT(push, EmitterBatchPush);
+
+ByteAddressBuffer slotBuffer : register(t0);
+ByteAddressBuffer counterBuffer : register(t1);
 
 RWByteAddressBuffer indirectBuffers : register(u0);
 
-[numthreads(1, 1, 1)]
+[numthreads(THREADCOUNT_EMITTERBATCH, 1, 1)]
 void main( uint3 DTid : SV_DispatchThreadID )
 {
-	uint particleCount = counterBuffer.Load(PARTICLECOUNTER_OFFSET_CULLEDCOUNT);
-	
-	if (xEmitterOptions & EMITTER_OPTION_BIT_MESH_SHADER_ENABLED)
+	if (DTid.x >= push.slotCount)
+		return;
+	const uint slot = slotBuffer.Load(push.slotOffset + DTid.x * 4);
+	const uint counters = slot * PARTICLECOUNTER_STRIDE;
+	const uint args = slot * ARGUMENTBUFFER_STRIDE;
+
+	uint particleCount = counterBuffer.Load(counters + PARTICLECOUNTER_OFFSET_CULLEDCOUNT);
+
+	if (push.options & EMITTER_OPTION_BIT_MESH_SHADER_ENABLED)
 	{
 		// Create DispatchMesh argument buffer:
-		IndirectDispatchArgs args;
-		args.ThreadGroupCountX = (particleCount + 31) / 32;
-		args.ThreadGroupCountY = 1;
-		args.ThreadGroupCountZ = 1;
+		IndirectDispatchArgs args_mesh;
+		args_mesh.ThreadGroupCountX = (particleCount + 31) / 32;
+		args_mesh.ThreadGroupCountY = 1;
+		args_mesh.ThreadGroupCountZ = 1;
 #ifdef __PSSL__
-		indirectBuffers.TypedStore<IndirectDispatchArgs>(ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, args);
+		indirectBuffers.TypedStore<IndirectDispatchArgs>(args + ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, args_mesh);
 #else
-		indirectBuffers.Store<IndirectDispatchArgs>(ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, args);
+		indirectBuffers.Store<IndirectDispatchArgs>(args + ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, args_mesh);
 #endif // __PSSL__
 	}
 	else
 	{
 		// Create draw argument buffer
-		IndirectDrawArgsInstanced args;
-		args.VertexCountPerInstance = 4;
-		args.InstanceCount = particleCount;
-		args.StartVertexLocation = 0;
-		args.StartInstanceLocation = 0;
+		IndirectDrawArgsInstanced args_draw;
+		args_draw.VertexCountPerInstance = 4;
+		args_draw.InstanceCount = particleCount;
+		args_draw.StartVertexLocation = 0;
+		args_draw.StartInstanceLocation = 0;
 #ifdef __PSSL__
-		indirectBuffers.TypedStore<IndirectDrawArgsInstanced>(ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, args);
+		indirectBuffers.TypedStore<IndirectDrawArgsInstanced>(args + ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, args_draw);
 #else
-		indirectBuffers.Store<IndirectDrawArgsInstanced>(ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, args);
+		indirectBuffers.Store<IndirectDrawArgsInstanced>(args + ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, args_draw);
 #endif // __PSSL__
 	}
 }

@@ -33,7 +33,7 @@ RWStructuredBuffer<uint> culledIndirectionBuffer2 : register(u12);
 [numthreads(THREADCOUNT_SIMULATION, 1, 1)]
 void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 {
-	uint aliveCount = counterBuffer.Load(PARTICLECOUNTER_OFFSET_ALIVECOUNT);
+	uint aliveCount = counterBuffer.Load(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_ALIVECOUNT);
 	if (DTid.x >= aliveCount)
 		return;
 		
@@ -297,7 +297,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 
 		// add to new alive list:
 		uint newAliveIndex;
-		counterBuffer.InterlockedAdd(PARTICLECOUNTER_OFFSET_ALIVECOUNT_AFTERSIMULATION, 1, newAliveIndex);
+		counterBuffer.InterlockedAdd(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_ALIVECOUNT_AFTERSIMULATION, 1, newAliveIndex);
 		aliveBuffer_NEW[newAliveIndex] = particleIndex;
 
 		// Write out render buffers:
@@ -454,7 +454,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 		if (GetCamera().frustum.intersects(sphere))
 		{
 			uint prevCount;
-			counterBuffer.InterlockedAdd(PARTICLECOUNTER_OFFSET_CULLEDCOUNT, 1, prevCount);
+			counterBuffer.InterlockedAdd(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_CULLEDCOUNT, 1, prevCount);
 
 			culledIndirectionBuffer[prevCount] = prevCount;
 			culledIndirectionBuffer2[prevCount] = particleIndex;
@@ -472,7 +472,7 @@ void main(uint3 DTid : SV_DispatchThreadID, uint Gid : SV_GroupIndex)
 	{
 		// kill:
 		uint deadIndex;
-		counterBuffer.InterlockedAdd(PARTICLECOUNTER_OFFSET_DEADCOUNT, 1, deadIndex);
+		counterBuffer.InterlockedAdd(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_DEADCOUNT, 1, deadIndex);
 		deadBuffer[deadIndex] = particleIndex;
 		
 		vertexBuffer_POS[v0 + 0] = 0;

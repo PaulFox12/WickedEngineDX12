@@ -59,79 +59,158 @@ namespace wi
 
 	static bool ALLOW_MESH_SHADER = false;
 
-	// GG: the counters are read back into slots of pages all the emitters share. A readback buffer each took 64 KB twice over for 24
-	// bytes, 137 MB of system memory at a thousand emitters. The pool is never freed: a scene can be destroyed after statics at exit
-	struct GGStatPage
+	// GG: the emitters' counters, their read back copies and their indirect arguments are slots of pages all the emitters share.
+	// A buffer of its own for each took 64 KB, the least a buffer takes, for 24 and 28 bytes: 128 KB of video memory an emitter,
+	// over half a gigabyte with a level's pooled effects warmed (2026-11-11). A page's emitters also kick off, finish and have
+	// their counters copied back in one dispatch or copy, where each had its own (half the recording's cost with hundreds of
+	// emitters). The pages are never freed: a scene can be destroyed after statics at exit
+	static_assert(sizeof(ParticleCounters) == PARTICLECOUNTER_STRIDE, "a slot of the counter page is a ParticleCounters");
+	static_assert(ARGUMENTBUFFER_OFFSET_DRAWPARTICLES + sizeof(IndirectDrawArgsInstanced) <= ARGUMENTBUFFER_STRIDE, "a slot of the argument page holds the draw's arguments");
+	struct GGCounterPage
 	{
-		GPUBuffer buffer[GraphicsDevice::GetBufferCount()];
+		static constexpr uint32_t SLOTS = 2048;
+		GPUBuffer counters; // SLOTS ParticleCounters; a shader resource between the runs of the stages
+		GPUBuffer args; // SLOTS x ARGUMENTBUFFER_STRIDE; indirect arguments between the runs
+		GPUBuffer readback[GraphicsDevice::GetBufferCount()]; // the counters, copied whenever an emitter of the page is updated
+		uint32_t next = 0; // slots handed out so far (the freed ones are on the pool's list)
 	};
-	struct GGStatPool
+	struct GGCounterPool
 	{
 		std::mutex locker;
-		wi::vector<std::pair<GGStatPage*, uint32_t>> free_slots;
-		GGStatPage* page = nullptr;
-		uint32_t next = 0;
+		wi::vector<std::pair<GGCounterPage*, uint32_t>> free_slots;
+		GGCounterPage* page = nullptr;
 	};
-	static GGStatPool* gg_stat_pool = new GGStatPool;
-	static constexpr uint32_t GG_STAT_PAGE_SIZE = 65536; // the least a buffer takes
+	static GGCounterPool* gg_counter_pool = new GGCounterPool;
 
-	struct EmittedParticleSystem::GGStatSlot
+	struct EmittedParticleSystem::GGPageSlot
 	{
-		GGStatPage* page = nullptr;
-		uint32_t offset = 0;
-		~GGStatSlot()
+		GGCounterPage* page = nullptr;
+		uint32_t index = 0;
+		~GGPageSlot()
 		{
-			std::scoped_lock lock(gg_stat_pool->locker);
-			gg_stat_pool->free_slots.push_back(std::make_pair(page, offset));
+			std::scoped_lock lock(gg_counter_pool->locker);
+			gg_counter_pool->free_slots.push_back(std::make_pair(page, index));
 		}
 	};
 
-	static std::shared_ptr<EmittedParticleSystem::GGStatSlot> GG_NewStatSlot()
+	static std::shared_ptr<EmittedParticleSystem::GGPageSlot> GG_NewPageSlot()
 	{
-		std::shared_ptr<EmittedParticleSystem::GGStatSlot> slot = std::make_shared<EmittedParticleSystem::GGStatSlot>();
-		std::scoped_lock lock(gg_stat_pool->locker);
-		if (!gg_stat_pool->free_slots.empty())
+		std::shared_ptr<EmittedParticleSystem::GGPageSlot> slot = std::make_shared<EmittedParticleSystem::GGPageSlot>();
+		std::scoped_lock lock(gg_counter_pool->locker);
+		if (!gg_counter_pool->free_slots.empty())
 		{
-			slot->page = gg_stat_pool->free_slots.back().first;
-			slot->offset = gg_stat_pool->free_slots.back().second;
-			gg_stat_pool->free_slots.pop_back();
+			slot->page = gg_counter_pool->free_slots.back().first;
+			slot->index = gg_counter_pool->free_slots.back().second;
+			gg_counter_pool->free_slots.pop_back();
 		}
 		else
 		{
-			if (gg_stat_pool->page == nullptr || gg_stat_pool->next + sizeof(ParticleCounters) > GG_STAT_PAGE_SIZE)
+			if (gg_counter_pool->page == nullptr || gg_counter_pool->page->next >= GGCounterPage::SLOTS)
 			{
 				GraphicsDevice* device = wi::graphics::GetDevice();
-				GGStatPage* page = new GGStatPage;
+				GGCounterPage* page = new GGCounterPage;
 				GPUBufferDesc desc;
-				desc.size = GG_STAT_PAGE_SIZE;
+				desc.usage = Usage::DEFAULT;
+				desc.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
+				desc.misc_flags = ResourceMiscFlag::BUFFER_RAW;
+				desc.size = GGCounterPage::SLOTS * PARTICLECOUNTER_STRIDE;
+				device->CreateBufferZeroed(&desc, &page->counters);
+				device->SetName(&page->counters, "EmittedParticleSystem::counterPage");
+				desc.bind_flags = BindFlag::UNORDERED_ACCESS;
+				desc.misc_flags = ResourceMiscFlag::BUFFER_RAW | ResourceMiscFlag::INDIRECT_ARGS;
+				desc.size = GGCounterPage::SLOTS * ARGUMENTBUFFER_STRIDE;
+				device->CreateBufferZeroed(&desc, &page->args);
+				device->SetName(&page->args, "EmittedParticleSystem::argumentPage");
 				desc.usage = Usage::READBACK;
 				desc.bind_flags = BindFlag::NONE;
 				desc.misc_flags = ResourceMiscFlag::NONE;
-				for (int i = 0; i < arraysize(page->buffer); ++i)
+				desc.size = GGCounterPage::SLOTS * PARTICLECOUNTER_STRIDE;
+				for (int i = 0; i < arraysize(page->readback); ++i)
 				{
-					device->CreateBuffer(&desc, nullptr, &page->buffer[i]);
-					device->SetName(&page->buffer[i], "EmittedParticleSystem::statisticsPage");
+					device->CreateBuffer(&desc, nullptr, &page->readback[i]);
+					device->SetName(&page->readback[i], "EmittedParticleSystem::statisticsPage");
+					std::memset(page->readback[i].mapped_data, 0, (size_t)desc.size);
 				}
-				gg_stat_pool->page = page;
-				gg_stat_pool->next = 0;
+				gg_counter_pool->page = page;
 			}
-			slot->page = gg_stat_pool->page;
-			slot->offset = gg_stat_pool->next;
-			gg_stat_pool->next += sizeof(ParticleCounters);
-		}
-		// what the slot's last emitter left would read as particles alive
-		for (int i = 0; i < arraysize(slot->page->buffer); ++i)
-		{
-			std::memset((uint8_t*)slot->page->buffer[i].mapped_data + slot->offset, 0, sizeof(ParticleCounters));
+			slot->page = gg_counter_pool->page;
+			slot->index = gg_counter_pool->page->next++;
 		}
 		return slot;
+	}
+
+	// GG: a run of the stages (every emitter through a stage, then the next: the renderer's, or one emitter through them
+	// all) keeps, for each page its emitters are on, the emitters simulating and those being cleared, and where it has the
+	// page's two buffers. They are transitioned once a stage for all the page's emitters, the kickoff and the finish are a
+	// dispatch a page, the counters a copy a page. Between runs the counters are a shader resource and the arguments
+	// indirect arguments, as each emitter's own buffers were, so a second run in a frame (the editor's effect preview)
+	// finds them as it expects
+	struct GGRunPage
+	{
+		GGCounterPage* page = nullptr;
+		bool touched = false;
+		wi::vector<uint32_t> simulating; // the slots of the emitters simulating this frame
+		wi::vector<std::pair<uint32_t, uint32_t>> restarting; // slot and particle count of the emitters being cleared
+		// the slots cleared this run that aren't simulating: the finish still writes their draw arguments (nothing to draw), as a
+		// slot's last emitter may have left some
+		wi::vector<uint32_t> cleared_only;
+		ResourceState counters_state = ResourceState::SHADER_RESOURCE;
+		ResourceState args_state = ResourceState::INDIRECT_ARGUMENT;
+		GraphicsDevice::GPUAllocation slots; // `simulating` then `cleared_only` uploaded: the kickoff takes the first, the finish both
+		bool slots_uploaded = false;
+	};
+	static thread_local wi::vector<GGRunPage> gg_run_pages;
+	static thread_local wi::vector<GPUBarrier> gg_stage_barriers;
+
+	static GGRunPage& GG_RunPage(GGCounterPage* page)
+	{
+		for (GGRunPage& rp : gg_run_pages)
+		{
+			if (rp.page == page)
+			{
+				rp.touched = true;
+				return rp;
+			}
+		}
+		GGRunPage& rp = gg_run_pages.emplace_back();
+		rp.page = page;
+		rp.touched = true;
+		return rp;
+	}
+	static void GG_RunPageUpload(GGRunPage& rp, CommandList cmd)
+	{
+		if (rp.slots_uploaded)
+			return;
+		const size_t count = rp.simulating.size() + rp.cleared_only.size();
+		rp.slots = wi::graphics::GetDevice()->AllocateGPU(sizeof(uint32_t) * count, cmd);
+		if (!rp.simulating.empty())
+			std::memcpy(rp.slots.data, rp.simulating.data(), sizeof(uint32_t) * rp.simulating.size());
+		if (!rp.cleared_only.empty())
+			std::memcpy((uint32_t*)rp.slots.data + rp.simulating.size(), rp.cleared_only.data(), sizeof(uint32_t) * rp.cleared_only.size());
+		rp.slots_uploaded = true;
+	}
+	static void GG_RunPageCounters(GGRunPage& rp, ResourceState state)
+	{
+		if (rp.counters_state != state)
+		{
+			gg_stage_barriers.push_back(GPUBarrier::Buffer(&rp.page->counters, rp.counters_state, state));
+			rp.counters_state = state;
+		}
+	}
+	static void GG_RunPageArgs(GGRunPage& rp, ResourceState state)
+	{
+		if (rp.args_state != state)
+		{
+			gg_stage_barriers.push_back(GPUBarrier::Buffer(&rp.page->args, rp.args_state, state));
+			rp.args_state = state;
+		}
 	}
 
 
 	void EmittedParticleSystem::SetMaxParticleCount(uint32_t value)
 	{
 		MAX_PARTICLES = value;
-		counterBuffer = {}; // will be recreated
+		if (gg_slot != nullptr) restartPending = true; // GG: its particles cleared for the new count (the counters were made again)
 	}
 
 	void EmittedParticleSystem::CreateSelfBuffers()
@@ -171,6 +250,7 @@ namespace wi
 			place(sec_dead, sizeof(uint32_t) * MAX_PARTICLES, alignment);
 			place(sec_culled, sizeof(uint32_t) * MAX_PARTICLES, alignment);
 			place(sec_culled2, sizeof(uint32_t) * MAX_PARTICLES, alignment);
+			place(sec_distance, sizeof(float) * MAX_PARTICLES, alignment); // GG: the sorting's keys, whether it is sorted or not (it can be set later)
 
 			bd.size = buffer_offset;
 			device->CreateBuffer(&bd, nullptr, &generalBuffer);
@@ -197,33 +277,11 @@ namespace wi
 			structured_views(sec_dead, sizeof(uint32_t));
 			structured_views(sec_culled, sizeof(uint32_t));
 			structured_views(sec_culled2, sizeof(uint32_t));
+			structured_views(sec_distance, sizeof(float));
 
 			primitiveBuffer = wi::renderer::GetIndexBufferForQuads(MAX_PARTICLES);
 
 			restartPending = true; // the dead list is written in the first UpdateGPU: a copy queue upload stalled the thread for each
-		}
-
-		if (IsSorted() && distanceBuffer.desc.size < MAX_PARTICLES * sizeof(float))
-		{
-			// Distance buffer:
-			GPUBufferDesc bd;
-			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
-			bd.misc_flags = ResourceMiscFlag::BUFFER_STRUCTURED;
-			bd.stride = sizeof(float);
-			bd.size = bd.stride * MAX_PARTICLES;
-			auto init_distances = [&](void* dest) {
-				float* distances = (float*)dest;
-				std::fill(distances, distances + MAX_PARTICLES, 0.0f);
-			};
-			device->CreateBuffer2(&bd, init_distances, &distanceBuffer);
-			device->SetName(&distanceBuffer, "EmittedParticleSystem::distanceBuffer");
-
-			// GG: wi::gpusortlib binds its list whole
-			bd.stride = sizeof(uint32_t);
-			bd.size = bd.stride * MAX_PARTICLES;
-			device->CreateBuffer(&bd, nullptr, &culledIndirectionBuffer);
-			device->SetName(&culledIndirectionBuffer, "EmittedParticleSystem::culledIndirectionBuffer");
 		}
 
 		if (IsSPHEnabled())
@@ -267,38 +325,11 @@ namespace wi
 			sphParticleCells = {};
 		}
 
-		if (!counterBuffer.IsValid())
+		if (gg_slot == nullptr)
 		{
-			// Particle System statistics, their first values written in the first UpdateGPU:
-			GPUBufferDesc bd;
-			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::SHADER_RESOURCE | BindFlag::UNORDERED_ACCESS;
-			bd.size = sizeof(ParticleCounters);
-			bd.misc_flags = ResourceMiscFlag::BUFFER_RAW;
-			device->CreateBuffer(&bd, nullptr, &counterBuffer);
-			device->SetName(&counterBuffer, "EmittedParticleSystem::counterBuffer");
+			// GG: its counters and indirect arguments, a slot of the shared pages; the counters' first values are written in the first UpdateGPU
+			gg_slot = GG_NewPageSlot();
 			restartPending = true;
-		}
-
-		if (!indirectBuffers.IsValid())
-		{
-			GPUBufferDesc bd;
-
-			// Indirect Execution buffer:
-			bd.usage = Usage::DEFAULT;
-			bd.bind_flags = BindFlag::UNORDERED_ACCESS;
-			bd.misc_flags = ResourceMiscFlag::BUFFER_RAW | ResourceMiscFlag::INDIRECT_ARGS;
-			bd.size =
-				AlignTo(sizeof(IndirectDispatchArgs), (uint64_t)IndirectDispatchArgsAlignment) +
-				AlignTo(sizeof(IndirectDispatchArgs), (uint64_t)IndirectDispatchArgsAlignment) +
-				AlignTo(sizeof(IndirectDrawArgsInstanced), (uint64_t)IndirectDrawArgsAlignment);
-			device->CreateBufferZeroed(&bd, &indirectBuffers);
-			device->SetName(&indirectBuffers, "EmittedParticleSystem::indirectBuffers");
-		}
-
-		if (statisticsSlot == nullptr)
-		{
-			statisticsSlot = GG_NewStatSlot();
 		}
 	}
 
@@ -339,13 +370,14 @@ namespace wi
 		uint64_t retVal = 0;
 
 		retVal += generalBuffer.GetDesc().size;
-		retVal += distanceBuffer.GetDesc().size;
 		retVal += sphGridCells.GetDesc().size;
 		retVal += sphParticleCells.GetDesc().size;
 		retVal += densityBuffer.GetDesc().size;
-		retVal += counterBuffer.GetDesc().size;
-		retVal += indirectBuffers.GetDesc().size;
-		retVal += culledIndirectionBuffer.GetDesc().size;
+		if (gg_slot != nullptr)
+		{
+			// GG: its slot of the shared pages
+			retVal += PARTICLECOUNTER_STRIDE * (1 + GraphicsDevice::GetBufferCount()) + ARGUMENTBUFFER_STRIDE;
+		}
 
 		return retVal;
 	}
@@ -463,7 +495,15 @@ namespace wi
 
 		// Read back statistics (with GPU delay):
 		const uint32_t oldest_stat_index = wi::graphics::GetDevice()->GetBufferIndex();
-		memcpy(&statistics, (const uint8_t*)statisticsSlot->page->buffer[oldest_stat_index].mapped_data + statisticsSlot->offset, sizeof(statistics));
+		if (restartPending)
+		{
+			// GG: its particles are waiting to be cleared (new buffers, a restart): the slot's counts are its last use's, or its last emitter's
+			statistics = {};
+		}
+		else
+		{
+			memcpy(&statistics, (const uint8_t*)gg_slot->page->readback[oldest_stat_index].mapped_data + gg_slot->index * PARTICLECOUNTER_STRIDE, sizeof(statistics));
+		}
 		gg_peak_alive = std::max(gg_peak_alive, std::max(statistics.aliveCount, statistics.aliveCount_afterSimulation));
 
 		if (statistics.aliveCount > 0 || statistics.aliveCount_afterSimulation > 0)
@@ -563,7 +603,7 @@ namespace wi
 		SetPaused(false);
 		// GG: the particles are cleared in the next UpdateGPU and the buffers kept: making the counters again left the dead list as
 		// it was, with the live particles' indices missing from it, and a pooled effect's every reuse paid for it
-		if (counterBuffer.IsValid()) restartPending = true;
+		if (gg_slot != nullptr) restartPending = true;
 	}
 
 	void EmittedParticleSystem::PrepareConstants(uint32_t instanceIndex)
@@ -655,6 +695,11 @@ namespace wi
 		cb.xParticleSpreadScale = spread_scale; // GG: the wrapping volume's box widened as the emit volume
 		cb.xEmitterWorld.Create(worldMatrix); // GG: the wrapping volume's box and a streak's emitter motion
 		cb.xParticleScatter = wi::renderer::GetParticleScatter(); // GG: the sun's forward scattering on the lit layers (0 off)
+		// GG: its slot of the shared counter and argument pages
+		cb.xEmitterCounterOffset = gg_slot != nullptr ? gg_slot->index * PARTICLECOUNTER_STRIDE : 0;
+		cb.xEmitterArgsOffset = gg_slot != nullptr ? gg_slot->index * ARGUMENTBUFFER_STRIDE : 0;
+		cb.xEmitterPadding0 = 0;
+		cb.xEmitterPadding1 = 0;
 
 		cb.xEmitterOptions = 0;
 		if (IsSPHEnabled())
@@ -706,25 +751,16 @@ namespace wi
 		device->BindUAV(&generalBuffer, 1, cmd, sec_alive[0].subresource_uav);
 		device->BindUAV(&generalBuffer, 2, cmd, sec_alive[1].subresource_uav);
 		device->BindUAV(&generalBuffer, 3, cmd, sec_dead.subresource_uav);
-		device->BindUAV(&counterBuffer, 4, cmd);
-		device->BindUAV(&indirectBuffers, 5, cmd);
-		device->BindUAV(&distanceBuffer, 6, cmd);
+		device->BindUAV(&gg_slot->page->counters, 4, cmd); // GG: the shared pages, its slot at xEmitterCounterOffset
+		device->BindUAV(&gg_slot->page->args, 5, cmd);
+		device->BindUAV(&generalBuffer, 6, cmd, sec_distance.subresource_uav);
 		device->BindUAV(&generalBuffer, 7, cmd, vb_pos.subresource_uav);
 		device->BindUAV(&generalBuffer, 8, cmd, vb_nor.subresource_uav);
 		device->BindUAV(&generalBuffer, 9, cmd, vb_uvs.subresource_uav);
 		device->BindUAV(&generalBuffer, 10, cmd, vb_col.subresource_uav);
-		if (IsSorted())
-		{
-			device->BindUAV(&culledIndirectionBuffer, 11, cmd);
-		}
-		else
-		{
-			device->BindUAV(&generalBuffer, 11, cmd, sec_culled.subresource_uav);
-		}
+		device->BindUAV(&generalBuffer, 11, cmd, sec_culled.subresource_uav);
 		device->BindUAV(&generalBuffer, 12, cmd, sec_culled2.subresource_uav);
 	}
-
-	static thread_local wi::vector<GPUBarrier> gg_stage_barriers;
 
 	void EmittedParticleSystem::UpdateGPU(uint32_t instanceIndex, const MeshComponent* mesh, CommandList cmd) const
 	{
@@ -737,6 +773,113 @@ namespace wi
 
 	void EmittedParticleSystem::UpdateGPU_StageEnd(UPDATEGPU_STAGE stage, CommandList cmd)
 	{
+		GraphicsDevice* device = wi::graphics::GetDevice();
+
+		// GG: the pages' share of the stage, once for all their emitters
+		for (GGRunPage& rp : gg_run_pages)
+		{
+			if (!rp.touched)
+				continue;
+			switch (stage)
+			{
+			case UPDATEGPU_BEGIN:
+				if (!rp.restarting.empty())
+				{
+					// the cleared emitters' counters: every particle dead, as in new buffers (before this frame's emit)
+					GPUBarrier barrier = GPUBarrier::Buffer(&rp.page->counters, rp.counters_state, ResourceState::COPY_DST);
+					device->Barrier(&barrier, 1, cmd);
+					rp.counters_state = ResourceState::COPY_DST;
+					for (const std::pair<uint32_t, uint32_t>& restart : rp.restarting)
+					{
+						ParticleCounters counters;
+						counters.aliveCount = 0;
+						counters.deadCount = restart.second;
+						counters.realEmitCount = 0;
+						counters.aliveCount_afterSimulation = 0;
+						counters.culledCount = 0;
+						counters.cellAllocator = 0;
+						device->UpdateBuffer(&rp.page->counters, &counters, cmd, sizeof(counters), (uint64_t)restart.first * PARTICLECOUNTER_STRIDE);
+					}
+				}
+				if (!rp.restarting.empty() || !rp.simulating.empty())
+				{
+					GG_RunPageCounters(rp, ResourceState::UNORDERED_ACCESS);
+				}
+				if (!rp.simulating.empty())
+				{
+					GG_RunPageArgs(rp, ResourceState::UNORDERED_ACCESS);
+				}
+				break;
+
+			case UPDATEGPU_KICKOFF:
+				if (!rp.simulating.empty())
+				{
+					// the simulating emitters' dispatch arguments from their counters, a thread each
+					GG_RunPageUpload(rp, cmd);
+					EmitterBatchPush push = {};
+					push.slotCount = (uint32_t)rp.simulating.size();
+					push.slotOffset = (uint32_t)rp.slots.offset;
+					device->BindComputeShader(&kickoffUpdateCS, cmd);
+					device->BindResource(&rp.slots.buffer, 0, cmd);
+					device->BindUAV(&rp.page->counters, 4, cmd);
+					device->BindUAV(&rp.page->args, 5, cmd);
+					device->PushConstants(&push, sizeof(push), cmd);
+					device->Dispatch((push.slotCount + THREADCOUNT_EMITTERBATCH - 1) / THREADCOUNT_EMITTERBATCH, 1, 1, cmd);
+					GG_RunPageArgs(rp, ResourceState::INDIRECT_ARGUMENT);
+				}
+				break;
+
+			case UPDATEGPU_SIMULATE:
+				if (rp.counters_state == ResourceState::UNORDERED_ACCESS)
+				{
+					GG_RunPageCounters(rp, ResourceState::SHADER_RESOURCE);
+				}
+				break;
+
+			case UPDATEGPU_SORT:
+				if (!rp.simulating.empty() || !rp.cleared_only.empty())
+				{
+					GG_RunPageArgs(rp, ResourceState::UNORDERED_ACCESS);
+				}
+				break;
+
+			case UPDATEGPU_FINISH:
+				if (!rp.simulating.empty() || !rp.cleared_only.empty())
+				{
+					// the simulating and the cleared emitters' draw arguments from their counters, a thread each
+					GG_RunPageUpload(rp, cmd);
+					EmitterBatchPush push = {};
+					push.slotCount = (uint32_t)(rp.simulating.size() + rp.cleared_only.size());
+					push.slotOffset = (uint32_t)rp.slots.offset;
+					push.options = (ALLOW_MESH_SHADER && device->CheckCapability(GraphicsDeviceCapability::MESH_SHADER)) ? EMITTER_OPTION_BIT_MESH_SHADER_ENABLED : 0;
+					device->BindComputeShader(&finishUpdateCS, cmd);
+					device->BindResource(&rp.slots.buffer, 0, cmd);
+					device->BindResource(&rp.page->counters, 1, cmd);
+					device->BindUAV(&rp.page->args, 0, cmd);
+					device->PushConstants(&push, sizeof(push), cmd);
+					device->Dispatch((push.slotCount + THREADCOUNT_EMITTERBATCH - 1) / THREADCOUNT_EMITTERBATCH, 1, 1, cmd);
+				}
+				GG_RunPageCounters(rp, ResourceState::COPY_SRC);
+				break;
+
+			case UPDATEGPU_END:
+				// the page's counters copied to be read back, then both buffers as they are between runs
+				device->CopyBuffer(&rp.page->readback[device->GetBufferIndex()], 0, &rp.page->counters, 0, GGCounterPage::SLOTS * PARTICLECOUNTER_STRIDE, cmd);
+				GG_RunPageArgs(rp, ResourceState::INDIRECT_ARGUMENT);
+				GG_RunPageCounters(rp, ResourceState::SHADER_RESOURCE);
+				rp.touched = false;
+				rp.simulating.clear();
+				rp.restarting.clear();
+				rp.cleared_only.clear();
+				rp.slots = {};
+				rp.slots_uploaded = false;
+				break;
+
+			default:
+				break;
+			}
+		}
+
 		// what each emitter's dispatches of this stage wrote, for the next stage
 		if (stage == UPDATEGPU_EMIT || stage == UPDATEGPU_KICKOFF || stage == UPDATEGPU_SIMULATE || stage == UPDATEGPU_SORT || stage == UPDATEGPU_FINISH)
 		{
@@ -744,7 +887,7 @@ namespace wi
 		}
 		if (!gg_stage_barriers.empty())
 		{
-			wi::graphics::GetDevice()->Barrier(gg_stage_barriers.data(), (uint32_t)gg_stage_barriers.size(), cmd);
+			device->Barrier(gg_stage_barriers.data(), (uint32_t)gg_stage_barriers.size(), cmd);
 			gg_stage_barriers.clear();
 		}
 	}
@@ -753,32 +896,38 @@ namespace wi
 	{
 		if (IsInactive())
 			return;
-		if (!generalBuffer.IsValid())
+		if (!generalBuffer.IsValid() || gg_slot == nullptr)
 			return;
 
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		const bool simulating = !IsPaused() && dt > 0;
+		const uint64_t args_offset = (uint64_t)gg_slot->index * ARGUMENTBUFFER_STRIDE; // GG: its slot of the shared argument page
 
 		switch (stage)
 		{
 		case UPDATEGPU_BEGIN:
-			if (restartPending)
 			{
-				// GG: every particle dead, as in new buffers: the counters, and every index on the dead list again (before this frame's emit)
-				restartPending = false;
-				ParticleCounters counters;
-				counters.aliveCount = 0;
-				counters.deadCount = MAX_PARTICLES;
-				counters.realEmitCount = 0;
-				counters.aliveCount_afterSimulation = 0;
-				counters.cellAllocator = 0;
-				device->UpdateBuffer(&counterBuffer, &counters, cmd);
-				static thread_local wi::vector<uint32_t> indices;
-				indices.resize(MAX_PARTICLES);
-				for (uint32_t i = 0; i < MAX_PARTICLES; ++i) indices[i] = i;
-				device->UpdateBuffer(&generalBuffer, indices.data(), cmd, sizeof(uint32_t) * MAX_PARTICLES, sec_dead.offset);
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&counterBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS));
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&generalBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS));
+				// GG: its page is in this run, simulating or not: its counters are copied back with the page's, and a sorted one
+				// still sorts
+				GGRunPage& run_page = GG_RunPage(gg_slot->page);
+				if (restartPending)
+				{
+					// every particle dead, as in new buffers: every index on the dead list again (before this frame's emit); the
+					// counters are written with the page's (UpdateGPU_StageEnd)
+					restartPending = false;
+					run_page.restarting.push_back(std::make_pair(gg_slot->index, MAX_PARTICLES));
+					if (!simulating)
+						run_page.cleared_only.push_back(gg_slot->index);
+					static thread_local wi::vector<uint32_t> indices;
+					indices.resize(MAX_PARTICLES);
+					for (uint32_t i = 0; i < MAX_PARTICLES; ++i) indices[i] = i;
+					device->UpdateBuffer(&generalBuffer, indices.data(), cmd, sizeof(uint32_t) * MAX_PARTICLES, sec_dead.offset);
+					gg_stage_barriers.push_back(GPUBarrier::Buffer(&generalBuffer, ResourceState::COPY_DST, ResourceState::UNORDERED_ACCESS));
+				}
+				if (simulating)
+				{
+					run_page.simulating.push_back(gg_slot->index);
+				}
 			}
 			if (simulating)
 			{
@@ -799,7 +948,6 @@ namespace wi
 					cb->xEmitterMeshGeometryOffset = mesh->geometryOffset + first_subset;
 					cb->xEmitterMeshGeometryCount = last_subset - first_subset;
 				}
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&indirectBuffers, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS));
 			}
 			break;
 
@@ -834,21 +982,13 @@ namespace wi
 			break;
 
 		case UPDATEGPU_KICKOFF:
-			if (simulating)
-			{
-				device->BindUAV(&counterBuffer, 4, cmd);
-				device->BindUAV(&indirectBuffers, 5, cmd);
-				device->BindComputeShader(&kickoffUpdateCS, cmd);
-				device->Dispatch(1, 1, 1, cmd);
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&indirectBuffers, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT));
-			}
+			// GG: with the page's other emitters, in one dispatch (UpdateGPU_StageEnd)
 			break;
 
 		case UPDATEGPU_SIMULATE:
 			if (simulating)
 			{
 				device->BindConstantBuffer(&gg_cb_alloc.buffer, CB_GETBINDSLOT(EmittedParticleCB), cmd, gg_cb_alloc.offset);
-				BindSimulationUAVs(cmd);
 
 				if (IsSPHEnabled())
 				{
@@ -870,11 +1010,11 @@ namespace wi
 					device->BindResource(&generalBuffer, 0, cmd, sec_alive[0].subresource_srv); // CURRENT alivelist
 					device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
 					const GPUResource* uav_partition[] = {
-						&counterBuffer,
+						&gg_slot->page->counters,
 						&sphGridCells,
 					};
 					device->BindUAVs(uav_partition, 0, arraysize(uav_partition), cmd);
-					device->DispatchIndirect(&indirectBuffers, ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
+					device->DispatchIndirect(&gg_slot->page->args, args_offset + ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
 					{
 						GPUBarrier barriers[] = {
 							GPUBarrier::Memory(&sphGridCells),
@@ -889,7 +1029,7 @@ namespace wi
 					device->BindResource(&generalBuffer, 0, cmd, sec_alive[0].subresource_srv); // CURRENT alivelist
 					device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
 					const GPUResource* uav_cellallocation[] = {
-						&counterBuffer,
+						&gg_slot->page->counters,
 						&sphGridCells,
 					};
 					device->BindUAVs(uav_cellallocation, 0, arraysize(uav_cellallocation), cmd);
@@ -908,12 +1048,12 @@ namespace wi
 					device->BindResource(&generalBuffer, 0, cmd, sec_alive[0].subresource_srv); // CURRENT alivelist
 					device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
 					const GPUResource* uav_binning[] = {
-						&counterBuffer,
+						&gg_slot->page->counters,
 						&sphGridCells,
 						&sphParticleCells,
 					};
 					device->BindUAVs(uav_binning, 0, arraysize(uav_binning), cmd);
-					device->DispatchIndirect(&indirectBuffers, ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
+					device->DispatchIndirect(&gg_slot->page->args, args_offset + ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
 					{
 						GPUBarrier barriers[] = {
 							GPUBarrier::Buffer(&sphGridCells, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE),
@@ -933,11 +1073,11 @@ namespace wi
 					device->BindResource(&sphParticleCells, 2, cmd);
 					device->BindResource(&sphGridCells, 3, cmd);
 					const GPUResource* uav_density[] = {
-						&counterBuffer,
+						&gg_slot->page->counters,
 						&densityBuffer
 					};
 					device->BindUAVs(uav_density, 0, arraysize(uav_density), cmd);
-					device->DispatchIndirect(&indirectBuffers, ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
+					device->DispatchIndirect(&gg_slot->page->args, args_offset + ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
 					device->Barrier(GPUBarrier::Memory(), cmd);
 					device->EventEnd(cmd);
 
@@ -948,9 +1088,9 @@ namespace wi
 					device->BindResource(&densityBuffer, 1, cmd);
 					device->BindResource(&sphParticleCells, 2, cmd);
 					device->BindResource(&sphGridCells, 3, cmd);
-					device->BindUAV(&counterBuffer, 0, cmd);
+					device->BindUAV(&gg_slot->page->counters, 0, cmd);
 					device->BindUAV(&generalBuffer, 1, cmd, sec_particle.subresource_uav);
-					device->DispatchIndirect(&indirectBuffers, ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
+					device->DispatchIndirect(&gg_slot->page->args, args_offset + ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
 					device->Barrier(GPUBarrier::Memory(), cmd);
 					device->EventEnd(cmd);
 
@@ -986,59 +1126,33 @@ namespace wi
 						device->BindComputeShader(&simulateCS, cmd);
 					}
 				}
-				device->DispatchIndirect(&indirectBuffers, ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&counterBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE));
-				if (IsSorted())
-				{
-					gg_stage_barriers.push_back(GPUBarrier::Buffer(&distanceBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE));
-				}
+				device->DispatchIndirect(&gg_slot->page->args, args_offset + ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION, cmd);
 			}
 			break;
 
 		case UPDATEGPU_SORT:
 			if (IsSorted())
 			{
+				// GG: the keys and the list are sections of the general buffer, which is in the UAV state: the keys are read through a UAV
+				const uint32_t count_offset = gg_slot->index * PARTICLECOUNTER_STRIDE + PARTICLECOUNTER_OFFSET_CULLEDCOUNT;
 				if (MAX_PARTICLES <= 512)
 				{
-					wi::gpusortlib::SortSmall(distanceBuffer, counterBuffer, PARTICLECOUNTER_OFFSET_CULLEDCOUNT, culledIndirectionBuffer, cmd);
+					wi::gpusortlib::SortSmall(generalBuffer, gg_slot->page->counters, count_offset, generalBuffer, cmd, sec_distance.subresource_uav, sec_culled.subresource_uav, true);
 				}
 				else
 				{
-					wi::gpusortlib::Sort(MAX_PARTICLES, distanceBuffer, counterBuffer, PARTICLECOUNTER_OFFSET_CULLEDCOUNT, culledIndirectionBuffer, cmd);
+					wi::gpusortlib::Sort(MAX_PARTICLES, generalBuffer, gg_slot->page->counters, count_offset, generalBuffer, cmd, sec_distance.subresource_uav, sec_culled.subresource_uav, true);
 				}
-			}
-			if (simulating)
-			{
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&indirectBuffers, ResourceState::INDIRECT_ARGUMENT, ResourceState::UNORDERED_ACCESS));
 			}
 			break;
 
 		case UPDATEGPU_FINISH:
-			if (simulating)
-			{
-				// finish updating, update draw argument buffer:
-				device->BindConstantBuffer(&gg_cb_alloc.buffer, CB_GETBINDSLOT(EmittedParticleCB), cmd, gg_cb_alloc.offset);
-				device->BindResource(&counterBuffer, 0, cmd);
-				device->BindUAV(&indirectBuffers, 0, cmd);
-				device->BindComputeShader(&finishUpdateCS, cmd);
-				device->Dispatch(1, 1, 1, cmd);
-			}
-			gg_stage_barriers.push_back(GPUBarrier::Buffer(&counterBuffer, ResourceState::SHADER_RESOURCE, ResourceState::COPY_SRC));
+			// GG: with the page's other emitters, in one dispatch (UpdateGPU_StageEnd)
 			break;
 
 		case UPDATEGPU_END:
-			{
-				// Statistics is copied to readback:
-				const uint32_t oldest_stat_index = wi::graphics::GetDevice()->GetBufferIndex();
-				device->CopyBuffer(&statisticsSlot->page->buffer[oldest_stat_index], statisticsSlot->offset, &counterBuffer, 0, sizeof(ParticleCounters), cmd);
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&indirectBuffers, ResourceState::UNORDERED_ACCESS, ResourceState::INDIRECT_ARGUMENT));
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&counterBuffer, ResourceState::COPY_SRC, ResourceState::SHADER_RESOURCE));
-				gg_stage_barriers.push_back(GPUBarrier::Buffer(&generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE));
-				if (IsSorted())
-				{
-					gg_stage_barriers.push_back(GPUBarrier::Buffer(&culledIndirectionBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE_COMPUTE));
-				}
-			}
+			// its counters are copied back with the page's (UpdateGPU_StageEnd)
+			gg_stage_barriers.push_back(GPUBarrier::Buffer(&generalBuffer, ResourceState::UNORDERED_ACCESS, ResourceState::SHADER_RESOURCE));
 			break;
 
 		default:
@@ -1051,8 +1165,10 @@ namespace wi
 	{
 		if (IsInactive())
 			return;
-		if (!generalBuffer.IsValid() || !gg_cb_ready)
+		if (!generalBuffer.IsValid() || !gg_cb_ready || gg_slot == nullptr)
 			return; // GG: paused since it was loaded, so no buffers yet (UpdateCPU) and nothing to draw
+		if (restartPending)
+			return; // GG: its particles wait to be cleared (UpdateGPU): the slot's draw arguments are not yet its own
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		device->EventBegin("EmittedParticle", cmd);
 
@@ -1072,25 +1188,18 @@ namespace wi
 
 		device->BindDynamicConstantBuffer(gg_cb, CB_GETBINDSLOT(EmittedParticleCB), cmd);
 
-		device->BindResource(&counterBuffer, 0, cmd);
+		device->BindResource(&gg_slot->page->counters, 0, cmd); // GG: the shared page, its slot at xEmitterCounterOffset (the mesh shader's)
 		device->BindResource(&generalBuffer, 1, cmd, sec_particle.subresource_srv);
-		if (IsSorted())
-		{
-			device->BindResource(&culledIndirectionBuffer, 2, cmd);
-		}
-		else
-		{
-			device->BindResource(&generalBuffer, 2, cmd, sec_culled.subresource_srv);
-		}
+		device->BindResource(&generalBuffer, 2, cmd, sec_culled.subresource_srv);
 		device->BindResource(&generalBuffer, 3, cmd, sec_culled2.subresource_srv);
 
 		if (ALLOW_MESH_SHADER && device->CheckCapability(GraphicsDeviceCapability::MESH_SHADER))
 		{
-			device->DispatchMeshIndirect(&indirectBuffers, ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, cmd);
+			device->DispatchMeshIndirect(&gg_slot->page->args, (uint64_t)gg_slot->index * ARGUMENTBUFFER_STRIDE + ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, cmd);
 		}
 		else
 		{
-			device->DrawInstancedIndirect(&indirectBuffers, ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, cmd);
+			device->DrawInstancedIndirect(&gg_slot->page->args, (uint64_t)gg_slot->index * ARGUMENTBUFFER_STRIDE + ARGUMENTBUFFER_OFFSET_DRAWPARTICLES, cmd);
 		}
 
 		device->EventEnd(cmd);

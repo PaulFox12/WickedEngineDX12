@@ -12,6 +12,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 {
 	if (cellBuffer[DTid.x].count == 0)
 		return;
-	counterBuffer.InterlockedAdd(PARTICLECOUNTER_OFFSET_CELLALLOCATOR, cellBuffer[DTid.x].count, cellBuffer[DTid.x].offset);
+	counterBuffer.InterlockedAdd(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_CELLALLOCATOR, cellBuffer[DTid.x].count, cellBuffer[DTid.x].offset);
 	cellBuffer[DTid.x].count = 0; // will be reused for binning
 }

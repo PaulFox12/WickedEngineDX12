@@ -29,7 +29,7 @@ void main( uint3 DTid : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex, ui
 	const float p0 = xSPH_p0;		// reference density
 	const float e = xSPH_e;			// viscosity constant
 
-	uint aliveCount = counterBuffer.Load(PARTICLECOUNTER_OFFSET_ALIVECOUNT);
+	uint aliveCount = counterBuffer.Load(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_ALIVECOUNT);
 
 	uint particleIndexA;
 	Particle particleA;

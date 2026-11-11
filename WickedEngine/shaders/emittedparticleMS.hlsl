@@ -43,7 +43,7 @@ void main(
 	out primitives VertextoPixel_MS_PRIM sharedPrimitives[PRIMITIVECOUNT],
     out indices uint3 triangles[PRIMITIVECOUNT])
 {
-	uint particleCount = counterBuffer.Load(PARTICLECOUNTER_OFFSET_CULLEDCOUNT);
+	uint particleCount = counterBuffer.Load(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_CULLEDCOUNT);
 	uint realGroupCount = min(THREADCOUNT_MESH_SHADER, particleCount - gid * THREADCOUNT_MESH_SHADER);
 
     // Set number of outputs

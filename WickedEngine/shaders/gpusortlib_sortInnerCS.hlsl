@@ -37,7 +37,13 @@
 // Structured Buffers
 //--------------------------------------------------------------------------------------
 ByteAddressBuffer counterBuffer : register(t0);
+#ifdef COMPARISON_RW
+// GG: the keys read through a UAV, so they can be a section of the buffer the index list is a section of (a buffer in the
+// UAV state can't be read as a shader resource); wi::gpusortlib's comparison_rw
+RWStructuredBuffer<float> comparisonBuffer : register(u1);
+#else
 StructuredBuffer<float> comparisonBuffer : register(t1);
+#endif // COMPARISON_RW
 
 RWStructuredBuffer<uint> indexBuffer : register(u0);
 

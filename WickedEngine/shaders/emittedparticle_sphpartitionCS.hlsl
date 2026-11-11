@@ -10,7 +10,7 @@ RWStructuredBuffer<SPHGridCell> cellBuffer : register(u1);
 [numthreads(THREADCOUNT_SIMULATION, 1, 1)]
 void main(uint3 DTid : SV_DispatchThreadID)
 {
-	uint aliveCount = counterBuffer.Load(PARTICLECOUNTER_OFFSET_ALIVECOUNT);
+	uint aliveCount = counterBuffer.Load(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_ALIVECOUNT);
 	if (DTid.x >= aliveCount)
 		return;
 

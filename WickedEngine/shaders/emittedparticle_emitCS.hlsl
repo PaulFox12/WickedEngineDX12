@@ -253,7 +253,7 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	
 	// new particle index retrieved from dead list (pop):
 	int deadCount;
-	counterBuffer.InterlockedAdd(PARTICLECOUNTER_OFFSET_DEADCOUNT, -1, deadCount);
+	counterBuffer.InterlockedAdd(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_DEADCOUNT, -1, deadCount);
 	if(deadCount < 1)
 		return;
 
@@ -264,6 +264,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
 	// and add index to the alive list (push):
 	uint aliveCount;
-	counterBuffer.InterlockedAdd(PARTICLECOUNTER_OFFSET_ALIVECOUNT_AFTERSIMULATION, 1, aliveCount);
+	counterBuffer.InterlockedAdd(xEmitterCounterOffset + PARTICLECOUNTER_OFFSET_ALIVECOUNT_AFTERSIMULATION, 1, aliveCount);
 	aliveBuffer_CURRENT[aliveCount] = newParticleIndex;
 }

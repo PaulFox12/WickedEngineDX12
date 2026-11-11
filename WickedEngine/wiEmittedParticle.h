@@ -37,16 +37,14 @@ namespace wi
 		ParticleCounters statistics = {};
 		// GG: the most particles alive at once, from the counters read back each frame (harness EMITTER_CENSUS; 0 to reset)
 		uint32_t gg_peak_alive = 0;
-		// GG: where this emitter's counters are read back, a slot of pages all the emitters share (wiEmittedParticle.cpp)
-		struct GGStatSlot;
-		std::shared_ptr<GGStatSlot> statisticsSlot;
+		// GG: this emitter's slot of the pages all the emitters share (wiEmittedParticle.cpp): its counters, their read back
+		// copy and its indirect arguments (kickoffUpdate, simulation, draw). A buffer of its own for each took 64 KB
+		struct GGPageSlot;
+		std::shared_ptr<GGPageSlot> gg_slot;
 
-		wi::graphics::GPUBuffer distanceBuffer; // for sorting
 		wi::graphics::GPUBuffer sphGridCells;  // for SPH
 		wi::graphics::GPUBuffer sphParticleCells;  // for SPH
 		wi::graphics::GPUBuffer densityBuffer; // for SPH
-		wi::graphics::GPUBuffer counterBuffer;
-		wi::graphics::GPUBuffer indirectBuffers; // kickoffUpdate, simulation, draw
 		// GG: the vertices, the particles and the index lists are sections of this one buffer. A buffer takes at least 64 KB, so a layer
 		// of a hundred particles spent nine of them on about 20 KB of data, and a pooled effect's every layer paid it
 		wi::graphics::GPUBuffer generalBuffer;
@@ -59,8 +57,8 @@ namespace wi
 		wi::scene::MeshComponent::BufferView sec_dead;
 		wi::scene::MeshComponent::BufferView sec_culled;
 		wi::scene::MeshComponent::BufferView sec_culled2;
+		wi::scene::MeshComponent::BufferView sec_distance; // GG: the sorting's keys (a 64 KB buffer of their own before, as the sorted list was)
 		wi::graphics::GPUBuffer primitiveBuffer; // raytracing
-		wi::graphics::GPUBuffer culledIndirectionBuffer; // a sorted emitter's list (wi::gpusortlib binds whole buffers), otherwise sec_culled
 		wi::graphics::Texture opacityCurveTex; // shared by the emitters with the same curve
 
 		wi::graphics::RaytracingAccelerationStructure BLAS;

@@ -141,6 +141,13 @@ CBUFFER(EmittedParticleCB, CBSLOT_OTHER_EMITTEDPARTICLE)
 	float		xParticleSpreadScale;		// the layer's spread scale (the wrapping volume's box, as the emit volume)
 	float		xParticleScatter;		// the sun's forward scattering on a lit GameGuru layer (0 off)
 
+	// GG: the emitters' counters and indirect arguments are slots of pages they all share (a buffer of its own for each
+	// took 64 KB for a few bytes); a sorted emitter's distances are a section of its general buffer
+	uint		xEmitterCounterOffset;		// this emitter's ParticleCounters in the counter page, in bytes
+	uint		xEmitterArgsOffset;			// its indirect arguments in the argument page, in bytes
+	uint		xEmitterPadding0;
+	uint		xEmitterPadding1;
+
 	float4		xEmitterKillBoxMin[EMITTER_KILLBOX_COUNT];
 	float4		xEmitterKillBoxMax[EMITTER_KILLBOX_COUNT];
 
@@ -160,6 +167,22 @@ static const uint THREADCOUNT_MESH_SHADER = 32;
 
 static const uint ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION = 0;
 static const uint ARGUMENTBUFFER_OFFSET_DRAWPARTICLES = wi::graphics::AlignTo(ARGUMENTBUFFER_OFFSET_DISPATCHSIMULATION + (3 * 4), IndirectDrawArgsAlignment);
+
+// GG: a slot of the shared counter page (a ParticleCounters) and of the shared argument page (the simulation's dispatch
+// arguments, then the draw's), in bytes
+static const uint PARTICLECOUNTER_STRIDE = 24;
+static const uint ARGUMENTBUFFER_STRIDE = 64;
+
+// GG: the kickoff and the finish run once for every emitter simulating this frame, a thread an emitter: their slots are
+// a list of uints at slotOffset of the bound list buffer
+struct EmitterBatchPush
+{
+	uint slotCount;
+	uint slotOffset;
+	uint options;	// EMITTER_OPTION_BIT_MESH_SHADER_ENABLED
+	uint padding;
+};
+static const uint THREADCOUNT_EMITTERBATCH = 64;
 
 
 // If this is not defined, SPH will be resolved as N-body simulation (O(n^2) complexity)
