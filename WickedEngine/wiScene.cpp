@@ -1539,6 +1539,39 @@ namespace wi::scene
 			gg_hairkill[idx].reason = reason;
 		}
 	}
+	// GGMAX: who removes animation key data (AnimationDataComponent) entities: each distinct caller, the first entity it
+	// removed and how many (harness DUMP_ANIMDATAKILL); a template's key data went missing while its animation stayed
+	struct GGAnimDataKill { const void* ret; uint32_t first; unsigned int count; };
+	static GGAnimDataKill gg_animdatakill[64];
+	static unsigned int gg_animdatakill_n = 0;
+	static std::mutex gg_animdatakill_lock;
+	static void gg_record_animdatakill(const void* ret, Entity e)
+	{
+		std::scoped_lock lock(gg_animdatakill_lock);
+		for (unsigned int i = 0; i < gg_animdatakill_n; ++i)
+		{
+			if (gg_animdatakill[i].ret == ret) { gg_animdatakill[i].count++; return; }
+		}
+		if (gg_animdatakill_n < arraysize(gg_animdatakill))
+		{
+			gg_animdatakill[gg_animdatakill_n].ret = ret;
+			gg_animdatakill[gg_animdatakill_n].first = (uint32_t)e;
+			gg_animdatakill[gg_animdatakill_n].count = 1;
+			gg_animdatakill_n++;
+		}
+	}
+	unsigned int GG_GetAnimDataKills(const void** out_ret, unsigned int* out_first, unsigned int* out_count, unsigned int max_out)
+	{
+		std::scoped_lock lock(gg_animdatakill_lock);
+		const unsigned int m = std::min(gg_animdatakill_n, max_out);
+		for (unsigned int i = 0; i < m; ++i)
+		{
+			out_ret[i] = gg_animdatakill[i].ret;
+			out_first[i] = gg_animdatakill[i].first;
+			out_count[i] = gg_animdatakill[i].count;
+		}
+		return m;
+	}
 	unsigned int GG_GetHairKills(const void** out_ret, unsigned int* out_entity, unsigned int* out_parent,
 		unsigned int* out_reason, unsigned int* out_clearcount, unsigned int max_out)
 	{
@@ -1558,6 +1591,10 @@ namespace wi::scene
 	void Scene::Entity_Remove(Entity entity, bool recursive, bool keep_sorted)
 	{
 		// GGMAX 1.85: reason 0 = removed directly, 1 = pulled down as a recursive child.
+		if (animation_datas.Contains(entity))
+		{
+			gg_record_animdatakill(_ReturnAddress(), entity);
+		}
 		if (hairs.Contains(entity))
 		{
 			gg_record_hairkill(_ReturnAddress(), entity,

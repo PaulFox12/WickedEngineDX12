@@ -106,6 +106,8 @@ namespace wi::scene
 	// separate because Scene::Clear wipes components without going through Entity_Remove at all.
 	unsigned int GG_GetHairKills(const void** out_ret, unsigned int* out_entity, unsigned int* out_parent,
 		unsigned int* out_reason, unsigned int* out_clearcount, unsigned int max_out);
+	// GGMAX: the callers that removed animation key data entities (Entity_Remove), each with the first entity and a count
+	unsigned int GG_GetAnimDataKills(const void** out_ret, unsigned int* out_first, unsigned int* out_count, unsigned int max_out);
 
 	struct Scene
 	{
