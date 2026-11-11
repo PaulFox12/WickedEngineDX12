@@ -3009,6 +3009,7 @@ namespace wi
 
 			wi::renderer::DrawSoftParticles(visibility_main, true, cmd);
 			wi::renderer::DrawSpritesAndFonts(*scene, *camera, true, cmd);
+			wi::renderer::GG_DrawHeatShimmer(cmd); // GGMAX: heat shimmer, added to the particles' distortion
 
 			device->RenderPassEnd(cmd);
 		}

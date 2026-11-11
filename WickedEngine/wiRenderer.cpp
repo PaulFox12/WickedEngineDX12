@@ -572,6 +572,16 @@ bool GG_RPTraceNear()
 {
 	return gg_dred_trace_draws && device && gg_rptrace_last != ~0ull && device->GetFrameCount() <= gg_rptrace_last + 4;
 }
+// GGMAX: heat shimmer (SetHeatShimmer, harness SET_HEATSHIMMER): the largest offset in pixels (0 off), the distances it
+// starts and is full at (units), the boost towards a low sun, the half width of the band round the horizon (the view ray's
+// height), the ripples' size and speed
+float gg_heat_strength = 0.0f;
+float gg_heat_start = 7874.0f;   // 200 m
+float gg_heat_full = 31496.0f;   // 800 m
+float gg_heat_sun_boost = 2.0f;
+float gg_heat_band = 0.06f;
+float gg_heat_scale = 1.0f;
+float gg_heat_speed = 1.0f;
 int gg_ssgi_skip = 0; // GGMAX: SSGI sampling octaves left out, bit 0 the finest (2x) to bit 3 the widest (16x); SET_SSGISKIP
 float gg_reflection_min_size = 0.0025f; // objects whose radius is under this share of their distance are left out of the reflection (0 none)
 int gg_reflection_samples = 1; // GGMAX: 1 as DX11's reflection (0.42 ms of 14.9 saved at start_east, no visible change; 2026-11-04)
@@ -1199,6 +1209,9 @@ PipelineState PSO_renderlightmap;
 PipelineState PSO_paintdecal;
 
 PipelineState PSO_lensflare;
+// GG: heat shimmer (GG_DrawHeatShimmer), the pipeline made at its first draw and again after a shader reload
+Shader gg_heat_shimmer_ps;
+PipelineState PSO_gg_heat_shimmer;
 
 PipelineState PSO_downsampledepthbuffer;
 PipelineState PSO_upsample_bilateral;
@@ -1541,6 +1554,8 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_POSTPROCESS_UPSAMPLE_BILATERAL], "upsample_bilateralPS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_POSTPROCESS_OUTLINE], "outlinePS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_LENSFLARE], "lensFlarePS.cso"); });
+	PSO_gg_heat_shimmer = {};
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, gg_heat_shimmer_ps, "ggHeatShimmerPS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_DDGI_DEBUG], "ddgi_debugPS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_POSTPROCESS_VOLUMETRICCLOUDS_UPSAMPLE], "volumetricCloud_upsamplePS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, shaders[PSTYPE_COPY_DEPTH], "copyDepthPS.cso"); });
@@ -21132,7 +21147,38 @@ namespace gg_ffx
 		return ffxApiGetResourceDX12((ID3D12Resource*)dx12->GG_GetNativeResource(&texture), FfxState(state));
 	}
 }
+// GG: heat shimmer into the screen distortion target, inside the distortion particles' render pass (RenderPath3D); the tone
+// map bends the picture by it. Nothing is drawn while its strength is 0
+void GG_DrawHeatShimmer(CommandList cmd)
+{
+	if (gg_heat_strength <= 0 || !gg_heat_shimmer_ps.IsValid())
+		return;
+	if (!PSO_gg_heat_shimmer.IsValid())
+	{
+		PipelineStateDesc desc;
+		desc.vs = &shaders[VSTYPE_SCREEN];
+		desc.ps = &gg_heat_shimmer_ps;
+		desc.bs = &blendStates[BSTYPE_ADDITIVE];
+		desc.rs = &rasterizers[RSTYPE_DOUBLESIDED];
+		desc.dss = &depthStencils[DSSTYPE_DEPTHDISABLED];
+		desc.pt = PrimitiveTopology::TRIANGLELIST;
+		device->CreatePipelineState(&desc, &PSO_gg_heat_shimmer);
+	}
+	device->EventBegin("GG Heat Shimmer", cmd);
+	auto range = wi::profiler::BeginRangeGPU("Heat Shimmer", cmd);
+	struct { float strength, start, full, sun_boost, band, scale, speed, pad; } push = {
+		gg_heat_strength, gg_heat_start, gg_heat_full, gg_heat_sun_boost, gg_heat_band, gg_heat_scale, gg_heat_speed, 0 };
+	device->BindPipelineState(&PSO_gg_heat_shimmer, cmd);
+	device->PushConstants(&push, sizeof(push), cmd);
+	device->Draw(3, 0, cmd);
+	wi::profiler::EndRange(range);
+	device->EventEnd(cmd);
+}
+
 const char* GG_FSR_SdkStatus() { return gg_ffx::status.c_str(); }
+// GGMAX: whether FSR 3.1 by AMD's DLL can run (the DLL loads and gg_fsr_sdk is on); GameGuru picks the FSR 1 upscale and
+// the TAA instead when it can't, never the FSR 2.1 shaders (2026-11-11)
+bool GG_FSR_SdkAvailable() { return gg_fsr_sdk != 0 && gg_ffx::Load(); }
 void GG_FSR_SdkDestroyContext() { gg_ffx::DestroyContext(); gg_ffx::frames = 0; }
 uint64_t GG_FSR_SdkFrames() { return gg_ffx::frames; }
 int GG_FSR_LastPath() { return gg_ffx::last_path; }
