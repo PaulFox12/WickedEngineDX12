@@ -8240,6 +8240,19 @@ D3D12_RESOURCE_ALLOCATION_INFO AllocatorPimpl::GetResourceAllocationInfo(D3D12_R
     which is merely the smallest multiple of 64KB that's greater or equal to
     D3D12_RESOURCE_DESC::Width.
     */
+    // GG: a buffer made with tight alignment (D3D12_RESOURCE_FLAG_USE_TIGHT_ALIGNMENT, 0x400): its size is the device's to
+    // say, far under 64 KB. Its alignment is held at 256 at least where the device may say less (128 seen): what a
+    // constant buffer view and an acceleration structure's inputs need, as every buffer had at 64 KB
+    if (inOutResourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER &&
+        (inOutResourceDesc.Flags & (D3D12_RESOURCE_FLAGS)0x400) != 0)
+    {
+        D3D12_RESOURCE_ALLOCATION_INFO tightInfo = GetResourceAllocationInfoNative(inOutResourceDesc);
+        if (tightInfo.Alignment < 256)
+        {
+            tightInfo.Alignment = 256;
+        }
+        return tightInfo;
+    }
     if (inOutResourceDesc.Alignment == 0 &&
         inOutResourceDesc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
     {

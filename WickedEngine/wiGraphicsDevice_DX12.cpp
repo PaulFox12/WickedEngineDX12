@@ -2,6 +2,7 @@
 
 #ifdef WICKEDENGINE_BUILD_DX12
 #include "wiHelper.h"
+#include "wiArguments.h" // GG: notightalign
 #include "wiTimer.h"
 #include "wiUnorderedSet.h"
 
@@ -706,6 +707,9 @@ namespace wi::graphics
 	static bool gg_rm_dred_by_debug_layer = false;       // DRED forced on by -debugdevice, not dred.txt
 	// GG: the device's answer for tight alignment: -1 the runtime doesn't know the feature, 0 not supported, 1 buffers
 	int gg_tight_alignment_tier = -1;
+	// GG: GPU-only buffers are made with tight alignment where the device has it; the startup argument notightalign makes
+	// them the old way (64 KB at least each), for a before and after of video memory on one exe
+	bool gg_tight_alignment_use = true;
 	static bool gg_rm_dred_file_at_launch = false;       // dred.txt was there when arming was attempted
 	std::atomic<uint64_t> gg_removal_at_ms{ 0 };         // GetTickCount64 when OnDeviceRemoved began
 	std::atomic<bool> gg_removal_report_ready{ false };  // report written - the main thread's dialog waits for this
@@ -3641,8 +3645,10 @@ std::mutex queue_locker;
 			UINT gg_tier = 0;
 			const HRESULT gg_hr = device->CheckFeatureSupport((D3D12_FEATURE)54, &gg_tier, sizeof(gg_tier));
 			gg_tight_alignment_tier = SUCCEEDED(gg_hr) ? (int)gg_tier : -1;
-			wilog("D3D12 runtime: %s; tight alignment: %s", gg_runtime,
-				gg_tight_alignment_tier < 0 ? "unknown to this runtime" : gg_tight_alignment_tier == 0 ? "not supported by the runtime or the driver" : "supported");
+			gg_tight_alignment_use = !wi::arguments::HasArgument("notightalign");
+			wilog("D3D12 runtime: %s; tight alignment: %s%s", gg_runtime,
+				gg_tight_alignment_tier < 0 ? "unknown to this runtime" : gg_tight_alignment_tier == 0 ? "not supported by the runtime or the driver" : "supported",
+				gg_tight_alignment_tier >= 1 && !gg_tight_alignment_use ? " (not used: notightalign)" : "");
 		}
 
 		if (validationMode != ValidationMode::Disabled)
@@ -4640,6 +4646,24 @@ std::mutex queue_locker;
 
 		resourceDesc.SampleDesc.Count = 1;
 		resourceDesc.SampleDesc.Quality = 0;
+
+		// GG: tight alignment (D3D12_RESOURCE_FLAG_USE_TIGHT_ALIGNMENT, 0x400: the Agility SDK's runtime, where the driver
+		// reports it): a GPU-only buffer takes its own size in its heap, up to 256 bytes of alignment, where every buffer took
+		// 64 KB at least (an emitter's buffer, a terrain chunk's, a wet map). Its Width, its views and every copy into it are
+		// as before; only where it sits changes. Not for mapped buffers (upload, readback: a CPU write past a buffer's end
+		// would land in a neighbour, not in padding), sparse buffers (the flag isn't allowed), aliasing memory, a buffer
+		// placed in another's memory, or constant buffers: a root constant buffer's address must be a multiple of 256 and a
+		// tight buffer's may be one of 128 (the device was removed at the first frame, DXGI_ERROR_INVALID_CALL; the allocator
+		// now holds every tight buffer at 256 as well). Acceleration structures are made elsewhere; ResourceMiscFlag::RAY_TRACING
+		// here marks a buffer one may be built from (every emitter's and every skinned mesh's), and those are tight too
+		if (gg_tight_alignment_tier >= 1 && gg_tight_alignment_use && desc->usage == Usage::DEFAULT && alias == nullptr &&
+			!has_flag(desc->bind_flags, BindFlag::CONSTANT_BUFFER) &&
+			!has_flag(desc->misc_flags, ResourceMiscFlag::SPARSE) &&
+			!has_flag(desc->misc_flags, ResourceMiscFlag::ALIASING_BUFFER) && !has_flag(desc->misc_flags, ResourceMiscFlag::ALIASING_TEXTURE_NON_RT_DS) &&
+			!has_flag(desc->misc_flags, ResourceMiscFlag::ALIASING_TEXTURE_RT_DS) && !has_flag(desc->misc_flags, ResourceMiscFlag::SHARED))
+		{
+			resourceDesc.Flags |= (D3D12_RESOURCE_FLAGS)0x400;
+		}
 
 		D3D12_RESOURCE_STATES resourceState = D3D12_RESOURCE_STATE_COMMON;
 
