@@ -704,6 +704,8 @@ namespace wi::graphics
 	// main thread's Present failing while the pool thread is still reporting) cannot relabel the report.
 	static thread_local const char* gg_rm_detected_by = nullptr;
 	static bool gg_rm_dred_by_debug_layer = false;       // DRED forced on by -debugdevice, not dred.txt
+	// GG: the device's answer for tight alignment: -1 the runtime doesn't know the feature, 0 not supported, 1 buffers
+	int gg_tight_alignment_tier = -1;
 	static bool gg_rm_dred_file_at_launch = false;       // dred.txt was there when arming was attempted
 	std::atomic<uint64_t> gg_removal_at_ms{ 0 };         // GetTickCount64 when OnDeviceRemoved began
 	std::atomic<bool> gg_removal_report_ready{ false };  // report written - the main thread's dialog waits for this
@@ -3603,6 +3605,20 @@ std::mutex queue_locker;
 		assert(dxgiAdapter != nullptr);
 		if (dxgiAdapter == nullptr)
 		{
+			// GG: an exe that names a D3D12 runtime of its own (the Agility SDK's D3D12SDKVersion export) gets no device at all
+			// when that runtime's DLL isn't in its folder beside the exe, or is another version: say so, not "no adapter"
+			const UINT* gg_sdk_version = (const UINT*)GetProcAddress(GetModuleHandleA(nullptr), "D3D12SDKVersion");
+			if (gg_sdk_version != nullptr)
+			{
+				char gg_exe[MAX_PATH] = {};
+				GetModuleFileNameA(nullptr, gg_exe, MAX_PATH);
+				std::string gg_dll = gg_exe;
+				gg_dll = gg_dll.substr(0, gg_dll.find_last_of("\\/") + 1) + "D3D12\\D3D12Core.dll";
+				const bool gg_there = GetFileAttributesA(gg_dll.c_str()) != INVALID_FILE_ATTRIBUTES;
+				wilog_messagebox("D3D12: no graphics device could be made. This exe needs the D3D12 runtime %u in the D3D12 folder beside it, and %s %s.",
+					*gg_sdk_version, gg_dll.c_str(), gg_there ? "is there but was not accepted (another version, or a damaged file)" : "is missing");
+				gg_fatal_device_init();
+			}
 			wilog_messagebox("DXGI: No capable graphics adapter found!");
 			gg_fatal_device_init();
 		}
@@ -3614,6 +3630,20 @@ std::mutex queue_locker;
 			gg_fatal_device_init();
 		}
 		gg_aftermath::Initialize(device.Get());
+
+		// GG: which D3D12 runtime this is (the Agility SDK's beside the exe, or Windows' own) and whether the runtime and
+		// the driver have tight alignment (D3D12_FEATURE_D3D12_TIGHT_ALIGNMENT = 54, newer than the bundled headers): a
+		// buffer made with D3D12_RESOURCE_FLAG_USE_TIGHT_ALIGNMENT (0x400) then takes its own size, not 64 KB at least
+		{
+			char gg_runtime[MAX_PATH] = "?";
+			const HMODULE gg_core = GetModuleHandleA("D3D12Core.dll");
+			if (gg_core != nullptr) GetModuleFileNameA(gg_core, gg_runtime, MAX_PATH);
+			UINT gg_tier = 0;
+			const HRESULT gg_hr = device->CheckFeatureSupport((D3D12_FEATURE)54, &gg_tier, sizeof(gg_tier));
+			gg_tight_alignment_tier = SUCCEEDED(gg_hr) ? (int)gg_tier : -1;
+			wilog("D3D12 runtime: %s; tight alignment: %s", gg_runtime,
+				gg_tight_alignment_tier < 0 ? "unknown to this runtime" : gg_tight_alignment_tier == 0 ? "not supported by the runtime or the driver" : "supported");
+		}
 
 		if (validationMode != ValidationMode::Disabled)
 		{
