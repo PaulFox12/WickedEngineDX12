@@ -41,6 +41,8 @@ void gg_vram_released(const void* allocation); // GGMAX: VRAM census (wiGraphics
 
 namespace wi::graphics
 {
+	extern std::atomic<unsigned long long> gg_bindless_slots_cleared; // GG: wiGraphicsDevice_DX12.cpp
+
 	class GraphicsDevice_DX12 final : public GraphicsDevice
 	{
 	protected:
@@ -627,6 +629,15 @@ namespace wi::graphics
 			std::deque<std::pair<int, uint64_t>> destroyer_bindless_res;
 			std::deque<std::pair<int, uint64_t>> destroyer_bindless_sam;
 
+			// GG: a freed bindless slot is written over with a null texture descriptor before it goes back on the free list, and
+			// the memory of a destroyed resource goes BUFFERCOUNT frames after that, once every frame recorded before the slot
+			// was cleared has finished: a shader still holding the index reads zero instead of freed memory. Seven GPU page
+			// faults (DXGI_ERROR_DEVICE_HUNG, 2026-11-11 and 11-12) were objectPS in the planar reflection reading the released
+			// FSR target through its old slot. Set by the device once its bindless heap exists, cleared before it goes
+			D3D12_CPU_DESCRIPTOR_HANDLE gg_bindless_res_start = {};
+			D3D12_CPU_DESCRIPTOR_HANDLE gg_null_texture2d = {};
+			UINT gg_res_descriptor_size = 0;
+
 			~AllocationHandler()
 			{
 				Update(~0ull, 0); // destroy all remaining
@@ -645,13 +656,15 @@ namespace wi::graphics
 				extern bool gg_leak_all_destroys;
 				if (gg_leak_all_destroys)
 					return;
-				while (!destroyer_allocations.empty() && destroyer_allocations.front().second + BUFFERCOUNT < FRAMECOUNT)
+				// GG: memory BUFFERCOUNT frames after the bindless slots are cleared (see gg_null_texture2d)
+				const uint64_t gg_memory_frames = (uint64_t)BUFFERCOUNT * 2;
+				while (!destroyer_allocations.empty() && destroyer_allocations.front().second + gg_memory_frames < FRAMECOUNT)
 				{
 					::gg_vram_released((const void*)destroyer_allocations.front().first.Get()); // GGMAX: VRAM census, the pending record goes with the allocation
 					destroyer_allocations.pop_front();
 					// comptr auto delete
 				}
-				while (!destroyer_resources.empty() && destroyer_resources.front().second + BUFFERCOUNT < FRAMECOUNT)
+				while (!destroyer_resources.empty() && destroyer_resources.front().second + gg_memory_frames < FRAMECOUNT)
 				{
 					destroyer_resources.pop_front();
 					// comptr auto delete
@@ -690,6 +703,13 @@ namespace wi::graphics
 				{
 					int index = destroyer_bindless_res.front().first;
 					destroyer_bindless_res.pop_front();
+					if (gg_null_texture2d.ptr != 0)
+					{
+						D3D12_CPU_DESCRIPTOR_HANDLE dst = gg_bindless_res_start;
+						dst.ptr += (SIZE_T)index * gg_res_descriptor_size;
+						device->CopyDescriptorsSimple(1, dst, gg_null_texture2d, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+						gg_bindless_slots_cleared.fetch_add(1, std::memory_order_relaxed);
+					}
 					free_bindless_res.push_back(index);
 				}
 				while (!destroyer_bindless_sam.empty() && destroyer_bindless_sam.front().second + BUFFERCOUNT < FRAMECOUNT)

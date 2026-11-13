@@ -39,6 +39,10 @@ namespace wi::allocator
 	// tracking and the graceful reject stay live. Standalone exports run producelogfiles=0
 	// and the game clears this at startup (GGSetDiagTraceFiles) so players' folders stay clean.
 	inline bool gg_alloc_tripwire_file = true;
+	// GG: the per-op lines (A, D, F, R: every mesh suballocation made, freed and released) only when asked for; each line was a
+	// lock, a write and a flush on the render threads, about 13,000 a second in play (636 MB in one 15-minute game,
+	// 2026-11-12). The overlap and out-of-range lines are written whenever the file is on
+	inline bool gg_alloc_tripwire_ledger = false;
 #ifdef _WIN32
 	extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId(void);
 	inline unsigned long gg_tripwire_tid() { return GetCurrentThreadId(); }
@@ -208,7 +212,7 @@ namespace wi::allocator
 			{
 				if (gg_alloc_tripwire)
 				{
-					gg_tripwire_log("R %p %u m=%u t=%lu\n", (void*)allocator.get(), (unsigned)allocator->deferred_release_queue.front().first.offset, (unsigned)allocator->deferred_release_queue.front().first.metadata, gg_tripwire_tid());
+					if (gg_alloc_tripwire_ledger) gg_tripwire_log("R %p %u m=%u t=%lu\n", (void*)allocator.get(), (unsigned)allocator->deferred_release_queue.front().first.offset, (unsigned)allocator->deferred_release_queue.front().first.metadata, gg_tripwire_tid());
 					allocator->live_pages.erase(allocator->deferred_release_queue.front().first.offset); // GGMAX 1.46
 				}
 				allocator->allocator.free(allocator->deferred_release_queue.front().first);
@@ -298,7 +302,7 @@ namespace wi::allocator
 						// GGMAX 1.46: range stays in live_pages until the drain actually frees it
 						if (gg_alloc_tripwire)
 						{
-							gg_tripwire_log("D %p %u m=%u t=%lu\n", (void*)keep.get(), (unsigned)st->allocation.offset, (unsigned)st->allocation.metadata, gg_tripwire_tid());
+							if (gg_alloc_tripwire_ledger) gg_tripwire_log("D %p %u m=%u t=%lu\n", (void*)keep.get(), (unsigned)st->allocation.offset, (unsigned)st->allocation.metadata, gg_tripwire_tid());
 						}
 					}
 					else
@@ -307,7 +311,7 @@ namespace wi::allocator
 						keep->allocator.free(st->allocation);
 						if (gg_alloc_tripwire)
 						{
-							gg_tripwire_log("F %p %u m=%u t=%lu\n", (void*)keep.get(), (unsigned)st->allocation.offset, (unsigned)st->allocation.metadata, gg_tripwire_tid());
+							if (gg_alloc_tripwire_ledger) gg_tripwire_log("F %p %u m=%u t=%lu\n", (void*)keep.get(), (unsigned)st->allocation.offset, (unsigned)st->allocation.metadata, gg_tripwire_tid());
 							keep->live_pages.erase(st->allocation.offset); // GGMAX 1.46
 						}
 					}
@@ -344,7 +348,7 @@ namespace wi::allocator
 				// double-booking that lets one mesh's upload stomp another's bytes.
 				if (gg_alloc_tripwire)
 				{
-					gg_tripwire_log("A %p %u %u pc=%u m=%u t=%lu\n", (void*)allocator.get(), (unsigned)offsetallocation.offset, (unsigned)pages, (unsigned)page_count, (unsigned)offsetallocation.metadata, gg_tripwire_tid());
+					if (gg_alloc_tripwire_ledger) gg_tripwire_log("A %p %u %u pc=%u m=%u t=%lu\n", (void*)allocator.get(), (unsigned)offsetallocation.offset, (unsigned)pages, (unsigned)page_count, (unsigned)offsetallocation.metadata, gg_tripwire_tid());
 					auto next = allocator->live_pages.lower_bound(offsetallocation.offset);
 					if (next != allocator->live_pages.begin())
 					{

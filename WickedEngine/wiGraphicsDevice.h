@@ -506,8 +506,24 @@ struct WickedDeviceCallInfo
 	uint32_t width = 0;
 	uint32_t height = 0;
 	uint32_t format = 0;
+	const char* detail = ""; // a pipeline compiled at its first draw: what the draw was (g_pfnWickedDrawName), else empty
 };
 extern void (*g_pfnWickedDeviceCall)(double dMilliseconds, const WickedDeviceCallInfo& info);
+// GG: what the recording thread is drawing, set by the renderer's mesh draws and cleared after them, so a pipeline compiled
+// at its first draw can be named; g_pfnWickedDrawName (set by the renderer) writes it out, and only when such a compile
+// happens. The last compiles in play are kept for GG_PipelineCompileList (wiGraphicsDevice_DX12.cpp)
+struct WickedDrawContext
+{
+	const void* scene = nullptr; // wi::scene::Scene, null for a draw that isn't a mesh's
+	uint32_t objectIndex = ~0u; // the batch's first object
+	uint32_t meshIndex = ~0u;
+	uint32_t materialIndex = ~0u;
+	uint32_t renderPass = ~0u;
+	uint32_t variant = 0; // the object pipeline's variant bits (wiRenderer.cpp ObjectRenderingVariant), 0 for another pipeline
+	int customShader = -1;
+};
+extern thread_local WickedDrawContext g_WickedDrawContext;
+extern void (*g_pfnWickedDrawName)(const WickedDrawContext& ctx, char* text, size_t size);
 // GG: hooks for the game's own GPU timing (set by the game, null for none): a graphics command list begun, on the thread
 // that begins it; each one just before the submit closes it (bLast for the frame's last), and the submit's end, on the main
 // thread; and a named span inside a list (the profiler's GPU ranges, wiProfiler.cpp), its begin giving an id (-1 for none)
@@ -523,3 +539,4 @@ int GG_PipelineCacheWarm(double* pMs);
 void GG_PipelineCacheSetEnabled(bool value);
 void GG_PipelineCacheClear();
 void GG_PipelineCacheStats(char* out, int size);
+int GG_PipelineCompileList(char* out, int size, bool bClear);

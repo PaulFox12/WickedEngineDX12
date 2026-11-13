@@ -71,6 +71,18 @@ void (*g_pfnWickedListFinish)(wi::graphics::CommandList cmd, bool bLast) = nullp
 void (*g_pfnWickedSubmitEnd)(void) = nullptr;
 int (*g_pfnWickedGpuRangeBegin)(wi::graphics::CommandList cmd, const char* name) = nullptr;
 void (*g_pfnWickedGpuRangeEnd)(int range) = nullptr;
+thread_local WickedDrawContext g_WickedDrawContext;
+void (*g_pfnWickedDrawName)(const WickedDrawContext& ctx, char* text, size_t size) = nullptr;
+// GG: the last pipelines compiled at their first draw (not loaded from the pipeline cache), oldest first when listed
+struct GGPipelineCompile
+{
+	double ms = 0;
+	uint64_t frame = 0;
+	char what[240] = "";
+};
+static std::mutex gg_pso_compiles_lock;
+static GGPipelineCompile gg_pso_compiles[128];
+static uint32_t gg_pso_compiles_count = 0;
 struct WickedDeviceCallTimer
 {
 	LARGE_INTEGER start;
@@ -710,6 +722,8 @@ namespace wi::graphics
 	// GG: GPU-only buffers are made with tight alignment where the device has it; the startup argument notightalign makes
 	// them the old way (64 KB at least each), for a before and after of video memory on one exe
 	bool gg_tight_alignment_use = true;
+	// GG: freed bindless slots cleared to the null texture (AllocationHandler::gg_null_texture2d), for GET_D3D12RUNTIME
+	std::atomic<unsigned long long> gg_bindless_slots_cleared{ 0 };
 	static bool gg_rm_dred_file_at_launch = false;       // dred.txt was there when arming was attempted
 	std::atomic<uint64_t> gg_removal_at_ms{ 0 };         // GetTickCount64 when OnDeviceRemoved began
 	std::atomic<bool> gg_removal_report_ready{ false };  // report written - the main thread's dialog waits for this
@@ -3296,12 +3310,27 @@ std::mutex queue_locker;
 				}
 				}
 
+				// GG: what the draw was, named only now that a pipeline was made for it
+				char gg_detail[200] = "";
+				if (g_pfnWickedDrawName != nullptr && g_WickedDrawContext.scene != nullptr)
+					g_pfnWickedDrawName(g_WickedDrawContext, gg_detail, sizeof(gg_detail));
+				if (!gg_from_library)
+				{
+					std::scoped_lock gg_l(gg_pso_compiles_lock);
+					GGPipelineCompile& c = gg_pso_compiles[gg_pso_compiles_count % arraysize(gg_pso_compiles)];
+					c.ms = (double)gg_compile_us / 1000.0;
+					c.frame = FRAMECOUNT;
+					_snprintf_s(c.what, sizeof(c.what), _TRUNCATE, "rt %u (%d) ds %d samples %u: %s", formats.NumRenderTargets,
+						formats.NumRenderTargets > 0 ? (int)formats.RTFormats[0] : -1, (int)DSFormat, sampleDesc.Count, gg_detail[0] ? gg_detail : "not a mesh draw");
+					gg_pso_compiles_count++;
+				}
 				if (g_pfnWickedDeviceCall)
 				{
 					// GG: the compile at a pipeline's first draw, where this device makes its pipeline states
 					WickedDeviceCallInfo gg_info;
 					gg_info.call = 3;
 					gg_info.op = gg_from_library ? "pipeline loaded from the pipeline cache at its first draw" : "pipeline compiled at its first draw";
+					gg_info.detail = gg_detail;
 					g_pfnWickedDeviceCall((double)gg_compile_us / 1000.0, gg_info);
 				}
 
@@ -4321,6 +4350,20 @@ std::mutex queue_locker;
 			dst_bindless.ptr += index * sampler_descriptor_size;
 			device->CopyDescriptorsSimple(1, dst_bindless, nullSAM, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 		}
+		// GG: the null texture a freed bindless slot is cleared to (AllocationHandler::gg_null_texture2d)
+		{
+			D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+			srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+			srv_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+			srv_desc.Texture2D.MipLevels = 1;
+			D3D12_CPU_DESCRIPTOR_HANDLE handle = allocationhandler->descriptors_res.allocate();
+			device->CreateShaderResourceView(nullptr, &srv_desc, handle);
+			std::scoped_lock lck(allocationhandler->destroylocker);
+			allocationhandler->gg_bindless_res_start = descriptorheap_res.start_cpu;
+			allocationhandler->gg_res_descriptor_size = resource_descriptor_size;
+			allocationhandler->gg_null_texture2d = handle;
+		}
 
 		hr = dx12_check(queues[QUEUE_GRAPHICS].queue->GetTimestampFrequency(&TIMESTAMP_FREQUENCY));
 		if (FAILED(hr))
@@ -4358,6 +4401,11 @@ std::mutex queue_locker;
 		gg_rm_adapter3.Reset();
 		gg_rm_gfx_frame_fence[0] = gg_rm_gfx_frame_fence[1] = nullptr;
 		WaitForGPU();
+		{
+			// GG: the bindless heap goes with the device; resources released after it don't clear their slots
+			std::scoped_lock lck(allocationhandler->destroylocker);
+			allocationhandler->gg_null_texture2d = {};
+		}
 
 #ifdef PLATFORM_WINDOWS_DESKTOP
 		std::ignore = UnregisterWait(deviceRemovedWaitHandle);
@@ -10319,4 +10367,23 @@ void GG_PipelineCacheStats(char* out, int size)
 	snprintf(out, (size_t)size, "on=%d library=%d file_kb=%d uses=%d stored=%u loaded=%u warmed=%u warm_ms=%.0f unsaved=%u",
 		gg_pc_enabled ? 1 : 0, gg_pc_library != nullptr ? 1 : 0, (int)(gg_pc_blob.size() / 1024), (int)gg_pc_uses.size(),
 		gg_pc_stored, gg_pc_loaded, gg_pc_warmed, gg_pc_warm_ms, gg_pc_unsaved);
+}
+// GG: the pipelines compiled at their first draw since the list was last cleared (the last 128, oldest first), a line each:
+// the frame, the time and what the draw was; returns how many there were in all; bClear empties it after
+int GG_PipelineCompileList(char* out, int size, bool bClear)
+{
+	std::scoped_lock l(gg_pso_compiles_lock);
+	const uint32_t total = gg_pso_compiles_count;
+	const uint32_t kept = total < (uint32_t)arraysize(gg_pso_compiles) ? total : (uint32_t)arraysize(gg_pso_compiles);
+	int len = 0;
+	if (size > 0) out[0] = 0;
+	for (uint32_t i = total - kept; i < total && len >= 0 && len < size; ++i)
+	{
+		const GGPipelineCompile& c = gg_pso_compiles[i % arraysize(gg_pso_compiles)];
+		const int n = snprintf(out + len, (size_t)(size - len), "frame %llu %.1f ms %s\n", (unsigned long long)c.frame, c.ms, c.what);
+		if (n < 0) break;
+		len += n;
+	}
+	if (bClear) gg_pso_compiles_count = 0;
+	return (int)total;
 }

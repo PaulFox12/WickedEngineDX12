@@ -926,6 +926,33 @@ inline void SetObjectPSO(ObjectRenderingVariant variant, const PipelineState& ps
 {
 	GetObjectPSOMap(variant)[variant.value] = pso;
 }
+// GG: a mesh draw named for a pipeline compiled at its first draw (g_pfnWickedDrawName, wiGraphicsDevice.h): the pass, the
+// first object, the mesh and the material by name, and the object pipeline's variant (its cull may be the backside's)
+static void gg_draw_name(const WickedDrawContext& ctx, char* text, size_t size)
+{
+	static const char* passes[] = { "main", "prepass", "prepass depth only", "envmap capture", "shadow", "voxelize", "rain blocker" };
+	static_assert(arraysize(passes) == RENDERPASS_COUNT, "a pass without a name");
+	const Scene* scene = (const Scene*)ctx.scene;
+	auto name = [&](const ComponentManager<NameComponent>& names, Entity entity) {
+		const NameComponent* n = entity != INVALID_ENTITY ? names.GetComponent(entity) : nullptr;
+		return n != nullptr && !n->name.empty() ? n->name.c_str() : "-";
+	};
+	const char* object = ctx.objectIndex < scene->objects.GetCount() ? name(scene->names, scene->objects.GetEntity(ctx.objectIndex)) : "?";
+	const char* mesh = ctx.meshIndex < scene->meshes.GetCount() ? name(scene->names, scene->meshes.GetEntity(ctx.meshIndex)) : "?";
+	const char* material = ctx.materialIndex < scene->materials.GetCount() ? name(scene->names, scene->materials.GetEntity(ctx.materialIndex)) : "?";
+	const char* pass = ctx.renderPass < RENDERPASS_COUNT ? passes[ctx.renderPass] : "?";
+	if (ctx.customShader >= 0)
+	{
+		_snprintf_s(text, size, _TRUNCATE, "%s pass, object %s, mesh %s, material %s, custom shader %d", pass, object, mesh, material, ctx.customShader);
+		return;
+	}
+	ObjectRenderingVariant v;
+	v.value = ctx.variant;
+	_snprintf_s(text, size, _TRUNCATE, "%s pass, object %s, mesh %s, material %s, shader %u blend %u cull %u tess %u alphatest %u depth %u quick %u",
+		pass, object, mesh, material, v.bits.shadertype, v.bits.blendmode, v.bits.cullmode, v.bits.tessellation, v.bits.alphatest,
+		v.bits.ggdepthmode, v.bits.ggsuperquick);
+}
+static struct GGDrawNameHook { GGDrawNameHook() { g_pfnWickedDrawName = gg_draw_name; } } gg_draw_name_hook;
 wi::jobsystem::context mesh_shader_ctx;
 wi::jobsystem::context object_pso_job_ctx;
 PipelineState PSO_object_wire;
@@ -4298,6 +4325,7 @@ void RenderMeshes(
 	struct InstancedBatch
 	{
 		uint32_t meshIndex = ~0u;
+		uint32_t objectIndex = ~0u; // GG: the batch's first object, to name a pipeline compiled at its first draw
 		uint32_t instanceCount = 0;
 		uint32_t dataOffset = 0;
 		uint8_t userStencilRefOverride = 0;
@@ -4427,6 +4455,15 @@ void RenderMeshes(
 
 			const PipelineState* pso = nullptr;
 			const PipelineState* pso_backside = nullptr; // only when separate backside rendering is required (transparent doublesided)
+			// GG: what this draw is, for naming a pipeline compiled at its first draw (wiGraphicsDevice.h WickedDrawContext)
+			WickedDrawContext& gg_ctx = g_WickedDrawContext;
+			gg_ctx.scene = vis.scene;
+			gg_ctx.objectIndex = instancedBatch.objectIndex;
+			gg_ctx.meshIndex = instancedBatch.meshIndex;
+			gg_ctx.materialIndex = subset.materialIndex;
+			gg_ctx.renderPass = (uint32_t)renderPass;
+			gg_ctx.variant = 0;
+			gg_ctx.customShader = -1;
 			{
 				if (wireframe && renderPass != RENDERPASS_ENVMAPCAPTURE)
 				{
@@ -4454,6 +4491,7 @@ void RenderMeshes(
 					{
 						pso = &customShader.pso[renderPass];
 					}
+					gg_ctx.customShader = material.customShaderID;
 				}
 				else
 				{
@@ -4670,6 +4708,7 @@ void RenderMeshes(
 							pso_backside = GetObjectPSO(variant);
 						}
 					}
+					gg_ctx.variant = variant.value;
 				}
 			}
 
@@ -4815,6 +4854,7 @@ void RenderMeshes(
 
 			instancedBatch = {};
 			instancedBatch.meshIndex = meshIndex;
+			instancedBatch.objectIndex = instanceIndex;
 			instancedBatch.instanceCount = 0;
 			instancedBatch.dataOffset = (uint32_t)(instances.offset + instanceCount * sizeof(ShaderMeshInstancePointer));
 			instancedBatch.userStencilRefOverride = userStencilRefOverride;
@@ -4880,6 +4920,7 @@ void RenderMeshes(
 	}
 
 	batch_flush();
+	g_WickedDrawContext = {}; // GG: draws after this aren't this pass's meshes
 
 	if (gg_trace)
 	{
