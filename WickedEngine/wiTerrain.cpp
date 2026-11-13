@@ -266,6 +266,21 @@ namespace wi::terrain
 		static ChunkIndices state;
 		return state;
 	}
+	// GG: the chunks' index, provoking index and reorder data, made once and shared by every chunk mesh
+	// (MeshComponent::gg_shared_indices); each chunk held its own copy of the same 143 KB, about 140 MB for 998 chunks.
+	// gg_share_chunk_indices 0 (harness SET_TERRAINSHAREDIB 0) makes chunks generated after it the old way
+	bool gg_share_chunk_indices = true;
+	inline std::shared_ptr<wi::scene::MeshComponent::GGSharedIndices> gg_chunk_shared_indices()
+	{
+		static std::mutex lock;
+		static std::shared_ptr<wi::scene::MeshComponent::GGSharedIndices> shared;
+		if (!gg_share_chunk_indices)
+			return nullptr;
+		std::scoped_lock l(lock);
+		if (shared == nullptr)
+			shared = wi::scene::MeshComponent::GG_CreateSharedIndices(chunk_indices().indices, vertexCount);
+		return shared;
+	}
 
 	struct Generator
 	{
@@ -1375,6 +1390,7 @@ namespace wi::terrain
 					mesh.tessellationFactor = gg_paint_blend.tessellate ? 1.0f : 0.0f; // GGMAX: tessellated to GameGuru's height rings
 					object.meshID = chunk_data.entity;
 					mesh.indices = chunk_indices().indices;
+					mesh.gg_shared_indices = gg_chunk_shared_indices(); // GG: the chunks' index data, one copy for all
 					for (auto& lod : chunk_indices().lods)
 					{
 						mesh.subsets.emplace_back();
@@ -3765,3 +3781,7 @@ namespace wi::terrain
 	}
 
 }
+
+// GG: for the game's harness (SET_TERRAINSHAREDIB)
+bool gg_terrain_share_chunk_indices_get() { return wi::terrain::gg_share_chunk_indices; }
+void gg_terrain_share_chunk_indices_set(bool value) { wi::terrain::gg_share_chunk_indices = value; }

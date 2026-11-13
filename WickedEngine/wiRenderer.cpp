@@ -4747,7 +4747,9 @@ void RenderMeshes(
 			}
 
 			// Note: the mesh.generalBuffer can be either a standalone allocated buffer, or a suballocated one (to reduce index buffer switching)
-			const GPUBuffer* ib = mesh.generalBufferOffsetAllocation.IsValid() ? &mesh.generalBufferOffsetAllocationAlias : &mesh.generalBuffer;
+			// GG: index data shared by the terrain's chunks lives in its own buffer (MeshComponent::gg_shared_indices)
+			const GPUBuffer* ib = mesh.gg_indices_shared ? &mesh.gg_shared_indices->buffer :
+				mesh.generalBufferOffsetAllocation.IsValid() ? &mesh.generalBufferOffsetAllocationAlias : &mesh.generalBuffer;
 			const IndexBufferFormat ibformat = provokingIBRequired ? mesh.GetProvokingIndexFormat() : mesh.GetIndexFormat();
 			const void* ibinternal = ib->internal_state.get();
 
@@ -4782,7 +4784,12 @@ void RenderMeshes(
 			const size_t ib_stride = provokingIBRequired ? mesh.GetProvokingIndexStride() : mesh.GetIndexStride();
 
 			uint32_t indexOffset = 0;
-			if (mesh.generalBufferOffsetAllocation.IsValid())
+			if (mesh.gg_indices_shared)
+			{
+				// GG: the shared buffer is standalone: the view's offset is from its start
+				indexOffset = uint32_t(ibv.offset / ib_stride) + subset.indexOffset;
+			}
+			else if (mesh.generalBufferOffsetAllocation.IsValid())
 			{
 				// In case the mesh general buffer is suballocated, the indexOffset is calculated relative to the beginning of the aliased buffer block:
 				indexOffset = uint32_t(((uint64_t)mesh.generalBufferOffsetAllocation.byte_offset + ibv.offset) / ib_stride) + subset.indexOffset;
@@ -11611,7 +11618,7 @@ void DrawDebugWorld(
 				DebugObjectPushConstants push;
 				push.vb_pos_wind = mesh->so_pos.IsValid() ? mesh->so_pos.descriptor_srv : mesh->vb_pos_wind.descriptor_srv;
 				device->PushConstants(&push, sizeof(push), cmd);
-				device->BindIndexBuffer(&mesh->generalBuffer, mesh->GetIndexFormat(), mesh->ib.offset, cmd);
+				device->BindIndexBuffer(&mesh->GetIndexBufferResource(), mesh->GetIndexFormat(), mesh->ib.offset, cmd);
 
 				device->DrawIndexed((uint32_t)mesh->indices.size(), 0, 0, cmd);
 			}
@@ -11651,7 +11658,7 @@ void DrawDebugWorld(
 			poi.Create((uint)scene.objects.GetIndex(x.objectEntity));
 			std::memcpy(mem.data, &poi, sizeof(poi));
 
-			device->BindIndexBuffer(&mesh.generalBuffer, mesh.GetIndexFormat(), mesh.ib.offset, cmd);
+			device->BindIndexBuffer(&mesh.GetIndexBufferResource(), mesh.GetIndexFormat(), mesh.ib.offset, cmd);
 
 			PaintRadiusCB cb;
 			cb.xPaintRadResolution = x.dimensions;
@@ -12808,7 +12815,7 @@ void RefreshImpostors(const Scene& scene, CommandList cmd)
 		// impostor camera will fit around mesh bounding sphere:
 		const Sphere boundingsphere = mesh.GetBoundingSphere();
 
-		device->BindIndexBuffer(&mesh.generalBuffer, mesh.GetIndexFormat(), mesh.ib.offset, cmd);
+		device->BindIndexBuffer(&mesh.GetIndexBufferResource(), mesh.GetIndexFormat(), mesh.ib.offset, cmd);
 
 		for (size_t i = 0; i < impostorCaptureAngles; ++i)
 		{
@@ -12937,7 +12944,7 @@ void PaintDecals(const Scene& scene, CommandList cmd)
 
 		device->BindDynamicConstantBuffer(cb, CB_GETBINDSLOT(PaintDecalCB), cmd);
 
-		device->BindIndexBuffer(&mesh.generalBuffer, mesh.GetIndexFormat(), mesh.ib.offset, cmd);
+		device->BindIndexBuffer(&mesh.GetIndexBufferResource(), mesh.GetIndexFormat(), mesh.ib.offset, cmd);
 
 		Viewport vp;
 		vp.width = (float)paint.out_texture.desc.width;
@@ -14166,7 +14173,7 @@ void RefreshLightmaps(const Scene& scene, CommandList cmd)
 
 			device->BindPipelineState(&PSO_renderlightmap, cmd);
 
-			device->BindIndexBuffer(&mesh.generalBuffer, mesh.GetIndexFormat(), mesh.ib.offset, cmd);
+			device->BindIndexBuffer(&mesh.GetIndexBufferResource(), mesh.GetIndexFormat(), mesh.ib.offset, cmd);
 
 			LightmapPushConstants push;
 			push.vb_pos_wind = mesh.vb_pos_wind.descriptor_srv;

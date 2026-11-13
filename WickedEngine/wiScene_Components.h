@@ -776,6 +776,24 @@ namespace wi::scene
 		BufferView ib_provoke;
 		BufferView ib_reorder;
 		BufferView ib;
+		// GG: the index, provoking index and reorder data shared by meshes of one topology (the terrain's chunks, made by
+		// wi::terrain): when set and matching this mesh's index and vertex counts, CreateRenderData puts none of the three in
+		// generalBuffer, and ib, ib_provoke and ib_reorder are views into the shared buffer (GetIndexBufferResource). 998
+		// chunks each held their own copy of the same 143 KB (2026-11-13)
+		struct GGSharedIndices
+		{
+			wi::graphics::GPUBuffer buffer;
+			BufferView ib;
+			BufferView ib_provoke;
+			BufferView ib_reorder;
+			size_t index_count = 0;
+			size_t vertex_count = 0;
+		};
+		std::shared_ptr<GGSharedIndices> gg_shared_indices;
+		bool gg_indices_shared = false; // set by CreateRenderData when the shared data was used
+		const wi::graphics::GPUBuffer& GetIndexBufferResource() const { return gg_indices_shared ? gg_shared_indices->buffer : generalBuffer; }
+		// GG: makes the shared data for meshes of this one's indices and vertex count (the same layout CreateRenderData writes)
+		static std::shared_ptr<GGSharedIndices> GG_CreateSharedIndices(const wi::vector<uint32_t>& indices, size_t vertex_count);
 		BufferView vb_pos_wind;
 		BufferView vb_nor;
 		BufferView vb_tan;

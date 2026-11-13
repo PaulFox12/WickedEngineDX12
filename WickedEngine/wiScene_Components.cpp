@@ -710,6 +710,69 @@ namespace wi::scene
 		vert.w = fSign;
 	}
 
+	std::shared_ptr<MeshComponent::GGSharedIndices> MeshComponent::GG_CreateSharedIndices(const wi::vector<uint32_t>& indices, size_t vertex_count)
+	{
+		if (indices.empty() || vertex_count == 0)
+			return nullptr;
+		GraphicsDevice* device = wi::graphics::GetDevice();
+
+		// the same data, formats and views CreateRenderData makes for a mesh of these indices and vertex count
+		wi::vector<unsigned int> provoke(indices.size());
+		wi::vector<unsigned int> reorder(vertex_count + indices.size() / 3);
+		reorder.resize(meshopt_generateProvokingIndexBuffer(&provoke[0], &reorder[0], &indices[0], indices.size(), vertex_count));
+		const bool index32 = GetIndexBufferFormat((uint32_t)vertex_count) == IndexBufferFormat::UINT32;
+		const bool provoke32 = GetIndexBufferFormat((uint32_t)indices.size()) == IndexBufferFormat::UINT32;
+
+		GPUBufferDesc bd;
+		bd.usage = device->CheckCapability(GraphicsDeviceCapability::CACHE_COHERENT_UMA) ? Usage::UPLOAD : Usage::DEFAULT;
+		bd.bind_flags = BindFlag::INDEX_BUFFER | BindFlag::SHADER_RESOURCE;
+		bd.misc_flags = ResourceMiscFlag::BUFFER_RAW | ResourceMiscFlag::TYPED_FORMAT_CASTING | ResourceMiscFlag::NO_DEFAULT_DESCRIPTORS;
+		if (device->CheckCapability(GraphicsDeviceCapability::RAYTRACING))
+		{
+			bd.misc_flags |= ResourceMiscFlag::RAY_TRACING;
+		}
+		const uint64_t alignment = device->GetMinOffsetAlignment(&bd);
+
+		auto shared = std::make_shared<GGSharedIndices>();
+		shared->index_count = indices.size();
+		shared->vertex_count = vertex_count;
+		uint64_t offset = 0;
+		shared->ib_provoke.offset = offset;
+		shared->ib_provoke.size = provoke.size() * (provoke32 ? sizeof(uint32_t) : sizeof(uint16_t));
+		offset += AlignTo(shared->ib_provoke.size, alignment);
+		shared->ib_reorder.offset = offset;
+		shared->ib_reorder.size = reorder.size() * (index32 ? sizeof(uint32_t) : sizeof(uint16_t));
+		offset += AlignTo(shared->ib_reorder.size, alignment);
+		shared->ib.offset = offset;
+		shared->ib.size = indices.size() * (index32 ? sizeof(uint32_t) : sizeof(uint16_t));
+		offset += AlignTo(shared->ib.size, alignment);
+		bd.size = offset;
+
+		auto write = [](uint8_t* dst, const unsigned int* src, size_t count, bool wide) {
+			for (size_t i = 0; i < count; ++i)
+			{
+				if (wide) { const uint32_t v = src[i]; std::memcpy(dst + i * 4, &v, 4); }
+				else { const uint16_t v = (uint16_t)src[i]; std::memcpy(dst + i * 2, &v, 2); }
+			}
+		};
+		auto fill = [&](void* dest) {
+			uint8_t* data = (uint8_t*)dest;
+			write(data + shared->ib_provoke.offset, provoke.data(), provoke.size(), provoke32);
+			write(data + shared->ib_reorder.offset, reorder.data(), reorder.size(), index32);
+			write(data + shared->ib.offset, (const unsigned int*)indices.data(), indices.size(), index32);
+		};
+		if (!device->CreateBuffer2(&bd, fill, &shared->buffer))
+			return nullptr;
+		device->SetName(&shared->buffer, "MeshComponent::GGSharedIndices");
+
+		const Format ib_format = index32 ? Format::R32_UINT : Format::R16_UINT;
+		shared->ib_reorder.subresource_srv = device->CreateSubresource(&shared->buffer, SubresourceType::SRV, shared->ib_reorder.offset, shared->ib_reorder.size, &ib_format);
+		shared->ib_reorder.descriptor_srv = device->GetDescriptorIndex(&shared->buffer, SubresourceType::SRV, shared->ib_reorder.subresource_srv);
+		shared->ib.subresource_srv = device->CreateSubresource(&shared->buffer, SubresourceType::SRV, shared->ib.offset, shared->ib.size, &ib_format);
+		shared->ib.descriptor_srv = device->GetDescriptorIndex(&shared->buffer, SubresourceType::SRV, shared->ib.subresource_srv);
+		return shared;
+	}
+
 	void MeshComponent::DeleteRenderData()
 	{
 		generalBufferOffsetAllocation = {};
@@ -719,6 +782,7 @@ namespace wi::scene
 		ib_provoke = {};
 		ib_reorder = {};
 		ib = {};
+		gg_indices_shared = false;
 		vb_pos_wind = {};
 		vb_nor = {};
 		vb_tan = {};
@@ -865,9 +929,17 @@ namespace wi::scene
 		gg_rd_lap(0);
 		// SV_PrimitiveID avoiding workaround: provoking vertex can refer to triangel index
 		//	SV_PrimitiveID needs geometry shader emulation on some platforms (on PC is can happen automatically by driver), but with this that can be avoided.
-		wi::vector<unsigned int> provoke(indices.size()); // mesh needs to be drawn with this as index buffer when SV_PrimitiveID is required
-		wi::vector<unsigned int> reorder(vertex_positions.size() + indices.size() / 3); // This can be used as vertexID lookup from current index
-		reorder.resize(meshopt_generateProvokingIndexBuffer(&provoke[0], &reorder[0], &indices[0], indices.size(), vertex_positions.size()));
+		// GG: index data shared with meshes of the same topology (gg_shared_indices): none of it in this mesh's buffer
+		gg_indices_shared = gg_shared_indices != nullptr && gg_shared_indices->buffer.IsValid() &&
+			gg_shared_indices->index_count == indices.size() && gg_shared_indices->vertex_count == vertex_positions.size();
+		wi::vector<unsigned int> provoke; // mesh needs to be drawn with this as index buffer when SV_PrimitiveID is required
+		wi::vector<unsigned int> reorder; // This can be used as vertexID lookup from current index
+		if (!gg_indices_shared)
+		{
+			provoke.resize(indices.size());
+			reorder.resize(vertex_positions.size() + indices.size() / 3);
+			reorder.resize(meshopt_generateProvokingIndexBuffer(&provoke[0], &reorder[0], &indices[0], indices.size(), vertex_positions.size()));
+		}
 		gg_rd_lap(1);
 
 		const size_t uv_count = std::max(vertex_uvset_0.size(), vertex_uvset_1.size());
@@ -990,7 +1062,7 @@ namespace wi::scene
 			AlignTo(vertex_positions.size() * position_stride, alignment) + // position will be first to have 0 offset for flexible alignment!
 			AlignTo(provoke.size() * GetProvokingIndexStride(), alignment) +
 			AlignTo(reorder.size() * GetIndexStride(), alignment) +
-			AlignTo(indices.size() * GetIndexStride(), alignment) +
+			AlignTo((gg_indices_shared ? 0 : indices.size()) * GetIndexStride(), alignment) +
 			AlignTo(vertex_normals.size() * sizeof(Vertex_NOR), alignment) +
 			AlignTo(vertex_tangents.size() * sizeof(Vertex_TAN), alignment) +
 			AlignTo(uv_count * uv_stride, alignment) +
@@ -1185,8 +1257,12 @@ namespace wi::scene
 				break;
 			}
 
+			// GG: shared index data (gg_indices_shared): the three views are the shared buffer's, set after the buffer is made
+			if (gg_indices_shared)
+			{
+			}
 			// Create provoking index buffer GPU data:
-			if (GetProvokingIndexFormat() == IndexBufferFormat::UINT32)
+			else if (GetProvokingIndexFormat() == IndexBufferFormat::UINT32)
 			{
 				ib_provoke.offset = buffer_offset;
 				ib_provoke.size = provoke.size() * sizeof(uint32_t);
@@ -1207,7 +1283,10 @@ namespace wi::scene
 			}
 
 			// Create reorder index buffer GPU data:
-			if (GetIndexFormat() == IndexBufferFormat::UINT32)
+			if (gg_indices_shared)
+			{
+			}
+			else if (GetIndexFormat() == IndexBufferFormat::UINT32)
 			{
 				ib_reorder.offset = buffer_offset;
 				ib_reorder.size = reorder.size() * sizeof(uint32_t);
@@ -1228,7 +1307,10 @@ namespace wi::scene
 			}
 
 			// Create index buffer GPU data:
-			if (GetIndexFormat() == IndexBufferFormat::UINT32)
+			if (gg_indices_shared)
+			{
+			}
+			else if (GetIndexFormat() == IndexBufferFormat::UINT32)
 			{
 				ib.offset = buffer_offset;
 				ib.size = indices.size() * sizeof(uint32_t);
@@ -1510,13 +1592,23 @@ namespace wi::scene
 		gg_rd_lap(4);
 		const Format ib_format = GetIndexFormat() == IndexBufferFormat::UINT32 ? Format::R32_UINT : Format::R16_UINT;
 
-		assert(ib_reorder.IsValid());
-		ib_reorder.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, ib_reorder.offset, ib_reorder.size, &ib_format);
-		ib_reorder.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, ib_reorder.subresource_srv);
+		if (gg_indices_shared)
+		{
+			// GG: the shared buffer's views, its descriptors made with it (GG_CreateSharedIndices)
+			ib_provoke = gg_shared_indices->ib_provoke;
+			ib_reorder = gg_shared_indices->ib_reorder;
+			ib = gg_shared_indices->ib;
+		}
+		else
+		{
+			assert(ib_reorder.IsValid());
+			ib_reorder.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, ib_reorder.offset, ib_reorder.size, &ib_format);
+			ib_reorder.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, ib_reorder.subresource_srv);
 
-		assert(ib.IsValid());
-		ib.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, ib.offset, ib.size, &ib_format);
-		ib.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, ib.subresource_srv);
+			assert(ib.IsValid());
+			ib.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, ib.offset, ib.size, &ib_format);
+			ib.descriptor_srv = device->GetDescriptorIndex(&generalBuffer, SubresourceType::SRV, ib.subresource_srv);
+		}
 
 		assert(vb_pos_wind.IsValid());
 		vb_pos_wind.subresource_srv = device->CreateSubresource(&generalBuffer, SubresourceType::SRV, vb_pos_wind.offset, vb_pos_wind.size, &position_format);
@@ -1693,7 +1785,7 @@ namespace wi::scene
 				geometry.type = RaytracingAccelerationStructureDesc::BottomLevel::Geometry::Type::TRIANGLES;
 				geometry.triangles.vertex_buffer = generalBuffer;
 				geometry.triangles.vertex_byte_offset = vb_pos_wind.offset;
-				geometry.triangles.index_buffer = generalBuffer;
+				geometry.triangles.index_buffer = GetIndexBufferResource();
 				geometry.triangles.index_format = GetIndexFormat();
 				geometry.triangles.index_count = subset.indexCount;
 				geometry.triangles.index_offset = ib.offset / GetIndexStride() + subset.indexOffset;
