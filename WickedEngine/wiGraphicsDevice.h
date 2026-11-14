@@ -536,7 +536,16 @@ extern void (*g_pfnWickedGpuRangeEnd)(int range);
 // before it is compiled; the uses recorded and warmed on the loading screen
 void GG_PipelineCacheSave();
 int GG_PipelineCacheWarm(double* pMs);
+extern void (*g_pfnGGPipelineCacheSave)(void); // called after the cache is saved (set by the renderer: its mesh draw passes)
 void GG_PipelineCacheSetEnabled(bool value);
 void GG_PipelineCacheClear();
 void GG_PipelineCacheStats(char* out, int size);
 int GG_PipelineCompileList(char* out, int size, bool bClear);
+// GG: pipelines compiled ahead of their first draw, each for the render pass it will be drawn in, on the job threads; called
+// on the main thread while no command list is being recorded (the loading screen). Returns how many were compiled; *pLoaded
+// those the pipeline cache held, *pFailed those the driver refused
+int GG_WarmPipelines(const wi::graphics::PipelineState* const* psos, const wi::graphics::RenderPassInfo* passes, uint32_t count, uint32_t* pLoaded, uint32_t* pFailed);
+// GG: the same in the background (in play), on the low priority job threads, put where the draw looks at the next submit;
+// returns how many were started. Its counts: started, put in, let go (drawn first or stale), still compiling
+int GG_WarmPipelinesAsync(const wi::graphics::PipelineState* const* psos, const wi::graphics::RenderPassInfo* passes, uint32_t count);
+void GG_WarmPipelinesStats(uint32_t* pStarted, uint32_t* pMerged, uint32_t* pDropped, uint32_t* pPending);

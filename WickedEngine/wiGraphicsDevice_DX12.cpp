@@ -73,6 +73,7 @@ int (*g_pfnWickedGpuRangeBegin)(wi::graphics::CommandList cmd, const char* name)
 void (*g_pfnWickedGpuRangeEnd)(int range) = nullptr;
 thread_local WickedDrawContext g_WickedDrawContext;
 void (*g_pfnWickedDrawName)(const WickedDrawContext& ctx, char* text, size_t size) = nullptr;
+void (*g_pfnGGPipelineCacheSave)(void) = nullptr;
 // GG: the last pipelines compiled at their first draw (not loaded from the pipeline cache), oldest first when listed
 struct GGPipelineCompile
 {
@@ -2559,20 +2560,24 @@ namespace dx12_internal
 	}
 	static void gg_pc_save()
 	{
-		std::scoped_lock l(gg_pc_lock);
-		if (gg_pc_library != nullptr && gg_pc_unsaved > 0)
 		{
-			const SIZE_T size = gg_pc_library->GetSerializedSize();
-			wi::vector<uint8_t> data(size);
-			if (size > 0 && SUCCEEDED(gg_pc_library->Serialize(data.data(), size)) && gg_pc_write(gg_pc_path, data.data(), size)) gg_pc_unsaved = 0;
+			std::scoped_lock l(gg_pc_lock);
+			if (gg_pc_library != nullptr && gg_pc_unsaved > 0)
+			{
+				const SIZE_T size = gg_pc_library->GetSerializedSize();
+				wi::vector<uint8_t> data(size);
+				if (size > 0 && SUCCEEDED(gg_pc_library->Serialize(data.data(), size)) && gg_pc_write(gg_pc_path, data.data(), size)) gg_pc_unsaved = 0;
+			}
+			if (gg_pc_uses_dirty && !gg_pc_uses_path.empty())
+			{
+				wi::vector<GGPipelineUse> uses;
+				uses.reserve(gg_pc_uses.size());
+				for (auto& x : gg_pc_uses) uses.push_back(x.second);
+				if (gg_pc_write(gg_pc_uses_path, uses.data(), uses.size() * sizeof(GGPipelineUse))) gg_pc_uses_dirty = false;
+			}
 		}
-		if (gg_pc_uses_dirty && !gg_pc_uses_path.empty())
-		{
-			wi::vector<GGPipelineUse> uses;
-			uses.reserve(gg_pc_uses.size());
-			for (auto& x : gg_pc_uses) uses.push_back(x.second);
-			if (gg_pc_write(gg_pc_uses_path, uses.data(), uses.size() * sizeof(GGPipelineUse))) gg_pc_uses_dirty = false;
-		}
+		if (g_pfnGGPipelineCacheSave != nullptr)
+			g_pfnGGPipelineCacheSave(); // the renderer's mesh draw passes (wiRenderer.cpp GG_WarmScenePipelines)
 	}
 	// the recorded uses the library lacks whose pipeline exists now, compiled on the job threads and stored
 	static int gg_pc_warm(double* pMs)
@@ -3353,6 +3358,190 @@ std::mutex queue_locker;
 
 			commandlist.GetGraphicsCommandList()->IASetPrimitiveTopology(internal_state->primitiveTopology);
 		}
+	}
+
+	// GG: a pipeline compiled ahead of its first draw: the pipeline pso_validate would make at the draw, for the render pass
+	// given, loaded from the pipeline cache or compiled (on any thread; the pipeline state's internal state must be held)
+	static bool gg_warm_compile(ID3D12Device5* device, PipelineState_DX12* internal_state, const RenderPassInfo& pass, bool mesh, ComPtr<ID3D12PipelineState>& made)
+	{
+		PipelineState_DX12::PSO_STREAM stream = internal_state->stream;
+		const DXGI_FORMAT DSFormat = _ConvertFormat(pass.ds_format);
+		D3D12_RT_FORMAT_ARRAY formats = {};
+		formats.NumRenderTargets = pass.rt_count;
+		for (uint32_t i = 0; i < pass.rt_count && i < 8; ++i)
+		{
+			formats.RTFormats[i] = _ConvertFormat(pass.rt_formats[i]);
+		}
+		DXGI_SAMPLE_DESC sampleDesc = {};
+		sampleDesc.Count = pass.sample_count;
+		stream.stream1.DSFormat = DSFormat;
+		stream.stream1.Formats = formats;
+		stream.stream1.SampleDesc = sampleDesc;
+		D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+		streamDesc.pPipelineStateSubobjectStream = &stream;
+		streamDesc.SizeInBytes = sizeof(stream.stream1) + (mesh ? sizeof(stream.stream2) : 0);
+		uint64_t use_key = 0;
+		if (internal_state->gg_content_hash != 0)
+		{
+			use_key = dx12_internal::gg_pc_use(internal_state->gg_content_hash, DSFormat, formats, sampleDesc.Count);
+			if (dx12_internal::gg_pc_load(use_key, streamDesc, made))
+				return true;
+		}
+		if (FAILED(device->CreatePipelineState(&streamDesc, PPV_ARGS(made))))
+			made.Reset();
+		if (made != nullptr && use_key != 0)
+			dx12_internal::gg_pc_store(use_key, made.Get());
+		return false;
+	}
+
+	// GG: pipelines compiled ahead of their first draw (the scene's, on the loading screen: GG_WarmScenePipelines in
+	// wiRenderer.cpp), each for the render pass given, on the job threads, then put where the draw looks first. Called on the
+	// main thread while no command list is being recorded. Returns how many were compiled; *pLoaded those the cache held,
+	// *pFailed those refused
+	int GraphicsDevice_DX12::GG_WarmPipelines(const PipelineState* const* psos, const RenderPassInfo* passes, uint32_t count, uint32_t* pLoaded, uint32_t* pFailed)
+	{
+		struct Job
+		{
+			PipelineHash hash;
+			const PipelineState* pso = nullptr;
+			RenderPassInfo pass;
+			ComPtr<ID3D12PipelineState> made;
+			bool loaded = false;
+		};
+		wi::vector<Job> jobs;
+		jobs.reserve(count);
+		wi::unordered_set<uint64_t> seen;
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			const PipelineState* pso = psos[i];
+			if (pso == nullptr || !pso->IsValid())
+				continue;
+			if (to_internal(pso)->resource != nullptr)
+				continue; // compiled when it was made
+			Job job;
+			job.hash.pso = pso;
+			job.hash.renderpass_hash = passes[i].get_hash();
+			job.pso = pso;
+			job.pass = passes[i];
+			if (pipelines_global.count(job.hash) != 0 || !seen.insert(job.hash.get_hash()).second)
+				continue;
+			jobs.push_back(job);
+		}
+		std::atomic<uint32_t> loaded{ 0 };
+		const bool mesh = CheckCapability(GraphicsDeviceCapability::MESH_SHADER);
+		wi::jobsystem::context ctx;
+		wi::jobsystem::Dispatch(ctx, (uint32_t)jobs.size(), 1, [&](wi::jobsystem::JobArgs args) {
+			Job& j = jobs[args.jobIndex];
+			j.loaded = gg_warm_compile(device.Get(), to_internal(j.pso), j.pass, mesh, j.made);
+			if (j.loaded)
+				loaded.fetch_add(1);
+		});
+		wi::jobsystem::Wait(ctx);
+		int compiled = 0;
+		uint32_t failed = 0;
+		for (auto& j : jobs)
+		{
+			if (j.made == nullptr)
+			{
+				failed++;
+				continue;
+			}
+			pipelines_global[j.hash] = j.made;
+			if (!j.loaded)
+				compiled++;
+		}
+		if (pLoaded)
+			*pLoaded = loaded.load();
+		if (pFailed)
+			*pFailed = failed;
+		return compiled;
+	}
+	int GraphicsDevice_DX12::GG_WarmPipelinesAsync(const PipelineState* const* psos, const RenderPassInfo* passes, uint32_t count)
+	{
+		const bool mesh = CheckCapability(GraphicsDeviceCapability::MESH_SHADER);
+		const uint32_t epoch = gg_warm_epoch.load();
+		int started = 0;
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			const PipelineState* pso = psos[i];
+			if (pso == nullptr || !pso->IsValid() || to_internal(pso)->resource != nullptr)
+				continue;
+			PipelineHash hash;
+			hash.pso = pso;
+			hash.renderpass_hash = passes[i].get_hash();
+			if (pipelines_global.count(hash) != 0)
+				continue;
+			{
+				std::scoped_lock l(gg_warm_lock);
+				if (!gg_warm_inflight.insert(hash.get_hash()).second)
+					continue;
+				gg_warm_started++;
+			}
+			started++;
+			gg_warm_ctx.priority = wi::jobsystem::Priority::Low;
+			// the pipeline state copied, holding its internal state while the job reads it (shaders reloaded meanwhile give
+			// the slot a new one)
+			struct Job
+			{
+				PipelineState held;
+				RenderPassInfo pass;
+				GGWarmDone done;
+				bool mesh = false;
+			};
+			Job* job = new Job; // the job function's captures must stay small
+			job->held = *pso;
+			job->pass = passes[i];
+			job->done.hash = hash;
+			job->done.epoch = epoch;
+			job->mesh = mesh;
+			wi::jobsystem::Execute(gg_warm_ctx, [this, job](wi::jobsystem::JobArgs args) {
+				gg_warm_compile(device.Get(), to_internal(&job->held), job->pass, job->mesh, job->done.pipeline);
+				{
+					std::scoped_lock l(gg_warm_lock);
+					gg_warm_done.push_back(job->done);
+				}
+				delete job;
+			});
+		}
+		return started;
+	}
+	// the background warm's pipelines put where the draw looks, on the main thread in SubmitCommandLists
+	void GraphicsDevice_DX12::gg_warm_merge()
+	{
+		std::scoped_lock l(gg_warm_lock);
+		if (gg_warm_done.empty())
+			return;
+		const uint32_t epoch = gg_warm_epoch.load();
+		for (auto& x : gg_warm_done)
+		{
+			gg_warm_inflight.erase(x.hash.get_hash());
+			if (x.pipeline == nullptr)
+			{
+				gg_warm_dropped++;
+				continue;
+			}
+			if (x.epoch == epoch && pipelines_global.count(x.hash) == 0)
+			{
+				pipelines_global[x.hash] = x.pipeline;
+				gg_warm_merged++;
+			}
+			else
+			{
+				gg_warm_dropped++;
+				allocationhandler->destroylocker.lock();
+				allocationhandler->destroyer_pipelines.push_back(std::make_pair(x.pipeline, FRAMECOUNT));
+				allocationhandler->destroylocker.unlock();
+			}
+		}
+		gg_warm_done.clear();
+	}
+	void GraphicsDevice_DX12::GG_WarmPipelinesStats(uint32_t* pStarted, uint32_t* pMerged, uint32_t* pDropped, uint32_t* pPending) const
+	{
+		std::scoped_lock l(gg_warm_lock);
+		if (pStarted) *pStarted = gg_warm_started;
+		if (pMerged) *pMerged = gg_warm_merged;
+		if (pDropped) *pDropped = gg_warm_dropped;
+		if (pPending) *pPending = (uint32_t)gg_warm_inflight.size();
 	}
 
 	void GraphicsDevice_DX12::predraw(CommandList cmd)
@@ -4390,6 +4579,7 @@ std::mutex queue_locker;
 	}
 	GraphicsDevice_DX12::~GraphicsDevice_DX12()
 	{
+		wi::jobsystem::Wait(gg_warm_ctx); // GG: the background warm's compiles finished first
 		// GG: the pipeline cache (#243) to disk, then let go before the device
 		dx12_internal::gg_pc_save();
 		{
@@ -7299,6 +7489,7 @@ std::mutex queue_locker;
 				}
 				commandlist.pipelines_worker.clear();
 			}
+			gg_warm_merge(); // GG: the background warm's pipelines
 			// ★★★ GGMAX 3.26a: ONE line that answers the question, instead of six that pose it.
 			if (gg_closeFailed > 0)
 			{
@@ -8247,6 +8438,7 @@ std::mutex queue_locker;
 
 	void GraphicsDevice_DX12::ClearPipelineStateCache()
 	{
+		gg_warm_epoch.fetch_add(1); // GG: a background warm's pipeline made before this is let go
 		allocationhandler->destroylocker.lock();
 
 		for (auto& x : pipelines_global)
@@ -10341,6 +10533,21 @@ std::mutex queue_locker;
 // compiled; the time in *pMs), switch it, clear it (its files deleted, an empty library), and its counts
 void GG_PipelineCacheSave() { wi::graphics::dx12_internal::gg_pc_save(); }
 int GG_PipelineCacheWarm(double* pMs) { return wi::graphics::dx12_internal::gg_pc_warm(pMs); }
+int GG_WarmPipelines(const wi::graphics::PipelineState* const* psos, const wi::graphics::RenderPassInfo* passes, uint32_t count, uint32_t* pLoaded, uint32_t* pFailed)
+{
+	wi::graphics::GraphicsDevice_DX12* device = (wi::graphics::GraphicsDevice_DX12*)wi::graphics::GetDevice();
+	return device != nullptr ? device->GG_WarmPipelines(psos, passes, count, pLoaded, pFailed) : 0;
+}
+int GG_WarmPipelinesAsync(const wi::graphics::PipelineState* const* psos, const wi::graphics::RenderPassInfo* passes, uint32_t count)
+{
+	wi::graphics::GraphicsDevice_DX12* device = (wi::graphics::GraphicsDevice_DX12*)wi::graphics::GetDevice();
+	return device != nullptr ? device->GG_WarmPipelinesAsync(psos, passes, count) : 0;
+}
+void GG_WarmPipelinesStats(uint32_t* pStarted, uint32_t* pMerged, uint32_t* pDropped, uint32_t* pPending)
+{
+	wi::graphics::GraphicsDevice_DX12* device = (wi::graphics::GraphicsDevice_DX12*)wi::graphics::GetDevice();
+	if (device != nullptr) device->GG_WarmPipelinesStats(pStarted, pMerged, pDropped, pPending);
+}
 void GG_PipelineCacheSetEnabled(bool value)
 {
 	std::scoped_lock l(wi::graphics::dx12_internal::gg_pc_lock);

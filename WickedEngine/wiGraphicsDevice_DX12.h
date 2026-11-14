@@ -10,6 +10,8 @@ void gg_vram_released(const void* allocation); // GGMAX: VRAM census (wiGraphics
 #ifdef WICKEDENGINE_BUILD_DX12
 #include "wiGraphicsDevice.h"
 #include "wiUnorderedMap.h"
+#include "wiUnorderedSet.h" // GG: pipelines warmed in the background
+#include "wiJobSystem.h"
 #include "wiVector.h"
 #include "wiSpinLock.h"
 #include "wiBacklog.h"
@@ -369,6 +371,26 @@ namespace wi::graphics
 		uint64_t FlushDeferredDestroys() override; // GGMAX 1.43
 		void ClearPipelineStateCache() override;
 		size_t GetActivePipelineCount() const override { return pipelines_global.size(); }
+		// GG: pipelines compiled ahead of their first draw, each for the render pass it will be drawn in (GG_WarmPipelines)
+		int GG_WarmPipelines(const PipelineState* const* psos, const RenderPassInfo* passes, uint32_t count, uint32_t* pLoaded, uint32_t* pFailed);
+		// GG: the same in the background (in play): compiled on the low priority job threads, put where the draw looks at the
+		// next SubmitCommandLists; one the draw compiled first is let go, and so is one made before the pipelines were cleared.
+		// Returns how many were started
+		int GG_WarmPipelinesAsync(const PipelineState* const* psos, const RenderPassInfo* passes, uint32_t count);
+		void GG_WarmPipelinesStats(uint32_t* pStarted, uint32_t* pMerged, uint32_t* pDropped, uint32_t* pPending) const;
+		struct GGWarmDone
+		{
+			PipelineHash hash;
+			Microsoft::WRL::ComPtr<ID3D12PipelineState> pipeline;
+			uint32_t epoch = 0;
+		};
+		mutable std::mutex gg_warm_lock;
+		wi::vector<GGWarmDone> gg_warm_done;
+		wi::unordered_set<uint64_t> gg_warm_inflight; // PipelineHash::get_hash of the background warm's pipelines
+		wi::jobsystem::context gg_warm_ctx;
+		std::atomic<uint32_t> gg_warm_epoch{ 0 }; // counted up when the pipelines are cleared
+		uint32_t gg_warm_started = 0, gg_warm_merged = 0, gg_warm_dropped = 0;
+		void gg_warm_merge();
 
 		ShaderFormat GetShaderFormat() const override
 		{

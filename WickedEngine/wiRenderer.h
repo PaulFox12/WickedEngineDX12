@@ -126,6 +126,17 @@ namespace wi::renderer
 	// GGMAX 1.79: build object PSOs lazily (low-VRAM preset). Must be set BEFORE LoadShaders.
 	// See the definition in wiRenderer.cpp for what it trades away.
 	extern bool gg_pso_lazy_object;
+	// GG: the scene's object pipelines compiled on the loading screen, for every mesh draw pass recorded (wiRenderer.cpp):
+	// returns how many were compiled or loaded from the pipeline cache, the time in *pMs; the switch (harness PSO_CACHE
+	// scenewarm) and the last run's counts
+	int GG_WarmScenePipelines(double* pMs);
+	// in play, once a frame on the main thread: the meshes added since (spawned objects) and passes drawn for the first time,
+	// their pipelines compiled in the background; and its counts
+	void GG_WarmScenePipelinesTick();
+	void GG_ScenePipelineWarmTickStats(char* out, int size);
+	extern bool gg_scene_pso_warm;
+	extern bool gg_scene_pso_warm_dump;
+	const char* GG_ScenePipelineWarmStats();
 
 	// GGMAX 2.08: hair/leaf DX11 parity — double-sided transparent geometry does not write depth.
 	// Unlike gg_pso_lazy_object this is a SELECTION-time flag: both pipeline permutations are always

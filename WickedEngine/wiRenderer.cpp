@@ -19,6 +19,7 @@
 #include "wiShaderCompiler.h"
 #include "wiTimer.h"
 #include "wiUnorderedMap.h" // leave it here for shader dump!
+#include "wiUnorderedSet.h" // GG: the scene's pipelines warmed (GG_WarmScenePipelines)
 #include "wiFont.h"
 #include "wiVoxelGrid.h"
 #include "wiPathQuery.h"
@@ -974,6 +975,480 @@ int RegisterCustomShader(const CustomShader& customShader)
 const wi::vector<CustomShader>& GetCustomShaders()
 {
 	return customShaders;
+}
+
+// GG: the scene's object pipelines compiled on the loading screen, before their first draw. Object pipelines are compiled at
+// their first draw for the render pass they are drawn in (gg_pso_lazy_object), and a pipeline the driver has never built
+// froze the game for up to half a second in play (508 ms in the Lua session's run 1315, 2026-11-10). Each mesh draw's
+// pass (RenderMeshes: the pass, its filter, tessellation, the planar reflection skip and its render targets) is recorded
+// and kept beside the exe (gg_pipeline_passes.bin); GG_WarmScenePipelines picks, for every mesh subset in the scene
+// (hidden templates included, as clones draw with their materials) in each recorded pass, the pipelines RenderMeshes would
+// pick, with and without the dithering alpha test (an object fading out at its distance or crossfading its LOD), and has
+// the device compile them ahead (GG_WarmPipelines); the selection below mirrors RenderMeshes' and must follow it.
+struct GGWarmShape
+{
+	uint32_t renderPass = 0;
+	uint32_t filterMask = 0;
+	uint32_t flags = 0; // 1 tessellation, 2 the planar reflection's objects skipped, 4 mesh shaders
+	uint32_t unseen = 0; // saves since it was last drawn
+	RenderPassInfo pass;
+};
+static constexpr uint32_t GG_WARM_SHAPES_MAX = 64;
+static std::mutex gg_warm_shapes_lock;
+static GGWarmShape gg_warm_shapes[GG_WARM_SHAPES_MAX];
+static bool gg_warm_shape_seen[GG_WARM_SHAPES_MAX] = {};
+static std::atomic<uint64_t> gg_warm_shape_keys[GG_WARM_SHAPES_MAX];
+static std::atomic<uint32_t> gg_warm_shape_count{ 0 };
+static bool gg_warm_shapes_loaded = false;
+static bool gg_warm_shapes_dirty = false;
+bool gg_scene_pso_warm = true;
+bool gg_scene_pso_warm_dump = false; // each run's passes and pipelines appended to gg_scene_warm.txt beside the exe (harness)
+static char gg_scene_pso_warm_stats[256] = "not run";
+static uint64_t gg_warm_shape_key(uint32_t renderPass, uint32_t filterMask, uint32_t flags, const RenderPassInfo& pass)
+{
+	const uint64_t parts[] = { renderPass, filterMask, flags, pass.rt_count, pass.get_hash() };
+	uint64_t h = 14695981039346656037ull;
+	const uint8_t* p = (const uint8_t*)parts;
+	for (size_t i = 0; i < sizeof(parts); ++i) { h ^= p[i]; h *= 1099511628211ull; }
+	return h != 0 ? h : 1;
+}
+// a pass a mesh draw used, kept if new; bSeen when drawn now (else read from the file)
+static void gg_warm_shape_add(const GGWarmShape& shape, bool bSeen)
+{
+	const uint64_t key = gg_warm_shape_key(shape.renderPass, shape.filterMask, shape.flags, shape.pass);
+	const uint32_t count = gg_warm_shape_count.load(std::memory_order_acquire);
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		if (gg_warm_shape_keys[i].load(std::memory_order_relaxed) == key)
+		{
+			if (bSeen && !gg_warm_shape_seen[i])
+			{
+				std::scoped_lock l(gg_warm_shapes_lock);
+				gg_warm_shape_seen[i] = true;
+				gg_warm_shapes_dirty = true;
+			}
+			return;
+		}
+	}
+	std::scoped_lock l(gg_warm_shapes_lock);
+	const uint32_t now = gg_warm_shape_count.load(std::memory_order_relaxed);
+	for (uint32_t i = count; i < now; ++i)
+	{
+		if (gg_warm_shape_keys[i].load(std::memory_order_relaxed) == key)
+			return;
+	}
+	if (now >= GG_WARM_SHAPES_MAX)
+		return;
+	gg_warm_shapes[now] = shape;
+	gg_warm_shape_seen[now] = bSeen;
+	gg_warm_shape_keys[now].store(key, std::memory_order_relaxed);
+	gg_warm_shape_count.store(now + 1, std::memory_order_release);
+	if (bSeen)
+		gg_warm_shapes_dirty = true;
+}
+static void gg_warm_shape_record(RENDERPASS renderPass, uint32_t filterMask, uint32_t flags, const RenderPassInfo& pass)
+{
+	GGWarmShape shape;
+	shape.renderPass = (uint32_t)renderPass;
+	shape.filterMask = filterMask;
+	shape.flags = flags;
+	shape.pass = pass;
+	gg_warm_shape_add(shape, true);
+}
+static std::string gg_warm_shapes_path()
+{
+	char exe[MAX_PATH] = {};
+	GetModuleFileNameA(nullptr, exe, MAX_PATH);
+	std::string dir = exe;
+	return dir.substr(0, dir.find_last_of("\\/") + 1) + "gg_pipeline_passes.bin";
+}
+static constexpr uint32_t GG_WARM_SHAPES_FILE = 0x53504747; // "GGPS"
+static void gg_warm_shapes_load()
+{
+	if (gg_warm_shapes_loaded)
+		return;
+	gg_warm_shapes_loaded = true;
+	FILE* f = fopen(gg_warm_shapes_path().c_str(), "rb");
+	if (f == nullptr)
+		return;
+	uint32_t header[3] = {};
+	if (fread(header, sizeof(header), 1, f) == 1 && header[0] == GG_WARM_SHAPES_FILE && header[1] == sizeof(GGWarmShape) && header[2] <= GG_WARM_SHAPES_MAX)
+	{
+		for (uint32_t i = 0; i < header[2]; ++i)
+		{
+			GGWarmShape shape;
+			if (fread(&shape, sizeof(shape), 1, f) != 1)
+				break;
+			if (shape.renderPass < RENDERPASS_COUNT && shape.pass.rt_count <= 8)
+				gg_warm_shape_add(shape, false);
+		}
+	}
+	fclose(f);
+}
+// the passes kept: those drawn this session, and those read from the file not drawn in their last 8 saves
+static void gg_warm_shapes_save()
+{
+	gg_warm_shapes_load();
+	std::scoped_lock l(gg_warm_shapes_lock);
+	if (!gg_warm_shapes_dirty)
+		return;
+	wi::vector<GGWarmShape> keep;
+	const uint32_t count = gg_warm_shape_count.load(std::memory_order_relaxed);
+	for (uint32_t i = 0; i < count; ++i)
+	{
+		GGWarmShape shape = gg_warm_shapes[i];
+		shape.unseen = gg_warm_shape_seen[i] ? 0 : shape.unseen + 1;
+		if (shape.unseen <= 8)
+			keep.push_back(shape);
+	}
+	const std::string path = gg_warm_shapes_path();
+	const std::string tmp = path + ".tmp";
+	FILE* f = fopen(tmp.c_str(), "wb");
+	if (f == nullptr)
+		return;
+	const uint32_t header[3] = { GG_WARM_SHAPES_FILE, (uint32_t)sizeof(GGWarmShape), (uint32_t)keep.size() };
+	bool ok = fwrite(header, sizeof(header), 1, f) == 1;
+	if (ok && !keep.empty())
+		ok = fwrite(keep.data(), sizeof(GGWarmShape), keep.size(), f) == keep.size();
+	fclose(f);
+	if (ok && MoveFileExA(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
+		gg_warm_shapes_dirty = false;
+	else
+		remove(tmp.c_str());
+}
+static struct GGWarmShapesSaveHook { GGWarmShapesSaveHook() { g_pfnGGPipelineCacheSave = gg_warm_shapes_save; } } gg_warm_shapes_save_hook;
+
+// a mesh subset's inputs to the pipeline selection, packed: its material's shader type, blend mode, filter, custom shader,
+// sides, alpha test, shadow, coplanar blending, planar reflection, forced depth and terrain flag, and its mesh's sides, sides
+// in shadow, tessellation and clusters. Subsets with the same key draw with the same pipelines in every pass
+static uint64_t gg_warm_key(const MeshComponent& mesh, const MaterialComponent& material)
+{
+	uint64_t flags = 0;
+	if (material.IsDoubleSided()) flags |= 1;
+	if (material.IsAlphaTestEnabled()) flags |= 2;
+	if (material.IsCastingShadow()) flags |= 4;
+	if (material.IsCoplanarBlending()) flags |= 8;
+	if (material.HasPlanarReflection()) flags |= 16;
+	if (material.IsForceDepth()) flags |= 32;
+	if (material._flags & MaterialComponent::GG_TERRAIN) flags |= 64;
+	if (mesh.IsDoubleSided()) flags |= 128;
+	if (mesh.IsDoubleSidedShadow()) flags |= 256;
+	if (mesh.GetTessellationFactor() > 0) flags |= 512;
+	if (mesh.vb_clu.IsValid()) flags |= 1024;
+	return (uint64_t)(material.shaderType & 0xFF) | ((uint64_t)((uint32_t)material.GetBlendMode() & 0xF) << 8)
+		| ((uint64_t)(material.GetFilterMask() & 0xFFFF) << 12) | ((uint64_t)((material.customShaderID + 1) & 0xFFFF) << 28) | (flags << 44);
+}
+// the pipelines RenderMeshes would pick for subsets of a key in one recorded pass (it mirrors the selection there and must
+// follow it), with the material's alpha test and with the one an object fading out or crossfading its LOD forces
+static void gg_warm_variants(const GGWarmShape& shape, uint64_t key, wi::unordered_set<uint32_t>& variants, wi::unordered_set<int>& custom)
+{
+	const RENDERPASS renderPass = (RENDERPASS)shape.renderPass;
+	const uint32_t filterMask = shape.filterMask;
+	const bool tessellation = (shape.flags & 1) != 0;
+	const bool skip_planareflection_objects = (shape.flags & 2) != 0;
+	const bool mesh_shader = (shape.flags & 4) != 0;
+	const bool shadowRendering = renderPass == RENDERPASS_SHADOW;
+
+	const uint32_t shaderType = (uint32_t)(key & 0xFF);
+	const uint32_t blendMode = (uint32_t)((key >> 8) & 0xF);
+	const uint32_t materialFilter = (uint32_t)((key >> 12) & 0xFFFF);
+	const int customShaderID = (int)((key >> 28) & 0xFFFF) - 1;
+	const uint64_t flags = key >> 44;
+	const bool materialDoubleSided = (flags & 1) != 0;
+	const bool alphaTest = (flags & 2) != 0;
+	const bool castShadow = (flags & 4) != 0;
+	const bool coplanar = (flags & 8) != 0;
+	const bool planarReflection = (flags & 16) != 0;
+	const bool forceDepth = (flags & 32) != 0;
+	const bool terrain = (flags & 64) != 0;
+	const bool meshDoubleSided = (flags & 128) != 0;
+	const bool meshDoubleSidedShadow = (flags & 256) != 0;
+	const bool tessellatorRequested = (flags & 512) != 0 && tessellation;
+	const bool meshShaderRequested = !tessellatorRequested && mesh_shader && (flags & 1024) != 0;
+
+	if (skip_planareflection_objects && planarReflection)
+		return;
+	bool subsetRenderable = (filterMask & materialFilter) != 0;
+	if (shadowRendering)
+		subsetRenderable = subsetRenderable && castShadow;
+	if (coplanar)
+	{
+		if (renderPass == RENDERPASS_PREPASS || renderPass == RENDERPASS_SHADOW || renderPass == RENDERPASS_RAINBLOCKER)
+			return;
+		if (renderPass == RENDERPASS_MAIN)
+			subsetRenderable = (filterMask & FILTER_OPAQUE) != 0;
+	}
+	if (!subsetRenderable)
+		return;
+	if (renderPass == RENDERPASS_PREPASS && (materialFilter & FILTER_TRANSPARENT) && !forceDepth)
+		return;
+	if (customShaderID >= 0 && customShaderID < (int)customShaders.size() && !customShaders[customShaderID].ggStockPipeline)
+	{
+		if (filterMask & customShaders[customShaderID].filterMask)
+			custom.insert(customShaderID);
+		return;
+	}
+	const bool ggStockCustom = customShaderID >= 0 && customShaderID < (int)customShaders.size() && customShaders[customShaderID].ggStockPipeline;
+	uint32_t ggShaderType = ggStockCustom ? (uint32_t)MaterialComponent::SHADERTYPE_PBR : shaderType;
+	uint32_t ggTessellation = tessellatorRequested;
+	if (gg_super_quick_objects != 0)
+	{
+		switch (ggShaderType)
+		{
+		case MaterialComponent::SHADERTYPE_PBR_PLANARREFLECTION:
+		case MaterialComponent::SHADERTYPE_PBR_PARALLAXOCCLUSIONMAPPING:
+		case MaterialComponent::SHADERTYPE_PBR_ANISOTROPIC:
+		case MaterialComponent::SHADERTYPE_PBR_CLOTH:
+		case MaterialComponent::SHADERTYPE_PBR_CLEARCOAT:
+		case MaterialComponent::SHADERTYPE_PBR_CLOTH_CLEARCOAT:
+		case MaterialComponent::SHADERTYPE_INTERIORMAPPING:
+			ggShaderType = MaterialComponent::SHADERTYPE_PBR;
+			break;
+		default:
+			break;
+		}
+		if (!terrain)
+			ggTessellation = 0;
+	}
+	for (uint32_t alphatest = alphaTest ? 1u : 0u; alphatest <= 1; ++alphatest)
+	{
+		ObjectRenderingVariant variant = {};
+		variant.bits.renderpass = renderPass;
+		variant.bits.shadertype = ggShaderType;
+		variant.bits.blendmode = ggStockCustom ? (uint32_t)BLENDMODE_OPAQUE : blendMode;
+		variant.bits.cullmode = (ggStockCustom || meshDoubleSided || materialDoubleSided || (shadowRendering && meshDoubleSidedShadow)) ? (uint32_t)CullMode::NONE : (uint32_t)CullMode::BACK;
+		variant.bits.tessellation = ggTessellation;
+		variant.bits.alphatest = alphatest;
+		variant.bits.sample_count = shape.pass.sample_count;
+		variant.bits.mesh_shader = meshShaderRequested;
+		if (gg_super_quick_objects > 0 && renderPass == RENDERPASS_MAIN && variant.bits.blendmode == BLENDMODE_OPAQUE
+			&& ggShaderType == (uint32_t)MaterialComponent::SHADERTYPE_PBR && !meshShaderRequested && ggTessellation == 0)
+		{
+			variant.bits.ggsuperquick = (uint32_t)std::min(gg_super_quick_objects, 3);
+			const PipelineState* quick = GetObjectPSO(variant);
+			if (quick == nullptr || !quick->IsValid())
+				variant.bits.ggsuperquick = 0;
+		}
+		const bool carve = gg_weapon_forcedepth && (filterMask & FILTER_TRANSPARENT) && variant.bits.blendmode != BLENDMODE_OPAQUE && forceDepth;
+		if (carve && renderPass == RENDERPASS_PREPASS)
+		{
+			variant.bits.ggdepthmode = GGDEPTHMODE_FORCEDEPTH;
+			variant.bits.cullmode = (uint32_t)CullMode::FRONT;
+			variants.insert(variant.value);
+		}
+		else if (carve && renderPass == RENDERPASS_MAIN)
+		{
+			variant.bits.ggdepthmode = GGDEPTHMODE_FORCEDEPTH_FILL;
+			variant.bits.cullmode = (uint32_t)CullMode::FRONT;
+			variants.insert(variant.value);
+			variant.bits.ggdepthmode = GGDEPTHMODE_STOCK;
+			variant.bits.cullmode = (uint32_t)CullMode::BACK;
+			variants.insert(variant.value);
+		}
+		else if ((filterMask & FILTER_TRANSPARENT) && variant.bits.cullmode == (uint32_t)CullMode::NONE && !forceDepth)
+		{
+			if (gg_transparent_doublesided_nodepthwrite && renderPass == RENDERPASS_MAIN && variant.bits.blendmode != BLENDMODE_OPAQUE)
+			{
+				variant.bits.ggdepthmode = GGDEPTHMODE_NODEPTHWRITE;
+				variant.bits.cullmode = (uint32_t)CullMode::BACK;
+				variants.insert(variant.value);
+				variant.bits.cullmode = (uint32_t)CullMode::FRONT;
+				variants.insert(variant.value);
+			}
+			else
+			{
+				variants.insert(variant.value);
+				variant.bits.cullmode = (uint32_t)CullMode::FRONT;
+				variants.insert(variant.value);
+			}
+		}
+		else
+		{
+			variants.insert(variant.value);
+		}
+	}
+}
+static FILE* gg_warm_dump_open(const char* what, const Scene& scene, uint32_t shapes)
+{
+	if (!gg_scene_pso_warm_dump)
+		return nullptr;
+	std::string path = gg_warm_shapes_path();
+	path = path.substr(0, path.find_last_of("\\/") + 1) + "gg_scene_warm.txt";
+	FILE* dump = fopen(path.c_str(), "a");
+	if (dump)
+		fprintf(dump, "%s: %u passes, %zu meshes, %zu materials, %zu objects\n", what, shapes, scene.meshes.GetCount(), scene.materials.GetCount(), scene.objects.GetCount());
+	return dump;
+}
+// the pipelines of the given keys in the given passes, added to the list
+static void gg_warm_list(uint32_t shapeBegin, uint32_t shapeEnd, const uint64_t* keys, size_t keyCount, wi::vector<const PipelineState*>& psos,
+	wi::vector<RenderPassInfo>& passes, FILE* dump)
+{
+	for (uint32_t s = shapeBegin; s < shapeEnd; ++s)
+	{
+		const GGWarmShape& shape = gg_warm_shapes[s];
+		wi::unordered_set<uint32_t> variants;
+		wi::unordered_set<int> custom;
+		for (size_t k = 0; k < keyCount; ++k)
+			gg_warm_variants(shape, keys[k], variants, custom);
+		if (dump)
+			fprintf(dump, "pass %u filter %u flags %u rt %u (%d) ds %d samples %u: %zu keys, %zu variants, %zu custom\n", shape.renderPass, shape.filterMask,
+				shape.flags, shape.pass.rt_count, shape.pass.rt_count > 0 ? (int)shape.pass.rt_formats[0] : -1, (int)shape.pass.ds_format,
+				shape.pass.sample_count, keyCount, variants.size(), custom.size());
+		for (uint32_t value : variants)
+		{
+			ObjectRenderingVariant variant;
+			variant.value = value;
+			const PipelineState* pso = GetObjectPSO(variant);
+			if (dump)
+				fprintf(dump, "  shader %u blend %u cull %u tess %u alphatest %u depth %u quick %u samples %u%s\n", variant.bits.shadertype, variant.bits.blendmode,
+					variant.bits.cullmode, variant.bits.tessellation, variant.bits.alphatest, variant.bits.ggdepthmode, variant.bits.ggsuperquick,
+					variant.bits.sample_count, pso == nullptr ? " (no pipeline)" : "");
+			if (pso != nullptr)
+			{
+				psos.push_back(pso);
+				passes.push_back(shape.pass);
+			}
+		}
+		for (int id : custom)
+		{
+			psos.push_back(&customShaders[id].pso[shape.renderPass]);
+			passes.push_back(shape.pass);
+		}
+	}
+}
+// the level's keys: every one seen in this level's scene since its warm, in the order seen
+static wi::unordered_set<uint64_t> gg_warm_keys;
+static wi::vector<uint64_t> gg_warm_key_list;
+static uint32_t gg_warm_shapes_done = 0; // the passes the keys have been looked at in
+static size_t gg_warm_sweep = 0; // the next mesh the in-play sweep looks at
+static uint64_t gg_warm_selection = 0; // the selection's switches at the last look (a change takes every key again)
+static uint32_t gg_warm_sweeps = 0, gg_warm_new_keys = 0, gg_warm_tick_asked = 0, gg_warm_tick_started = 0;
+static uint64_t gg_warm_selection_now()
+{
+	return (uint64_t)(uint32_t)gg_super_quick_objects | ((uint64_t)gg_weapon_forcedepth << 32) | ((uint64_t)gg_transparent_doublesided_nodepthwrite << 33);
+}
+// the keys of meshes [begin, end) of the scene, those new added; returns the subsets looked at
+static uint32_t gg_warm_scan(const Scene& scene, size_t begin, size_t end, wi::vector<uint64_t>& added)
+{
+	uint32_t subsets = 0;
+	for (size_t meshIndex = begin; meshIndex < end; ++meshIndex)
+	{
+		const MeshComponent& mesh = scene.meshes[meshIndex];
+		for (const MeshComponent::MeshSubset& subset : mesh.subsets)
+		{
+			if (subset.indexCount == 0 || subset.materialIndex >= scene.materials.GetCount())
+				continue;
+			subsets++;
+			const uint64_t key = gg_warm_key(mesh, scene.materials[subset.materialIndex]);
+			if (gg_warm_keys.insert(key).second)
+			{
+				gg_warm_key_list.push_back(key);
+				added.push_back(key);
+			}
+		}
+	}
+	return subsets;
+}
+
+int GG_WarmScenePipelines(double* pMs)
+{
+	wi::Timer timer;
+	gg_warm_shapes_load();
+	if (!gg_scene_pso_warm)
+	{
+		snprintf(gg_scene_pso_warm_stats, sizeof(gg_scene_pso_warm_stats), "off");
+		return 0;
+	}
+	const Scene& scene = wi::scene::GetScene();
+	const uint32_t shapes = gg_warm_shape_count.load(std::memory_order_acquire);
+	gg_warm_keys.clear();
+	gg_warm_key_list.clear();
+	wi::vector<uint64_t> added;
+	const uint32_t subsets = gg_warm_scan(scene, 0, scene.meshes.GetCount(), added);
+	wi::vector<const PipelineState*> psos;
+	wi::vector<RenderPassInfo> passes;
+	FILE* dump = gg_warm_dump_open("warm", scene, shapes);
+	gg_warm_list(0, shapes, gg_warm_key_list.data(), gg_warm_key_list.size(), psos, passes, dump);
+	gg_warm_shapes_done = shapes;
+	gg_warm_sweep = 0;
+	gg_warm_selection = gg_warm_selection_now();
+	uint32_t loaded = 0, failed = 0;
+	const int compiled = ::GG_WarmPipelines(psos.data(), passes.data(), (uint32_t)psos.size(), &loaded, &failed);
+	const double ms = timer.elapsed();
+	if (pMs)
+		*pMs = ms;
+	snprintf(gg_scene_pso_warm_stats, sizeof(gg_scene_pso_warm_stats), "passes=%u subsets=%u keys=%zu asked=%u compiled=%d loaded=%u failed=%u ms=%.0f",
+		shapes, subsets, gg_warm_key_list.size(), (uint32_t)psos.size(), compiled, loaded, failed, ms);
+	if (dump)
+	{
+		fprintf(dump, "%s\n\n", gg_scene_pso_warm_stats);
+		fclose(dump);
+	}
+	return compiled + (int)loaded;
+}
+// in play, once a frame from the game's loop on the main thread: the scene swept a slice at a time (about 2,000 subsets a
+// frame, the whole scene about once a second), and a key not seen before (a spawned object, a material made or changed) or
+// a pass drawn for the first time taken through the selection; the pipelines compiled in the background
+// (GG_WarmPipelinesAsync), so a pipeline new to the driver is ready by the object's first draw if that comes a few frames on
+void GG_WarmScenePipelinesTick()
+{
+	if (!gg_scene_pso_warm)
+		return;
+	const Scene& scene = wi::scene::GetScene();
+	const size_t meshes = scene.meshes.GetCount();
+	const uint32_t shapes = gg_warm_shape_count.load(std::memory_order_acquire);
+	wi::vector<uint64_t> added;
+	uint32_t subsets = 0;
+	if (gg_warm_sweep >= meshes)
+	{
+		gg_warm_sweep = 0;
+		gg_warm_sweeps++;
+	}
+	while (gg_warm_sweep < meshes && subsets < 2048)
+	{
+		subsets += gg_warm_scan(scene, gg_warm_sweep, gg_warm_sweep + 1, added);
+		gg_warm_sweep++;
+	}
+	const uint64_t selection = gg_warm_selection_now();
+	const bool all = selection != gg_warm_selection;
+	if (added.empty() && shapes == gg_warm_shapes_done && !all)
+		return;
+	wi::vector<const PipelineState*> psos;
+	wi::vector<RenderPassInfo> passes;
+	FILE* dump = gg_warm_dump_open("in play", scene, shapes);
+	if (all)
+	{
+		gg_warm_list(0, shapes, gg_warm_key_list.data(), gg_warm_key_list.size(), psos, passes, dump);
+	}
+	else
+	{
+		gg_warm_list(0, gg_warm_shapes_done, added.data(), added.size(), psos, passes, dump);
+		gg_warm_list(gg_warm_shapes_done, shapes, gg_warm_key_list.data(), gg_warm_key_list.size(), psos, passes, dump);
+	}
+	gg_warm_new_keys += (uint32_t)added.size();
+	gg_warm_tick_asked += (uint32_t)psos.size();
+	const int started = psos.empty() ? 0 : ::GG_WarmPipelinesAsync(psos.data(), passes.data(), (uint32_t)psos.size());
+	gg_warm_tick_started += (uint32_t)started;
+	if (dump)
+	{
+		fprintf(dump, "in play: %zu new keys, passes %u to %u, asked %zu, started %d\n\n", added.size(), gg_warm_shapes_done, shapes, psos.size(), started);
+		fclose(dump);
+	}
+	gg_warm_shapes_done = shapes;
+	gg_warm_selection = selection;
+}
+// the in-play warm's counts: the sweeps finished, the keys known and found new in play, the pipelines asked and started in
+// the background; and the device's: started, put in, let go (drawn first or stale), still compiling
+void GG_ScenePipelineWarmTickStats(char* out, int size)
+{
+	uint32_t started = 0, merged = 0, dropped = 0, pending = 0;
+	::GG_WarmPipelinesStats(&started, &merged, &dropped, &pending);
+	snprintf(out, (size_t)size, "sweeps=%u keys=%zu new_keys=%u asked=%u started=%u bg_started=%u bg_in=%u bg_dropped=%u bg_pending=%u",
+		gg_warm_sweeps, gg_warm_key_list.size(), gg_warm_new_keys, gg_warm_tick_asked, gg_warm_tick_started, started, merged, dropped, pending);
+}
+const char* GG_ScenePipelineWarmStats()
+{
+	return gg_scene_pso_warm_stats;
 }
 
 SHADERTYPE GetASTYPE(RENDERPASS renderPass, bool tessellation, bool alphatest, bool transparent, bool mesh_shader)
@@ -4314,6 +4789,13 @@ void RenderMeshes(
 
 	const bool mesh_shader = IsMeshShaderAllowed() &&
 		(renderPass == RENDERPASS_PREPASS || renderPass == RENDERPASS_PREPASS_DEPTHONLY || renderPass == RENDERPASS_MAIN || renderPass == RENDERPASS_SHADOW || renderPass == RENDERPASS_RAINBLOCKER);
+
+	// GG: this pass recorded, for the scene's pipelines compiled on the loading screen (GG_WarmScenePipelines); not the
+	// Object Library's preview or a wireframe
+	if (!gg_no_fade && !wireframe_overlay && !(IsWireRender() && GetWireframeMode() != WIREFRAME_OVERLAY))
+	{
+		gg_warm_shape_record(renderPass, filterMask, (tessellation ? 1u : 0u) | (skip_planareflection_objects ? 2u : 0u) | (mesh_shader ? 4u : 0u), renderpass_info);
+	}
 
 	// Pre-allocate space for all the instances in GPU-buffer:
 	const size_t alloc_size = renderQueue.size() * camera_count * sizeof(ShaderMeshInstancePointer);
