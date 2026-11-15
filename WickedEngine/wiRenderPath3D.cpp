@@ -89,6 +89,8 @@ namespace wi
 		rtMain_render = {};
 		rtPrimitiveID = {};
 		rtPrimitiveID_render = {};
+		gg_rtPrimitiveID_noweapons = {};
+		gg_rtLinearDepth_noweapons = {};
 		rtVelocity = {};
 		rtReflection = {};
 		rtRaytracedDiffuse = {};
@@ -1113,6 +1115,37 @@ namespace wi
 		GraphicsDevice* device = wi::graphics::GetDevice();
 		wi::jobsystem::context ctx;
 
+		// GG: with the AO on and a weapon's depth stamped into the last frame's prepass, the AO reads a depth made before the stamp
+		// (the stamp drawn after the IDs are copied); single sample only, as the copy and its resolve are
+		{
+			const uint32_t stamps = wi::renderer::gg_weapon_stamps.exchange(0, std::memory_order_relaxed);
+			gg_ao_noweapons = wi::renderer::gg_ao_noweapon_depth != 0 && wi::renderer::gg_weapon_forcedepth && getAOEnabled()
+				&& getAO() != AO_DISABLED && stamps > 0 && rtPrimitiveID_render.IsValid() && rtPrimitiveID_render.desc.sample_count == 1
+				&& rtCustomDepth.IsValid();
+			if (gg_ao_noweapons && !gg_rtPrimitiveID_noweapons.IsValid())
+			{
+				TextureDesc desc = rtPrimitiveID_render.desc;
+				desc.bind_flags = BindFlag::SHADER_RESOURCE;
+				desc.misc_flags = ResourceMiscFlag::NONE;
+				desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
+				device->CreateTexture(&desc, nullptr, &gg_rtPrimitiveID_noweapons);
+				device->SetName(&gg_rtPrimitiveID_noweapons, "gg_rtPrimitiveID_noweapons");
+			}
+			if (gg_ao_noweapons && !gg_rtLinearDepth_noweapons.IsValid())
+			{
+				TextureDesc desc = rtLinearDepth.desc;
+				desc.mip_levels = 1;
+				desc.layout = ResourceState::SHADER_RESOURCE_COMPUTE;
+				device->CreateTexture(&desc, nullptr, &gg_rtLinearDepth_noweapons);
+				device->SetName(&gg_rtLinearDepth_noweapons, "gg_rtLinearDepth_noweapons");
+			}
+			gg_ao_noweapons = gg_ao_noweapons && gg_rtPrimitiveID_noweapons.IsValid() && gg_rtLinearDepth_noweapons.IsValid();
+			if (gg_ao_noweapons)
+			{
+				wi::renderer::gg_ao_noweapon_frames.fetch_add(1, std::memory_order_relaxed);
+			}
+		}
+
 		// GGMAX 1.32: serial main-thread span of Render() (BeginCommandList + job dispatch + ocean record + RenderPath2D)
 		auto gg_range_serial = wi::profiler::BeginRangeCPU("RP3D-RenderSerial");
 
@@ -1387,7 +1420,8 @@ namespace wi
 			// fully hidden behind the very crate it is supposed to carve through, and culls it.
 			// RenderMeshes admits ONLY materials carrying GG_FORCEDEPTH to this pass, so the cost is
 			// one DrawScene over a handful of subsets, not over the whole transparent set.
-			if (wi::renderer::gg_weapon_forcedepth)
+			// GG: while the AO reads the depth without the weapon (gg_ao_noweapons) the stamp is drawn after the IDs are copied, below
+			if (wi::renderer::gg_weapon_forcedepth && !gg_ao_noweapons)
 			{
 				wi::renderer::DrawScene(
 					visibility_main,
@@ -1416,6 +1450,72 @@ namespace wi
 			device->EventEnd(cmd);
 
 			device->RenderPassEnd(cmd);
+
+			// GG: the AO's depth without the weapon: the IDs copied as the world and GameGuru's draws left them, then the weapon's
+			// depth stamp drawn into the same targets in a pass of its own, after the GG draws (its stamp writes whatever depth is
+			// there, so the order leaves the depth as before; the GG draws' depth under the gun stays in RT1, nearer surfaces win
+			// in the resolve and the velocity as before)
+			if (gg_ao_noweapons)
+			{
+				auto range_weapons = wi::profiler::BeginRangeGPU("  Prepass Weapons After AO Depth", cmd);
+				GPUBarrier copy_barriers[] = {
+					GPUBarrier::Image(&rtPrimitiveID_render, rtPrimitiveID_render.desc.layout, ResourceState::COPY_SRC),
+					GPUBarrier::Image(&gg_rtPrimitiveID_noweapons, gg_rtPrimitiveID_noweapons.desc.layout, ResourceState::COPY_DST),
+				};
+				device->Barrier(copy_barriers, arraysize(copy_barriers), cmd);
+				device->CopyResource(&gg_rtPrimitiveID_noweapons, &rtPrimitiveID_render, cmd);
+				for (auto& barrier : copy_barriers)
+				{
+					std::swap(barrier.image.layout_before, barrier.image.layout_after);
+				}
+				device->Barrier(copy_barriers, arraysize(copy_barriers), cmd);
+
+				RenderPassImage rp_weapons[] = {
+					RenderPassImage::DepthStencil(
+						&depthBuffer_Main,
+						RenderPassImage::LoadOp::LOAD,
+						RenderPassImage::StoreOp::STORE,
+						ResourceState::DEPTHSTENCIL,
+						ResourceState::DEPTHSTENCIL,
+						ResourceState::DEPTHSTENCIL
+					),
+					RenderPassImage::RenderTarget(
+						&rtPrimitiveID_render,
+						RenderPassImage::LoadOp::LOAD,
+						RenderPassImage::StoreOp::STORE,
+						ResourceState::SHADER_RESOURCE_COMPUTE,
+						ResourceState::SHADER_RESOURCE_COMPUTE
+					),
+					RenderPassImage::RenderTarget(
+						&rtCustomDepth,
+						RenderPassImage::LoadOp::LOAD,
+						RenderPassImage::StoreOp::STORE,
+						ResourceState::SHADER_RESOURCE_COMPUTE,
+						ResourceState::SHADER_RESOURCE_COMPUTE
+					),
+					RenderPassImage::RenderTarget(
+						&rtCustomMotion,
+						RenderPassImage::LoadOp::LOAD,
+						RenderPassImage::StoreOp::STORE,
+						ResourceState::SHADER_RESOURCE_COMPUTE,
+						ResourceState::SHADER_RESOURCE_COMPUTE
+					),
+				};
+				device->RenderPassBegin(rp_weapons, rtCustomMotion.IsValid() ? arraysize(rp_weapons) : arraysize(rp_weapons) - 1, cmd);
+				device->BindScissorRects(1, &scissor, cmd);
+				vp.min_depth = 0;
+				vp.max_depth = 1;
+				device->BindViewports(1, &vp, cmd);
+				wi::renderer::DrawScene(
+					visibility_main,
+					RENDERPASS_PREPASS,
+					cmd,
+					wi::renderer::DRAWSCENE_TRANSPARENT |
+					wi::renderer::DRAWSCENE_MAINCAMERA
+				);
+				device->RenderPassEnd(cmd);
+				wi::profiler::EndRange(range_weapons);
+			}
 
 			// After prepass render pass: virtual texture readback (compute + copy, must be outside render pass)
 			// GGMAX 2.13: state-safe hook boundary (see the transparent hook / game task #120)
@@ -1522,7 +1622,20 @@ namespace wi
 				);
 			}
 
-			RenderAO(cmd);
+			if (gg_ao_noweapons)
+			{
+				// GG: the AO reads the linear depth made from the IDs before the weapon's stamp (the camera's texture_lineardepth)
+				wi::renderer::GG_Visibility_ResolveLinearDepth(gg_rtPrimitiveID_noweapons, rtCustomDepth, rtPrimitiveID_render, rtLinearDepth,
+					gg_rtLinearDepth_noweapons, cmd);
+				wi::renderer::GG_BindCameraCB_LinearDepth(*camera, camera_previous, camera_reflection,
+					device->GetDescriptorIndex(&gg_rtLinearDepth_noweapons, SubresourceType::SRV), cmd);
+				RenderAO(cmd);
+				wi::renderer::BindCameraCB(*camera, camera_previous, camera_reflection, cmd);
+			}
+			else
+			{
+				RenderAO(cmd);
+			}
 
 			if (wi::renderer::GetVariableRateShadingClassification() && device->CheckCapability(GraphicsDeviceCapability::VARIABLE_RATE_SHADING_TIER2))
 			{

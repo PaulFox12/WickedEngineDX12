@@ -179,6 +179,12 @@ namespace wi
 		wi::graphics::Texture depthBuffer_Reflection; // used for reflection, MSAA
 		wi::graphics::Texture depthBuffer_Reflection_resolved; // used for reflection, single sample
 		wi::graphics::Texture rtLinearDepth; // linear depth result + mipchain (max filter)
+		// GG: the AO's depth without the first person weapon (wi::renderer::gg_ao_noweapon_depth): the primitive IDs the prepass left
+		// before the weapon's depth stamp, and the linear depth made from them; made when first needed. Whether this frame uses them,
+		// decided at its start from the last frame's stamps (the prepass and the AO are recorded by jobs side by side)
+		mutable wi::graphics::Texture gg_rtPrimitiveID_noweapons;
+		mutable wi::graphics::Texture gg_rtLinearDepth_noweapons;
+		mutable bool gg_ao_noweapons = false;
 		wi::graphics::Texture reprojectedDepth; // prev frame depth reprojected into current, and downsampled for meshlet occlusion culling
 
 		wi::graphics::Texture debugUAV; // debug UAV can be used by some shaders...

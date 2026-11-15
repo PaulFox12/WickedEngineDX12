@@ -149,6 +149,13 @@ namespace wi::renderer
 	// GGMAX 2.09: first-person weapon depth carve (DX11 BLENDMODE_FORCEDEPTH). Same selection-time
 	// nature as the flag above — live-toggleable via the harness SET_WEAPONDEPTH, no reload.
 	extern bool gg_weapon_forcedepth;
+	// GG: the AO reads a depth without the first person weapon (1, the default; 0 the depth with it, as before): stamped into the
+	// prepass, the gun was an occluder to the wall or ground just behind it and darkened a band round its outline. Harness
+	// SET_AONOWEAPON. The weapon depth stamps drawn in prepasses since the render path last read them, and the frames whose AO
+	// read the depth without the weapon
+	extern int gg_ao_noweapon_depth;
+	extern std::atomic<uint32_t> gg_weapon_stamps;
+	extern std::atomic<uint32_t> gg_ao_noweapon_frames;
 	// GGMAX 2.10: DX11 product light falloff for punctual lights (energy*(1-d2/r2)^2, no 1/d2);
 	// game passes intensity in DX11 energy units (30) when this is on. setup.ini `lightfalloff=0`.
 	extern bool gg_dx11_light_falloff;
@@ -473,6 +480,14 @@ namespace wi::renderer
 		const wi::scene::CameraComponent& camera_reflection,
 		wi::graphics::CommandList cmd
 	);
+	// GG: as BindCameraCB, with the linear depth the shaders read (texture_lineardepth) given by its descriptor index
+	void GG_BindCameraCB_LinearDepth(
+		const wi::scene::CameraComponent& camera,
+		const wi::scene::CameraComponent& camera_previous,
+		const wi::scene::CameraComponent& camera_reflection,
+		int lineardepth_index,
+		wi::graphics::CommandList cmd
+	);
 
 
 	enum DRAWSCENE_FLAGS
@@ -720,6 +735,17 @@ namespace wi::renderer
 		const VisibilityResources& res,
 		const wi::graphics::Texture& input_primitiveID, // can be MSAA
 		const wi::graphics::Texture& input_customDepth, // GGMAX 3.77: depth for ID-less draws
+		wi::graphics::CommandList cmd
+	);
+	// GG: Visibility_Prepare's resolve again, writing only a linear depth (one mip, single sample): the AO's depth made from the
+	// primitive IDs the prepass left before the first person weapon's depth stamp; where they match the IDs after it (all but the
+	// stamp's pixels) the frame's own linear depth is taken
+	void GG_Visibility_ResolveLinearDepth(
+		const wi::graphics::Texture& input_primitiveID,
+		const wi::graphics::Texture& input_customDepth,
+		const wi::graphics::Texture& input_primitiveID_withweapon,
+		const wi::graphics::Texture& input_lineardepth_withweapon,
+		const wi::graphics::Texture& output_lineardepth,
 		wi::graphics::CommandList cmd
 	);
 	void Visibility_Surface(

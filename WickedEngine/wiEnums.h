@@ -427,6 +427,7 @@ namespace wi::enums
 		CSTYPE_DEPTH_PYRAMID,
 		CSTYPE_LIGHTMAP_EXPAND,
 		CSTYPE_GG_RESOLVEDEPTH_SINGLESAMPLE, // GGMAX: ResolveMSAADepthBuffer's copy of a single-sample depth buffer
+		CSTYPE_GG_VISIBILITY_RESOLVE_NOWEAPON, // GG: the AO's linear depth without the first person weapon (GG_Visibility_ResolveLinearDepth)
 
 
 		ASTYPE_OBJECT,

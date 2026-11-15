@@ -188,6 +188,7 @@ wi::vector<ShaderEntry> shaders = {
 	{"rtao_denoise_filterCS", wi::graphics::ShaderStage::CS },
 	{"visibility_resolveCS", wi::graphics::ShaderStage::CS },
 	{"visibility_resolveCS_MSAA", wi::graphics::ShaderStage::CS },
+	{"visibility_resolveCS_noweapon", wi::graphics::ShaderStage::CS },
 	{"visibility_velocityCS", wi::graphics::ShaderStage::CS },
 	{"visibility_velocityCS_MSAA", wi::graphics::ShaderStage::CS },
 	{"visibility_skyCS", wi::graphics::ShaderStage::CS },

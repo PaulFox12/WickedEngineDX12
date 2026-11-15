@@ -11,6 +11,14 @@ Texture2D<uint> input_primitiveID : register(t0);
 Texture2D<float> input_customDepth : register(t1);     // GGMAX 3.77
 #endif // VISIBILITY_MSAA
 
+#ifdef GG_RESOLVE_NOWEAPON
+// GG: the AO's depth without the first person weapon (visibility_resolveCS_noweapon, single sample): input_primitiveID is the
+// prepass's IDs before the weapon's depth stamp; where they match the IDs after it, the linear depth the frame's resolve made
+// is taken as it is, and only the pixels the stamp changed are resolved again
+Texture2D<uint> input_primitiveID_withweapon : register(t2);
+Texture2D<float> input_lineardepth_withweapon : register(t3);
+#endif // GG_RESOLVE_NOWEAPON
+
 groupshared uint local_bin_mask;
 groupshared uint local_bin_execution_mask_0[SHADERTYPE_BIN_COUNT + 1];
 groupshared uint local_bin_execution_mask_1[SHADERTYPE_BIN_COUNT + 1];
@@ -66,7 +74,13 @@ void main(uint2 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 
 	float depth = 1; // invalid
 	uint bin = ~0u; // invalid
+#ifdef GG_RESOLVE_NOWEAPON
+	const bool gg_same = input_primitiveID_withweapon[pixel] == primitiveID;
+	[branch]
+	if (pixel_valid && !gg_same)
+#else
 	if (pixel_valid)
+#endif // GG_RESOLVE_NOWEAPON
 	{
 		// GG: the GG draws' depth (prepass RT1, 0 where none drew) is read for every pixel, not only where no ID was written:
 		// their prepass writes no ID, so a GG tree in front of the terrain left the terrain's ID there, and texture_depth and
@@ -169,6 +183,12 @@ void main(uint2 Gid : SV_GroupID, uint groupIndex : SV_GroupIndex)
 	}
 
 	float lineardepth = compute_lineardepth(depth) * GetCamera().z_far_rcp;
+#ifdef GG_RESOLVE_NOWEAPON
+	if (gg_same)
+	{
+		lineardepth = input_lineardepth_withweapon[pixel];
+	}
+#endif // GG_RESOLVE_NOWEAPON
 	output_lineardepth_mip0[pixel] = lineardepth;
 	if (GTid.x % 2 == 0 && GTid.y % 2 == 0)
 	{

@@ -301,6 +301,11 @@ bool gg_transparent_doublesided_nodepthwrite = true;
 //
 // Revert with setup.ini `weaponforcedepth=0`, or live with the harness `SET_WEAPONDEPTH 0`.
 bool gg_weapon_forcedepth = true;
+int gg_ao_noweapon_depth = 1;
+std::atomic<uint32_t> gg_weapon_stamps{ 0 };
+std::atomic<uint32_t> gg_ao_noweapon_frames{ 0 };
+// GG: the linear depth index the next BindCameraCB on this thread puts in the main camera (GG_BindCameraCB_LinearDepth), -1 none
+static thread_local int gg_cameracb_lineardepth_override = -1;
 
 // GGMAX 2.14: the SECOND half of the DX11 weapon look — SHADERTYPE_WEAPON / WEAPON_SHADOW.
 // DX11 pulled the shading position to 1/3 camera distance inside DirectionalLight/PointLight/
@@ -2270,6 +2275,7 @@ void LoadShaders()
 
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_RESOLVE], "visibility_resolveCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_RESOLVE_MSAA], "visibility_resolveCS_MSAA.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_GG_VISIBILITY_RESOLVE_NOWEAPON], "visibility_resolveCS_noweapon.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_SKY], "visibility_skyCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_VELOCITY], "visibility_velocityCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_VISIBILITY_VELOCITY_MSAA], "visibility_velocityCS_MSAA.cso"); });
@@ -5104,6 +5110,7 @@ void RenderMeshes(
 						variant.bits.cullmode = (uint32_t)CullMode::FRONT;
 						pso = GetObjectPSO(variant);
 						pso_backside = nullptr;
+						gg_weapon_stamps.fetch_add(1, std::memory_order_relaxed); // GG: the AO's depth without the weapon follows it
 					}
 					else if (gg_carve_material && renderPass == RENDERPASS_MAIN)
 					{
@@ -14994,7 +15001,7 @@ void BindCameraCB(
 
 	shadercam.texture_primitiveID_index = camera.texture_primitiveID_index;
 	shadercam.texture_depth_index = camera.texture_depth_index;
-	shadercam.texture_lineardepth_index = camera.texture_lineardepth_index;
+	shadercam.texture_lineardepth_index = gg_cameracb_lineardepth_override >= 0 ? gg_cameracb_lineardepth_override : camera.texture_lineardepth_index;
 	shadercam.texture_velocity_index = camera.texture_velocity_index;
 	shadercam.texture_normal_index = camera.texture_normal_index;
 	shadercam.texture_roughness_index = camera.texture_roughness_index;
@@ -15015,6 +15022,18 @@ void BindCameraCB(
 	shadercam.texture_reprojected_depth_index = camera.texture_reprojected_depth_index;
 
 	device->BindDynamicConstantBuffer(cb, CBSLOT_RENDERER_CAMERA, cmd);
+}
+void GG_BindCameraCB_LinearDepth(
+	const CameraComponent& camera,
+	const CameraComponent& camera_previous,
+	const CameraComponent& camera_reflection,
+	int lineardepth_index,
+	CommandList cmd
+)
+{
+	gg_cameracb_lineardepth_override = lineardepth_index;
+	BindCameraCB(camera, camera_previous, camera_reflection, cmd);
+	gg_cameracb_lineardepth_override = -1;
 }
 
 void CreateLuminanceResources(LuminanceResources& res, XMUINT2 resolution)
@@ -15619,6 +15638,49 @@ void Visibility_Prepare(
 
 		device->EventEnd(cmd);
 	}
+
+	wi::profiler::EndRange(range);
+	device->EventEnd(cmd);
+}
+void GG_Visibility_ResolveLinearDepth(
+	const Texture& input_primitiveID,
+	const Texture& input_customDepth,
+	const Texture& input_primitiveID_withweapon,
+	const Texture& input_lineardepth_withweapon,
+	const Texture& output_lineardepth,
+	CommandList cmd
+)
+{
+	device->EventBegin("GG_Visibility_ResolveLinearDepth", cmd);
+	auto range = wi::profiler::BeginRangeGPU("AO Depth Without Weapons", cmd);
+
+	BindCommonResources(cmd);
+
+	const XMUINT2 tile_count = GetVisibilityTileCount(XMUINT2(input_primitiveID.desc.width, input_primitiveID.desc.height));
+
+	device->BindResource(&input_primitiveID, 0, cmd);
+	device->BindResource(&input_customDepth, 1, cmd);
+	// where the IDs are the same as with the weapon the frame's own linear depth is taken, so only the stamp's pixels are resolved
+	device->BindResource(&input_primitiveID_withweapon, 2, cmd);
+	device->BindResource(&input_lineardepth_withweapon, 3, cmd, 0);
+
+	// the resolve's bins, depth and the linear depth's smaller mips unbound (their writes dropped, as in Visibility_Prepare
+	// without its resources); only the linear depth's first mip written
+	GPUResource unbind;
+	const uint32_t unbound[] = { 0, 1, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13 };
+	for (uint32_t slot : unbound)
+	{
+		device->BindUAV(&unbind, slot, cmd);
+	}
+	device->BindUAV(&output_lineardepth, 8, cmd);
+	PushBarrier(GPUBarrier::Image(&output_lineardepth, output_lineardepth.desc.layout, ResourceState::UNORDERED_ACCESS));
+	FlushBarriers(cmd);
+
+	device->BindComputeShader(&shaders[CSTYPE_GG_VISIBILITY_RESOLVE_NOWEAPON], cmd);
+	device->Dispatch(tile_count.x, tile_count.y, 1, cmd);
+
+	PushBarrier(GPUBarrier::Image(&output_lineardepth, ResourceState::UNORDERED_ACCESS, output_lineardepth.desc.layout));
+	FlushBarriers(cmd);
 
 	wi::profiler::EndRange(range);
 	device->EventEnd(cmd);
