@@ -21675,6 +21675,14 @@ int gg_fsr_sdk = 1;
 float gg_fsr_reactive_scale = 1.0f;
 float gg_fsr_reactive_threshold = 0.2f;
 float gg_fsr_reactive_value = 0.9f;
+// GGMAX: FSR 3.1's own tuning (ffx_upscale.h FfxApiConfigureUpscaleKey; harness SET_FSRKEYS), AMD's defaults: the velocity
+// factor (0 steadies bright pixels), the accumulation added a frame where a pixel is new or reactive, how much a change of
+// shading counts, and the accumulation a disoccluded pixel starts from. Given to the context when changed or made anew
+float gg_fsr_velocity_factor = 1.0f;
+float gg_fsr_accumulation_per_frame = 0.333f;
+float gg_fsr_shading_change_scale = 1.0f;
+float gg_fsr_min_disocclusion_accumulation = -0.333f;
+uint32_t gg_fsr_keys_version = 0;
 namespace gg_ffx
 {
 	static HMODULE module = nullptr;
@@ -21929,6 +21937,27 @@ static bool GG_Postprocess_FSR_SDK(
 	dispatch.cameraFar = camera.zFarP;
 	dispatch.cameraFovAngleVertical = camera.fov;
 	dispatch.viewSpaceToMetersFactor = 0.0254f; // GameGuru's units are inches
+	{
+		// the tuning given again when it changed or the context was made anew (a size change makes a new one)
+		static ffxContext gg_keys_context = nullptr;
+		static uint32_t gg_keys_version = ~0u;
+		if (gg_ffx::fnConfigure && (gg_keys_context != gg_ffx::context || gg_keys_version != gg_fsr_keys_version))
+		{
+			gg_keys_context = gg_ffx::context;
+			gg_keys_version = gg_fsr_keys_version;
+			const uint64_t keys[4] = { FFX_API_CONFIGURE_UPSCALE_KEY_FVELOCITYFACTOR, FFX_API_CONFIGURE_UPSCALE_KEY_FACCUMULATIONADDEDPERFRAME,
+				FFX_API_CONFIGURE_UPSCALE_KEY_FSHADINGCHANGESCALE, FFX_API_CONFIGURE_UPSCALE_KEY_FMINDISOCCLUSIONACCUMULATION };
+			float values[4] = { gg_fsr_velocity_factor, gg_fsr_accumulation_per_frame, gg_fsr_shading_change_scale, gg_fsr_min_disocclusion_accumulation };
+			for (int k = 0; k < 4; ++k)
+			{
+				ffxConfigureDescUpscaleKeyValue kv = {};
+				kv.header.type = FFX_API_CONFIGURE_DESC_TYPE_UPSCALE_KEYVALUE;
+				kv.key = keys[k];
+				kv.ptr = &values[k];
+				gg_ffx::fnConfigure(&gg_ffx::context, &kv.header);
+			}
+		}
+	}
 	const ffxReturnCode_t rc = gg_ffx::fnDispatch(&gg_ffx::context, &dispatch.header);
 	gg_ffx::frames++;
 
