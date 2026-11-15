@@ -21677,10 +21677,12 @@ float gg_fsr_reactive_threshold = 0.2f;
 float gg_fsr_reactive_value = 0.9f;
 // GGMAX: FSR 3.1's own tuning (ffx_upscale.h FfxApiConfigureUpscaleKey; harness SET_FSRKEYS), AMD's defaults: the velocity
 // factor (0 steadies bright pixels), the accumulation added a frame where a pixel is new or reactive, how much a change of
-// shading counts, and the accumulation a disoccluded pixel starts from. Given to the context when changed or made anew
+// shading counts, and the accumulation a disoccluded pixel starts from. Given to the context when changed or made anew.
+// The shading change at 0.5, not AMD's 1 (the user's go, 2026-11-15): a still night street's shimmer 250 pixels to 130,
+// no trail at a walk or a drive, a light switched off or on followed in the same frame
 float gg_fsr_velocity_factor = 1.0f;
 float gg_fsr_accumulation_per_frame = 0.333f;
-float gg_fsr_shading_change_scale = 1.0f;
+float gg_fsr_shading_change_scale = 0.5f;
 float gg_fsr_min_disocclusion_accumulation = -0.333f;
 uint32_t gg_fsr_keys_version = 0;
 namespace gg_ffx
