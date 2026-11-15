@@ -21670,6 +21670,11 @@ void CreateFSR2Resources(FSR2Resources& res, XMUINT2 render_resolution, XMUINT2 
 // inputs and jitter. The DLL is loaded at the first FSR frame; without it, or with gg_fsr_sdk 0 (harness SET_FSRSDK), the
 // FSR 2.1 shaders run as before. FSR replaces the TAA (RenderPath3D runs one or the other).
 int gg_fsr_sdk = 1;
+// GGMAX: the reactive mask the upscaler is given, made from the scene before and after its transparents (harness
+// SET_FSRREACTIVE): its scale (0 gives none), the change that counts as reactive and the value written there
+float gg_fsr_reactive_scale = 1.0f;
+float gg_fsr_reactive_threshold = 0.2f;
+float gg_fsr_reactive_value = 0.9f;
 namespace gg_ffx
 {
 	static HMODULE module = nullptr;
@@ -21875,7 +21880,9 @@ static bool GG_Postprocess_FSR_SDK(
 	auto range = wi::profiler::BeginRangeGPU("Postprocess_FSR2", cmd);
 
 	// the reactive mask from the scene before and after its transparents, as the FSR 2.1 shaders made it
+	const bool gg_reactive = gg_fsr_reactive_scale > 0;
 	device->Barrier(GPUBarrier::Image(&res.reactive_mask, res.reactive_mask.desc.layout, ResourceState::UNORDERED_ACCESS), cmd);
+	if (gg_reactive)
 	{
 		ffxDispatchDescUpscaleGenerateReactiveMask reactive = {};
 		reactive.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE_GENERATEREACTIVEMASK;
@@ -21885,9 +21892,9 @@ static bool GG_Postprocess_FSR_SDK(
 		reactive.outReactive = gg_ffx::Resource(dx12, res.reactive_mask, ResourceState::UNORDERED_ACCESS);
 		reactive.renderSize.width = render.x;
 		reactive.renderSize.height = render.y;
-		reactive.scale = 1.0f;
-		reactive.cutoffThreshold = 0.2f;
-		reactive.binaryValue = 0.9f;
+		reactive.scale = gg_fsr_reactive_scale;
+		reactive.cutoffThreshold = gg_fsr_reactive_threshold;
+		reactive.binaryValue = gg_fsr_reactive_value;
 		reactive.flags = FFX_UPSCALE_AUTOREACTIVEFLAGS_APPLY_TONEMAP | FFX_UPSCALE_AUTOREACTIVEFLAGS_APPLY_THRESHOLD | FFX_UPSCALE_AUTOREACTIVEFLAGS_USE_COMPONENTS_MAX;
 		gg_ffx::fnDispatch(&gg_ffx::context, &reactive.header);
 	}
@@ -21900,7 +21907,8 @@ static bool GG_Postprocess_FSR_SDK(
 	dispatch.color = gg_ffx::Resource(dx12, input_post_alpha, input_post_alpha.desc.layout);
 	dispatch.depth = gg_ffx::Resource(dx12, input_depth, input_depth.desc.layout);
 	dispatch.motionVectors = gg_ffx::Resource(dx12, input_velocity, input_velocity.desc.layout);
-	dispatch.reactive = gg_ffx::Resource(dx12, res.reactive_mask, res.reactive_mask.desc.layout);
+	if (gg_reactive)
+		dispatch.reactive = gg_ffx::Resource(dx12, res.reactive_mask, res.reactive_mask.desc.layout);
 	dispatch.output = gg_ffx::Resource(dx12, output, ResourceState::UNORDERED_ACCESS);
 	// the camera's jitter in render pixels, as the FSR 2.1 shaders take it; Wicked's velocity is the UV offset to the previous
 	// frame, which the upscaler takes in pixels
