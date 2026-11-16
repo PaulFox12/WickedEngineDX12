@@ -106,6 +106,7 @@ std::string SHADERSOURCEPATH = SHADER_INTEROP_PATH;
 // Custom scene draw callbacks for game integration (shadow maps and env probes)
 void (*customDraw_ShadowMap)(const wi::primitive::Frustum*, int, wi::graphics::CommandList) = nullptr;
 void (*customDraw_EnvProbe)(const wi::primitive::Sphere*, const wi::primitive::Frustum*, uint32_t, wi::graphics::CommandList) = nullptr;
+void (*customDraw_ShadowMapLocal)(const wi::primitive::Frustum*, wi::graphics::CommandList) = nullptr;
 
 static thread_local wi::vector<GPUBarrier> barrier_stack;
 void FlushBarriers(CommandList cmd)
@@ -10408,6 +10409,32 @@ void DrawShadowmaps(
 				}
 			}
 
+			// GG: the game's own casters (its trees), which cast from the sun's cascades only
+			if (customDraw_ShadowMapLocal)
+			{
+				XMStoreFloat4x4(&cb.cameras[0].view_projection, shcam.view_projection);
+				cb.cameras[0].output_index = 0;
+				cb.cameras[0].options = SHADERCAMERA_OPTION_NONE;
+				for (int i = 0; i < arraysize(cb.cameras[0].frustum.planes); ++i)
+				{
+					cb.cameras[0].frustum.planes[i] = shcam.frustum.planes[i];
+				}
+				device->BindDynamicConstantBuffer(cb, CBSLOT_RENDERER_CAMERA, cmd);
+
+				Viewport vp;
+				vp.top_left_x = float(shadow_rect.x);
+				vp.top_left_y = float(shadow_rect.y);
+				vp.width = float(shadow_rect.w);
+				vp.height = float(shadow_rect.h);
+				device->BindViewports(1, &vp, cmd);
+
+				Rect scissor;
+				scissor.from_viewport(vp);
+				device->BindScissorRects(1, &scissor, cmd);
+
+				customDraw_ShadowMapLocal(&shcam.frustum, cmd);
+			}
+
 			if (predicationRequest && light.occlusionquery >= 0)
 			{
 				device->PredicationEnd(cmd);
@@ -10588,6 +10615,38 @@ void DrawShadowmaps(
 							hair.Draw(*material, RENDERPASS_SHADOW, cmd);
 						}
 					}
+				}
+			}
+
+			// GG: the game's own casters (its trees) into each face the main camera can see, a face at a time as the hair above
+			if (customDraw_ShadowMapLocal)
+			{
+				for (uint32_t shcam = 0; shcam < arraysize(cameras); ++shcam)
+				{
+					if (!cam_frustum.Intersects(cameras[shcam].boundingfrustum))
+						continue;
+
+					XMStoreFloat4x4(&cb.cameras[0].view_projection, cameras[shcam].view_projection);
+					cb.cameras[0].output_index = 0;
+					cb.cameras[0].options = SHADERCAMERA_OPTION_NONE;
+					for (int i = 0; i < arraysize(cb.cameras[0].frustum.planes); ++i)
+					{
+						cb.cameras[0].frustum.planes[i] = cameras[shcam].frustum.planes[i];
+					}
+					device->BindDynamicConstantBuffer(cb, CBSLOT_RENDERER_CAMERA, cmd);
+
+					Viewport vp;
+					vp.top_left_x = float(shadow_rect.x + shcam * shadow_rect.w);
+					vp.top_left_y = float(shadow_rect.y);
+					vp.width = float(shadow_rect.w);
+					vp.height = float(shadow_rect.h);
+					device->BindViewports(1, &vp, cmd);
+
+					Rect scissor;
+					scissor.from_viewport(vp);
+					device->BindScissorRects(1, &scissor, cmd);
+
+					customDraw_ShadowMapLocal(&cameras[shcam].frustum, cmd);
 				}
 			}
 

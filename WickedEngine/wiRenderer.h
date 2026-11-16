@@ -1828,6 +1828,9 @@ namespace wi::renderer
 	// Custom scene draw callbacks for game integration (shadow maps and env probes)
 	extern void (*customDraw_ShadowMap)(const wi::primitive::Frustum*, int cascade, wi::graphics::CommandList);
 	extern void (*customDraw_EnvProbe)(const wi::primitive::Sphere*, const wi::primitive::Frustum*, uint32_t frustum_count, wi::graphics::CommandList);
+	// GG: the game's own casters into a spot light's shadow or one face of a point light's (its camera, viewport and scissor
+	// bound); the shadow map callback above is the sun's cascades only
+	extern void (*customDraw_ShadowMapLocal)(const wi::primitive::Frustum*, wi::graphics::CommandList);
 
 	// GGMAX 1.62c: raster tangents from bind-pose buffers instead of skinned streamout
 	// (diagnostic lever for the per-load tangent-w instability; harness SET_BINDPOSE_TAN)
