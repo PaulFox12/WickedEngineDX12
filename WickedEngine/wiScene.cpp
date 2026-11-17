@@ -42,9 +42,9 @@ using namespace wi::primitive;
 
 namespace wi::scene
 {
-	// GG: Lee's BR-0026 (a block-compressed static sky sampled raw, as DX11) on (1) or the sRGB view as before (0, the
-	// default until the user has seen it, 2026-11-17; harness SET_SKYBCRAW)
-	int gg_sky_bc_raw = 0;
+	// GG: Lee's BR-0026 (a block-compressed static sky sampled raw, as DX11) on (1, the user 2026-11-17: "turn on 3") or
+	// the sRGB view as before (0; harness SET_SKYBCRAW)
+	int gg_sky_bc_raw = 1;
 
 	static constexpr uint32_t small_subtask_groupsize = 256u;
 

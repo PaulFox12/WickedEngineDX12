@@ -397,7 +397,7 @@ int gg_super_quick_objects = 0;
 // shadow filter Super Quick already selects (OPTION_BIT_GG_FAST_SHADOWS), on its own, with the
 // object shader left stock. In practice it only reaches sample_shadow's callers - point lights
 // (shadow_cube); the sun and spots use shadow_2D_feathered and keep their soft edges. 0 = stock.
-int gg_fast_point_shadows = 0;
+int gg_fast_point_shadows = 1; // GG: on (the user, 2026-11-17: 0.21 ms off the opaque pass at the night street, 8 rounds)
 
 Texture shadowMapAtlas;
 Texture shadowMapAtlas_Transparent;
@@ -530,6 +530,27 @@ static wi::vector<wi::ecs::Entity> localShadowGrantedPrev; // last frame's grant
 // Phase 2 decision and consumed by DrawShadowmaps. Keyed by ENTITY, never by the per-frame light
 // index, which is reused.
 static wi::vector<wi::ecs::Entity> localShadowDirty;
+// GG (2026-11-17, the Lua session's ask for the user): STABLE ATLAS SLOTS for the local shadows. The packer used to place
+// every granted light's rect afresh each frame, so one light joining or leaving the granted set moved the others' rects,
+// and the cache below then cleared the whole atlas and re-rendered every local shadow (and the sun) that frame: 26-34
+// times per 30 s of driving through Hanoi at night. With this on, the packer places one full-size SLOT per budgeted point
+// and spot shadow instead (and the sun and rain blocker as before), so the layout depends only on the budgets and
+// resolutions; each granted light keeps its slot while it stays granted and draws in a corner of it sized by its distance
+// step; a newly granted light renders only itself and a departed one frees its slot. 0: every light's rect packed per
+// frame as before (harness SET_SHADOWSLOTS). The atlas is sized for the whole budget at full resolution.
+// Measured 2026-11-17 (lamp_shadow_drive_check.py, Hanoi at night, 16 lamp shadows, 12 m/s): full clears 2.5/s to 0, lone
+// renders 1.2/s, but the GPU frame and the shadow pass the same within 0.05 ms with point or spot lamps, as a re-render of
+// the set is cheap beside the steady refreshes; and the slots reserve full-size atlas space. So off by default, kept as a switch.
+int gg_shadow_stable_slots = 0;
+static const int GG_SLOTID_POINT = -1000; // packer ids of the slots: -1000 - n (points), -2000 - n (spots and rects)
+static const int GG_SLOTID_SPOT = -2000;
+static wi::vector<wi::ecs::Entity> gg_slotOwnerPoint, gg_slotOwnerSpot; // slot -> the light holding it
+static wi::vector<wi::rectpacker::Rect> gg_slotRectPoint, gg_slotRectSpot; // slot -> where the packer put it
+static uint32_t gg_localShadowNewRenders = 0; // lights rendered alone because they were newly granted (stable slots)
+static uint32_t gg_localShadowSlotFails = 0; // granted lights left unshadowed for want of a free slot
+// the slots made per type: the most granted lights of that type seen at once since the level load (GG_ArmShadowAtlasShrink),
+// capped by the budget, so a level with few spots doesn't carry 16 empty full-size spot slots
+static int gg_slotCountPoint = 0, gg_slotCountSpot = 0;
 // ⚠ Both the per-rect CLEAR pass and the render loop call this. They must never disagree: a
 // rect re-rendered without being cleared blends into last frame's depth, and a rect cleared
 // without being re-rendered renders fully lit.
@@ -6171,6 +6192,12 @@ void UpdateVisibility(Visibility& vis)
 			};
 			applyBudget(candsSpot, localShadowBudgetSpot);
 			applyBudget(candsPoint, localShadowBudgetPoint);
+			// GG: stable slots: the slot counts follow the most lights of each type granted at once (never fewer, so the layout
+			// settles after the first frames of a level)
+			if (localShadowBudgetPoint >= 0) gg_slotCountPoint = std::max(gg_slotCountPoint, std::min((int)candsPoint.size(), localShadowBudgetPoint));
+			if (localShadowBudgetSpot >= 0) gg_slotCountSpot = std::max(gg_slotCountSpot, std::min((int)candsSpot.size(), localShadowBudgetSpot));
+			if (localShadowBudgetPoint >= 0 && gg_slotCountPoint > localShadowBudgetPoint) gg_slotCountPoint = localShadowBudgetPoint;
+			if (localShadowBudgetSpot >= 0 && gg_slotCountSpot > localShadowBudgetSpot) gg_slotCountSpot = localShadowBudgetSpot;
 		}
 		else
 		{
@@ -6205,6 +6232,29 @@ void UpdateVisibility(Visibility& vis)
 				rect.w = rect.h = 128;
 				vis.shadow_packer.add_rect(rect);
 			}
+			// GG: stable slots (gg_shadow_stable_slots): one full-size slot per budgeted point and spot shadow, in place of
+			// the granted lights' own rects
+			const bool ggSlots = gg_shadow_stable_slots != 0 && localBudgetActive && localShadowCachingEnabled
+				&& localShadowBudgetPoint >= 0 && localShadowBudgetSpot >= 0 && localShadowBudgetPoint < 1000 && localShadowBudgetSpot < 1000;
+			if (ggSlots)
+			{
+				for (int n = 0; n < gg_slotCountPoint; ++n)
+				{
+					wi::rectpacker::Rect rect = {};
+					rect.id = GG_SLOTID_POINT - n;
+					rect.w = int(max_shadow_resolution_cube * iterative_scaling) * 6;
+					rect.h = int(max_shadow_resolution_cube * iterative_scaling);
+					if (rect.w > 8 && rect.h > 8) vis.shadow_packer.add_rect(rect);
+				}
+				for (int n = 0; n < gg_slotCountSpot; ++n)
+				{
+					wi::rectpacker::Rect rect = {};
+					rect.id = GG_SLOTID_SPOT - n;
+					rect.w = int(max_shadow_resolution_spot * iterative_scaling);
+					rect.h = int(max_shadow_resolution_spot * iterative_scaling);
+					if (rect.w > 8 && rect.h > 8) vis.shadow_packer.add_rect(rect);
+				}
+			}
 			for (uint32_t lightIndex : vis.visibleLights)
 			{
 				const LightComponent& light = vis.scene->lights[lightIndex];
@@ -6214,6 +6264,8 @@ void UpdateVisibility(Visibility& vis)
 					continue;
 				if (localBudgetActive && light.GetType() != LightComponent::DIRECTIONAL && localGranted[lightIndex] == 0)
 					continue; // GG Phase 1: denied by the local-shadow budget -> no rect -> unshadowed
+				if (ggSlots && light.GetType() != LightComponent::DIRECTIONAL)
+					continue; // GG: drawn in its stable slot (assigned after the pack)
 
 				const float dist = wi::math::Distance(vis.camera->Eye, light.position);
 				const float range = light.GetRange();
@@ -6306,6 +6358,17 @@ void UpdateVisibility(Visibility& vis)
 							}
 							continue;
 						}
+						if (rect.id <= GG_SLOTID_POINT)
+						{
+							// GG: a stable slot: where the packer put it (the lights take theirs below)
+							const bool bSpot = rect.id <= GG_SLOTID_SPOT;
+							const int n = bSpot ? GG_SLOTID_SPOT - rect.id : GG_SLOTID_POINT - rect.id;
+							wi::vector<wi::rectpacker::Rect>& places = bSpot ? gg_slotRectSpot : gg_slotRectPoint;
+							if ((int)places.size() <= n) places.resize(n + 1);
+							places[n] = rect;
+							if (!rect.was_packed) places[n].w = 0;
+							continue;
+						}
 						uint32_t lightIndex = uint32_t(rect.id);
 						wi::rectpacker::Rect& lightrect = vis.visibleLightShadowRects[lightIndex];
 						const LightComponent& light = vis.scene->lights[lightIndex];
@@ -6331,12 +6394,79 @@ void UpdateVisibility(Visibility& vis)
 						}
 					}
 
+					// GG: stable slots: each granted light keeps the slot it holds, a newly granted one takes the first free slot,
+					// and a slot whose light is no longer granted is freed; the light draws in its slot's corner at its own size
+					if (ggSlots)
+					{
+						gg_slotOwnerPoint.resize((size_t)gg_slotCountPoint, wi::ecs::INVALID_ENTITY);
+						gg_slotOwnerSpot.resize((size_t)gg_slotCountSpot, wi::ecs::INVALID_ENTITY);
+						gg_slotRectPoint.resize((size_t)gg_slotCountPoint);
+						gg_slotRectSpot.resize((size_t)gg_slotCountSpot);
+						auto ggLocalGranted = [&](uint32_t li) -> int // 1 point, 2 spot/rect, 0 not a granted local caster
+						{
+							const LightComponent& L = vis.scene->lights[li];
+							if (L.IsInactive() || !L.IsCastingShadow() || L.IsStatic() || localGranted[li] == 0) return 0;
+							if (L.GetType() == LightComponent::POINT) return 1;
+							if (L.GetType() == LightComponent::SPOT || L.GetType() == LightComponent::RECTANGLE) return 2;
+							return 0;
+						};
+						// free the slots of lights not granted this frame
+						for (int pass = 0; pass < 2; ++pass)
+						{
+							wi::vector<wi::ecs::Entity>& owners = pass == 0 ? gg_slotOwnerPoint : gg_slotOwnerSpot;
+							for (size_t n = 0; n < owners.size(); ++n)
+							{
+								if (owners[n] == wi::ecs::INVALID_ENTITY) continue;
+								bool bStill = false;
+								for (uint32_t li : vis.visibleLights)
+									if (vis.scene->lights.GetEntity(li) == owners[n] && ggLocalGranted(li) == pass + 1) { bStill = true; break; }
+								if (!bStill) owners[n] = wi::ecs::INVALID_ENTITY;
+							}
+						}
+						for (uint32_t li : vis.visibleLights)
+						{
+							const int kind = ggLocalGranted(li);
+							if (kind == 0) continue;
+							const LightComponent& light = vis.scene->lights[li];
+							const wi::ecs::Entity ent = vis.scene->lights.GetEntity(li);
+							wi::vector<wi::ecs::Entity>& owners = kind == 1 ? gg_slotOwnerPoint : gg_slotOwnerSpot;
+							wi::vector<wi::rectpacker::Rect>& places = kind == 1 ? gg_slotRectPoint : gg_slotRectSpot;
+							int slot = -1;
+							for (size_t n = 0; n < owners.size(); ++n) if (owners[n] == ent) { slot = (int)n; break; }
+							if (slot < 0)
+							{
+								for (size_t n = 0; n < owners.size(); ++n) if (owners[n] == wi::ecs::INVALID_ENTITY) { slot = (int)n; owners[n] = ent; break; }
+							}
+							wi::rectpacker::Rect& lightrect = vis.visibleLightShadowRects[li];
+							lightrect = {};
+							if (slot < 0 || places[slot].w <= 0)
+							{
+								gg_localShadowSlotFails++;
+								continue; // no slot: unshadowed this frame
+							}
+							// its size as the packer would have made it (the 3.29 distance steps), in its slot's corner
+							const float dist = wi::math::Distance(vis.camera->Eye, light.position);
+							const float amount = gg_QuantiseShadowAmount(std::min(1.0f, light.GetRange() / std::max(0.001f, dist))) * iterative_scaling;
+							const int full = kind == 1 ? int(max_shadow_resolution_cube * iterative_scaling) : int(max_shadow_resolution_spot * iterative_scaling);
+							int size = light.forced_shadow_resolution >= 0 ? int(light.forced_shadow_resolution)
+								: int((kind == 1 ? max_shadow_resolution_cube : max_shadow_resolution_spot) * amount);
+							size = std::min(size, full);
+							if (size <= 8) continue;
+							lightrect.id = int(li);
+							lightrect.x = places[slot].x;
+							lightrect.y = places[slot].y;
+							lightrect.w = size; // per cube face for a point light, as the slice division below leaves it
+							lightrect.h = size;
+							lightrect.was_packed = 1;
+						}
+					}
+
 					// GGMAX 2.06: record the pack outcome for the harness (DUMP_SHADOWRECTS)
 					gg_dbg_shadow_pack_scale = iterative_scaling;
 					gg_dbg_shadow_rect_count = 0;
 					for (auto& dbg_rect : vis.shadow_packer.rects)
 					{
-						if (dbg_rect.id == -1 || !dbg_rect.was_packed) continue;
+						if (dbg_rect.id < 0 || !dbg_rect.was_packed) continue; // the rain blocker, and GG's stable slots
 						if (gg_dbg_shadow_rect_count >= 64) break;
 						uint32_t dbg_li = uint32_t(dbg_rect.id);
 						GGShadowRectDbg& d = gg_dbg_shadow_rects[gg_dbg_shadow_rect_count++];
@@ -6492,11 +6622,32 @@ void UpdateVisibility(Visibility& vis)
 			}
 			std::sort(cur.begin(), cur.end(),
 				[](const LocalShadowSlot& a, const LocalShadowSlot& b) { return a.ent < b.ent; });
+			const bool ggSlotsNow = gg_shadow_stable_slots != 0 && localShadowBudgetPoint >= 0 && localShadowBudgetSpot >= 0
+				&& localShadowBudgetPoint < 1000 && localShadowBudgetSpot < 1000;
 			bool changed = localShadowInvalidate
 				|| localShadowCacheAtlasW != shadowMapAtlas.desc.width
 				|| localShadowCacheAtlasH != shadowMapAtlas.desc.height
-				|| cur.size() != localShadowCache.size();
-			if (!changed)
+				|| (!ggSlotsNow && cur.size() != localShadowCache.size());
+			// GG: stable slots: a light new to the set, or one whose slot rect or state changed, is dirty on its own; one
+			// that left needs nothing (its slot is cleared when another light takes it)
+			wi::vector<wi::ecs::Entity> ggNewlyDirty;
+			if (!changed && ggSlotsNow)
+			{
+				size_t j = 0;
+				for (size_t i = 0; i < cur.size(); ++i)
+				{
+					const LocalShadowSlot& a = cur[i];
+					while (j < localShadowCache.size() && localShadowCache[j].ent < a.ent) ++j;
+					const bool bKnown = j < localShadowCache.size() && localShadowCache[j].ent == a.ent;
+					if (!bKnown) { ggNewlyDirty.push_back(a.ent); gg_localShadowNewRenders++; continue; }
+					const LocalShadowSlot& b = localShadowCache[j];
+					if (a.rx != b.rx || a.ry != b.ry || a.rw != b.rw || a.rh != b.rh
+						|| a.pos.x != b.pos.x || a.pos.y != b.pos.y || a.pos.z != b.pos.z || a.range != b.range
+						|| a.dir.x != b.dir.x || a.dir.y != b.dir.y || a.dir.z != b.dir.z || a.cone != b.cone)
+						ggNewlyDirty.push_back(a.ent);
+				}
+			}
+			if (!changed && !ggSlotsNow)
 			{
 				for (size_t i = 0; i < cur.size(); ++i)
 				{
@@ -6531,6 +6682,7 @@ void UpdateVisibility(Visibility& vis)
 			// every slot is already dirty - the worst case is no worse than the old full re-render it
 			// replaces.
 			localShadowDirty.clear();
+			for (const wi::ecs::Entity e : ggNewlyDirty) localShadowDirty.push_back(e);
 			if (!changed && !cur.empty()
 				&& vis.scene->matrix_objects.size() == vis.scene->objects.GetCount()
 				&& vis.scene->matrix_objects_prev.size() == vis.scene->objects.GetCount())
@@ -6585,6 +6737,8 @@ void UpdateVisibility(Visibility& vis)
 			if (changed)
 				localShadowDirty.clear();
 			localAtlasFullClear = changed;
+			if (!changed && ggSlotsNow)
+				localShadowCache = cur; // GG: stable slots: the new and moved lights render this frame, so the cache follows the set
 			if (changed)
 			{
 				gg_localShadowFullClearTotal++; // GGMAX BR-0006: harness readout SHADOW_LOCAL_FULLCLEARS_TOTAL
@@ -9839,6 +9993,10 @@ void GG_ArmShadowAtlasShrink()
 	gg_shadowAtlasShrinkStreak = 0; // GGMAX 3.69: a new level starts its settle run afresh
 	gg_shadowAtlasShrinkArmed = true;
 	gg_shadowAtlasShrinkReports = 0;
+	gg_slotCountPoint = 0; // GG: a new level sizes its stable shadow slots afresh
+	gg_slotCountSpot = 0;
+	gg_slotOwnerPoint.clear();
+	gg_slotOwnerSpot.clear();
 	gg_atlas_trace("GGATLAS arm: shrink armed");
 }
 
@@ -9868,6 +10026,24 @@ void GetLocalShadowStats(int& granted, int& capped, int& rendered)
 uint32_t GetLocalShadowFullClearTotal()
 {
 	return gg_localShadowFullClearTotal;
+}
+// GG: stable atlas slots for the local shadows on (1) or off (0, every rect packed per frame as before); a switch forces one
+// clean full clear. The counters: lights rendered alone on joining the set, and granted lights left without a slot
+void SetLocalShadowStableSlots(int value)
+{
+	if (gg_shadow_stable_slots != value)
+	{
+		gg_shadow_stable_slots = value;
+		localShadowInvalidate = true;
+		gg_slotOwnerPoint.clear();
+		gg_slotOwnerSpot.clear();
+	}
+}
+void GetLocalShadowSlotStats(int& stable, uint32_t& newRenders, uint32_t& slotFails)
+{
+	stable = gg_shadow_stable_slots;
+	newRenders = gg_localShadowNewRenders;
+	slotFails = gg_localShadowSlotFails;
 }
 void SetLocalShadowCachingEnabled(bool value)
 {
