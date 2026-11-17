@@ -28,6 +28,11 @@ namespace wi::scene
 	extern float gg_lod_fade_time;
 	// GG: the scene arrays' writers mark the blocks they change, the upload compares only those (wiScene.cpp)
 	extern int gg_upload_tracked;
+	// GG: the scene update's change counts (harness SCENE_CHANGES): last10 = transforms, dirty, hierarchy, visited, changed,
+	// objects, moved, materials, recomposed, meshes; sum10 the same summed over the updates counted
+	extern int gg_dbg_scene_changes;
+	void GetSceneChangeCounts(uint32_t* last10, uint64_t* sum10, uint32_t& updates);
+	void ResetSceneChangeCounts();
 
 	// GGMAX 3.25: Reduction Scale (the slider under "Lower Animation & LUA Speed"). Defined in
 	// wiScene.cpp - see the long note there for the specification and why the phase key is the

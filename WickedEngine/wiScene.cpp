@@ -132,6 +132,15 @@ namespace wi::scene
 	// block compared each frame as before (Update Buffers (CPU) 0.8 ms on Outdoors: 12 MB, 0.16 MB of it changed). Harness
 	// SET_UPLOADCHANGED 2 (this), 1, 0 (the whole arrays, stock)
 	int gg_upload_tracked = 1;
+	// GG (2026-11-17): what changes in a scene update, counted while gg_dbg_scene_changes (harness SCENE_CHANGES): transforms
+	// dirty, hierarchy entries whose world changed (of those visited), objects whose world changed, materials recomposed; the
+	// last update of the scene with the most transforms kept with the counts of each kind
+	int gg_dbg_scene_changes = 0;
+	static std::atomic<uint32_t> gg_dbg_xdirty{ 0 }, gg_dbg_hchanged{ 0 }, gg_dbg_hvisited{ 0 }, gg_dbg_omoved{ 0 }, gg_dbg_mrecomposed{ 0 };
+	static uint32_t gg_dbg_last[10] = {};
+	static uint64_t gg_dbg_sum[10] = {}; static uint32_t gg_dbg_updates = 0;
+	void GetSceneChangeCounts(uint32_t* last10, uint64_t* sum10, uint32_t& updates) { for (int i = 0; i < 10; i++) { last10[i] = gg_dbg_last[i]; sum10[i] = gg_dbg_sum[i]; } updates = gg_dbg_updates; }
+	void ResetSceneChangeCounts() { for (int i = 0; i < 10; i++) gg_dbg_sum[i] = 0; gg_dbg_updates = 0; }
 
 	// Run a Scene::Update system, optionally serialised + timed. Variadic so call expressions
 	// containing commas (RunPhysicsUpdateSystem(ctx, *this, dt)) pass through intact.
@@ -200,6 +209,7 @@ namespace wi::scene
 	void Scene::Update(float dt)
 	{
 		GraphicsDevice* device = wi::graphics::GetDevice();
+		if (gg_dbg_scene_changes) { gg_dbg_xdirty = 0; gg_dbg_hchanged = 0; gg_dbg_hvisited = 0; gg_dbg_omoved = 0; gg_dbg_mrecomposed = 0; }
 		{
 			const unsigned int slot = gg_scene_update_cursor.fetch_add(1, std::memory_order_relaxed)
 				% (unsigned int)(sizeof(gg_scene_update_calls) / sizeof(gg_scene_update_calls[0]));
@@ -662,6 +672,13 @@ namespace wi::scene
 		wi::jobsystem::Wait(ctx); // dependencies
 
 		wi::profiler::EndRange(gg_range_s4); // GGMAX 1.32
+		if (gg_dbg_scene_changes && transforms.GetCount() >= gg_dbg_last[0])
+		{
+			const uint32_t v[10] = { (uint32_t)transforms.GetCount(), gg_dbg_xdirty.load(), (uint32_t)hierarchy.GetCount(), gg_dbg_hvisited.load(), gg_dbg_hchanged.load(),
+				(uint32_t)objects.GetCount(), gg_dbg_omoved.load(), (uint32_t)materials.GetCount(), gg_dbg_mrecomposed.load(), (uint32_t)meshes.GetCount() };
+			for (int i = 0; i < 10; i++) { gg_dbg_last[i] = v[i]; gg_dbg_sum[i] += v[i]; }
+			gg_dbg_updates++;
+		}
 		wi::profiler::gg_trace_mark("scn-s4"); // GGMAX 2.61
 		auto gg_range_s5 = wi::profiler::BeginRangeCPU("Scene-S5 Tail+ShaderScene");
 
@@ -4088,6 +4105,7 @@ namespace wi::scene
 		wi::jobsystem::Dispatch(ctx, (uint32_t)transforms.GetCount(), small_subtask_groupsize, [&](wi::jobsystem::JobArgs args) {
 
 			TransformComponent& transform = transforms[args.jobIndex];
+			if (gg_dbg_scene_changes && transform.IsDirty()) gg_dbg_xdirty.fetch_add(1, std::memory_order_relaxed);
 			transform.UpdateTransform();
 		});
 	}
@@ -4163,6 +4181,12 @@ namespace wi::scene
 						if (transform_child != nullptr)
 						{
 							const XMMATRIX worldmatrix = transform_child->GetLocalMatrix() * XMLoadFloat4x4(&item.carried_world);
+							if (gg_dbg_scene_changes)
+							{
+								XMFLOAT4X4 gg_new; XMStoreFloat4x4(&gg_new, worldmatrix);
+								gg_dbg_hvisited.fetch_add(1, std::memory_order_relaxed);
+								if (std::memcmp(&gg_new, &transform_child->world, sizeof(gg_new)) != 0) gg_dbg_hchanged.fetch_add(1, std::memory_order_relaxed);
+							}
 							XMStoreFloat4x4(&transform_child->world, worldmatrix);
 							next_world = transform_child->world;
 						}
@@ -5699,6 +5723,7 @@ namespace wi::scene
 			{
 				material.WriteShaderMaterial(&material.gg_shader_cache);
 				material.gg_shader_cache_valid = true;
+				if (gg_dbg_scene_changes) gg_dbg_mrecomposed.fetch_add(1, std::memory_order_relaxed);
 				material.gg_shader_cache_epoch = gg_epoch;
 			}
 			GGWrite(gg_upload_materials, materialArrayMapped + args.jobIndex, &material.gg_shader_cache, sizeof(ShaderMaterial));
@@ -6184,6 +6209,8 @@ namespace wi::scene
 				XMFLOAT4X4 worldMatrixPrev = matrix_objects[args.jobIndex];
 				matrix_objects_prev[args.jobIndex] = worldMatrixPrev;
 				XMStoreFloat4x4(matrix_objects.data() + args.jobIndex, W);
+				if (gg_dbg_scene_changes && std::memcmp(&worldMatrixPrev, matrix_objects.data() + args.jobIndex, sizeof(XMFLOAT4X4)) != 0)
+					gg_dbg_omoved.fetch_add(1, std::memory_order_relaxed);
 				XMFLOAT4X4 worldMatrix = matrix_objects[args.jobIndex];
 
 				inst.transformRaw.Create(worldMatrix);
