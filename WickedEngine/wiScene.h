@@ -26,6 +26,8 @@ namespace wi::scene
 	extern float gg_lod_hysteresis;
 	extern float gg_lod_pixel_budget;
 	extern float gg_lod_fade_time;
+	// GG: the scene arrays' writers mark the blocks they change, the upload compares only those (wiScene.cpp)
+	extern int gg_upload_tracked;
 
 	// GGMAX 3.25: Reduction Scale (the slider under "Lower Animation & LUA Speed"). Defined in
 	// wiScene.cpp - see the long note there for the specification and why the phase key is the
@@ -285,18 +287,52 @@ namespace wi::scene
 			wi::vector<uint8_t> last;	// what the GPU buffer was last given
 			void* lastBuffer = nullptr;	// the GPU buffer it went to, and its size (a new one is given everything)
 			uint64_t lastBufferSize = 0;
+			// GG: per 4 KB block (GG_UploadChanged's), a writer changed it since the last upload (gg_upload_tracked)
+			wi::vector<uint8_t> dirty;
 			void* Prepare(size_t size)
 			{
 				const size_t blocks = (size + sizeof(Block) - 1) / sizeof(Block);
 				if (cpu.size() < blocks)
 					cpu.resize(blocks);
+				const size_t pages = (size + 4095) / 4096;
+				if (dirty.size() < pages)
+					dirty.resize(pages, 1);
 				return cpu.data();
+			}
+			// the blocks a record at p of size bytes lies in, marked changed (concurrent writers only ever store 1)
+			inline void Mark(const void* p, size_t size)
+			{
+				const size_t off = (size_t)((const uint8_t*)p - (const uint8_t*)cpu.data());
+				const size_t b1 = (off + size - 1) / 4096;
+				for (size_t b = off / 4096; b <= b1 && b < dirty.size(); ++b)
+					dirty[b] = 1;
+			}
+			// a record written only where its bytes differ, and its blocks marked
+			inline void Write(void* dst, const void* src, size_t size)
+			{
+				if (std::memcmp(dst, src, size) == 0)
+					return;
+				std::memcpy(dst, src, size);
+				Mark(dst, size);
 			}
 		};
 		GGUploadArray gg_upload_instances;
 		GGUploadArray gg_upload_geometry;
 		GGUploadArray gg_upload_materials;
 		bool gg_upload_cached = false;
+		// GG: a record written to one of the three arrays: with them in cached memory and gg_upload_tracked, only where it
+		// changes and its blocks marked (the upload then compares only the marked blocks); otherwise copied as before
+		inline void GGWrite(GGUploadArray& arr, void* dst, const void* src, size_t size)
+		{
+			if (gg_upload_cached && gg_upload_tracked_now) arr.Write(dst, src, size);
+			else std::memcpy(dst, src, size);
+		}
+		// a record changed in place (a texture slot written into it): its blocks marked
+		inline void GGMark(GGUploadArray& arr, const void* p, size_t size)
+		{
+			if (gg_upload_cached && gg_upload_tracked_now) arr.Mark(p, size);
+		}
+		bool gg_upload_tracked_now = false; // this frame's gg_upload_tracked, fixed at the arrays' Prepare
 		uint32_t gg_hair_geometry_offset = 0;	// the hairs' geometry records, then the emitters', start here
 		wi::vector<uint32_t> gg_object_meshlet_offsets;
 		uint64_t gg_upload_bytes = 0;			// what the last upload copied (DUMP_UPLOADS)

@@ -1531,6 +1531,7 @@ namespace wi::renderer
 	void SetShadowMoverLog(int on); // GG: count the moving objects that make local shadows re-render
 	void SetShadowMoverThrottle(float nearUnits, int farEvery); // GG: far lights re-render for movers every farEvery frames
 	void GetShadowMoverThrottle(float& nearUnits, int& farEvery);
+	uint32_t GetUploadMissedBlocks(); // GG: scene array blocks changed with no writer's mark (should stay 0)
 	void GetShadowMovers(wi::vector<std::pair<wi::ecs::Entity, uint32_t>>& out);
 	void SetShadowFadeSeconds(float seconds); // GG: a point or spot shadow fades in over this (0 none)
 	void GetShadowFadeStats(float& seconds, uint32_t& started);

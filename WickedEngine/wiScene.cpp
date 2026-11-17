@@ -127,6 +127,11 @@ namespace wi::scene
 	// GGMAX: 1 uploads only the changed blocks of the instance, geometry and material arrays (Scene::GGUploadArray); 0 stock,
 	// the whole arrays written to the upload buffer and copied every frame. Harness: SET_UPLOADCHANGED 0|1
 	int gg_upload_changed_only = 1;
+	// GG (2026-11-17): with the arrays in cached memory, 1 = their writers mark the 4 KB blocks they change (a record written only
+	// where it differs) and the upload compares only those, with a full compare every 2 s against a writer left out; 0 = every
+	// block compared each frame as before (Update Buffers (CPU) 0.8 ms on Outdoors: 12 MB, 0.16 MB of it changed). Harness
+	// SET_UPLOADCHANGED 2 (this), 1, 0 (the whole arrays, stock)
+	int gg_upload_tracked = 1;
 
 	// Run a Scene::Update system, optionally serialised + timed. Variadic so call expressions
 	// containing commas (RunPhysicsUpdateSystem(ctx, *this, dt)) pass through intact.
@@ -298,6 +303,7 @@ namespace wi::scene
 		}
 		// GGMAX: in cached memory, the changed blocks uploaded by the renderer (GGUploadArray)
 		gg_upload_cached = gg_upload_changed_only != 0 && !device->CheckCapability(GraphicsDeviceCapability::CACHE_COHERENT_UMA);
+		gg_upload_tracked_now = gg_upload_cached && gg_upload_tracked != 0;
 		instanceArrayMapped = gg_upload_cached ? (ShaderMeshInstance*)gg_upload_instances.Prepare(instanceArraySize * sizeof(ShaderMeshInstance)) :
 			(ShaderMeshInstance*)instanceUploadBuffer[cpu_gpu_mapped_resource_index].mapped_data;
 
@@ -463,7 +469,7 @@ namespace wi::scene
 			if (gg_instinit_parallel)
 			{
 				wi::jobsystem::Dispatch(ctx, instanceArraySize - gg_blank_from, 1024, [this, gg_blank_from](wi::jobsystem::JobArgs args) {
-					std::memcpy(instanceArrayMapped + gg_blank_from + args.jobIndex, &GG_BlankInstance(), sizeof(ShaderMeshInstance));
+					GGWrite(gg_upload_instances, instanceArrayMapped + gg_blank_from + args.jobIndex, &GG_BlankInstance(), sizeof(ShaderMeshInstance));
 				});
 			}
 			else
@@ -474,7 +480,7 @@ namespace wi::scene
 					inst.init();
 					for (uint32_t i = gg_blank_from; i < instanceArraySize; ++i)
 					{
-						std::memcpy(instanceArrayMapped + i, &inst, sizeof(inst));
+						GGWrite(gg_upload_instances, instanceArrayMapped + i, &inst, sizeof(inst));
 					}
 				});
 			}
@@ -5558,7 +5564,7 @@ namespace wi::scene
 					{
 						subsetGeometry.flags |= SHADERMESH_FLAG_DOUBLE_SIDED;
 					}
-					std::memcpy(geometryArrayMapped + mesh.geometryOffset + subsetIndex, &subsetGeometry, sizeof(subsetGeometry));
+					GGWrite(gg_upload_geometry, geometryArrayMapped + mesh.geometryOffset + subsetIndex, &subsetGeometry, sizeof(subsetGeometry));
 					subsetIndex++;
 				}
 			}
@@ -5695,7 +5701,7 @@ namespace wi::scene
 				material.gg_shader_cache_valid = true;
 				material.gg_shader_cache_epoch = gg_epoch;
 			}
-			std::memcpy(materialArrayMapped + args.jobIndex, &material.gg_shader_cache, sizeof(ShaderMaterial));
+			GGWrite(gg_upload_materials, materialArrayMapped + args.jobIndex, &material.gg_shader_cache, sizeof(ShaderMaterial));
 
 			const VideoComponent* video = videos.GetComponent(entity);
 			if (video != nullptr)
@@ -5703,8 +5709,8 @@ namespace wi::scene
 				// Video attachment will overwrite texture slots on shader side:
 				Texture videoTexture = video->videoinstance.GetCurrentFrameTexture();
 				int descriptor = GetDevice()->GetDescriptorIndex(&videoTexture, SubresourceType::SRV, video->videoinstance.GetCurrentFrameTextureSRGBSubresource());
-				material.WriteShaderTextureSlot(materialArrayMapped + args.jobIndex, BASECOLORMAP, descriptor);
-				material.WriteShaderTextureSlot(materialArrayMapped + args.jobIndex, EMISSIVEMAP, descriptor);
+				material.WriteShaderTextureSlot(materialArrayMapped + args.jobIndex, BASECOLORMAP, descriptor); GGMark(gg_upload_materials, materialArrayMapped + args.jobIndex, sizeof(ShaderMaterial));
+				material.WriteShaderTextureSlot(materialArrayMapped + args.jobIndex, EMISSIVEMAP, descriptor); GGMark(gg_upload_materials, materialArrayMapped + args.jobIndex, sizeof(ShaderMaterial));
 			}
 
 			if (material.cameraSource != INVALID_ENTITY)
@@ -5714,8 +5720,8 @@ namespace wi::scene
 				{
 					// Camera attachment will overwrite texture slots on shader side:
 					int descriptor = GetDevice()->GetDescriptorIndex(&camera->render_to_texture.rendertarget_render, SubresourceType::SRV);
-					material.WriteShaderTextureSlot(materialArrayMapped + args.jobIndex, BASECOLORMAP, descriptor);
-					material.WriteShaderTextureSlot(materialArrayMapped + args.jobIndex, EMISSIVEMAP, descriptor);
+					material.WriteShaderTextureSlot(materialArrayMapped + args.jobIndex, BASECOLORMAP, descriptor); GGMark(gg_upload_materials, materialArrayMapped + args.jobIndex, sizeof(ShaderMaterial));
+					material.WriteShaderTextureSlot(materialArrayMapped + args.jobIndex, EMISSIVEMAP, descriptor); GGMark(gg_upload_materials, materialArrayMapped + args.jobIndex, sizeof(ShaderMaterial));
 				}
 			}
 
@@ -5869,7 +5875,7 @@ namespace wi::scene
 			ShaderMaterial material;
 			material.init();
 			material.shaderType_meshblend = 0xFFFF;
-			std::memcpy(materialArrayMapped + impostorMaterialOffset, &material, sizeof(material));
+			GGWrite(gg_upload_materials, materialArrayMapped + impostorMaterialOffset, &material, sizeof(material));
 
 			ShaderGeometry geometry = shader_geometry_null;
 			geometry.meshletCount = triangle_count_to_meshlet_count(uint32_t(objects.GetCount()) * 2);
@@ -5878,7 +5884,7 @@ namespace wi::scene
 			geometry.vb_pos_wind = impostor_vb_pos.descriptor_srv;
 			geometry.vb_nor = impostor_vb_nor.descriptor_srv;
 			geometry.materialIndex = impostorMaterialOffset;
-			std::memcpy(geometryArrayMapped + impostorGeometryOffset, &geometry, sizeof(geometry));
+			GGWrite(gg_upload_geometry, geometryArrayMapped + impostorGeometryOffset, &geometry, sizeof(geometry));
 
 			ShaderMeshInstance inst = shader_mesh_instance_null;
 			inst.geometryOffset = impostorGeometryOffset;
@@ -5886,7 +5892,7 @@ namespace wi::scene
 			inst.baseGeometryOffset = inst.geometryOffset;
 			inst.baseGeometryCount = inst.geometryCount;
 			inst.meshletOffset = meshletAllocator.fetch_add(geometry.meshletCount, std::memory_order_relaxed); // global meshlet offset
-			std::memcpy(instanceArrayMapped + impostorInstanceOffset, &inst, sizeof(inst));
+			GGWrite(gg_upload_instances, instanceArrayMapped + impostorInstanceOffset, &inst, sizeof(inst));
 		}
 	}
 	void Scene::RunObjectUpdateSystem(wi::jobsystem::context& ctx)
@@ -6224,7 +6230,7 @@ namespace wi::scene
 				inst.padding.x = object.gg_texOffset.x; // GG: the object's own texture offset (objectHF, surfaceHF)
 				inst.padding.y = object.gg_texOffset.y;
 
-				std::memcpy(instanceArrayMapped + args.jobIndex, &inst, sizeof(inst)); // memcpy whole structure into mapped pointer to avoid read from uncached memory
+				GGWrite(gg_upload_instances, instanceArrayMapped + args.jobIndex, &inst, sizeof(inst)); // memcpy whole structure into mapped pointer to avoid read from uncached memory (GG: in cached memory, written where it changes)
 
 				if (TLAS_instancesMapped != nullptr)
 				{
@@ -6412,7 +6418,7 @@ namespace wi::scene
 			else if (gg_instinit_objects_own && instanceArrayMapped != nullptr)
 			{
 				// GG: the blank pass left this slot to us (gg_instinit_objects_own); no mesh, no instance
-				std::memcpy(instanceArrayMapped + args.jobIndex, &GG_BlankInstance(), sizeof(ShaderMeshInstance));
+				GGWrite(gg_upload_instances, instanceArrayMapped + args.jobIndex, &GG_BlankInstance(), sizeof(ShaderMeshInstance));
 			}
 
 		});
@@ -6726,7 +6732,7 @@ namespace wi::scene
 			geometry.aabb_max = hair.aabb._max;
 
 			const size_t geometryAllocation = gg_hair_geometry_offset + args.jobIndex; // GGMAX: by its index (was the next free)
-			std::memcpy(geometryArrayMapped + geometryAllocation, &geometry, sizeof(geometry));
+			GGWrite(gg_upload_geometry, geometryArrayMapped + geometryAllocation, &geometry, sizeof(geometry));
 			hair.gg_geometry_index = (uint32_t)geometryAllocation; // GGMAX 1.37d: for the frozen-velocity patch
 
 			ShaderMeshInstance inst;
@@ -6757,7 +6763,7 @@ namespace wi::scene
 			inst.transformPrev = inst.transform;
 
 			const size_t instanceIndex = objects.GetCount() + args.jobIndex;
-			std::memcpy(instanceArrayMapped + instanceIndex, &inst, sizeof(inst));
+			GGWrite(gg_upload_instances, instanceArrayMapped + instanceIndex, &inst, sizeof(inst));
 
 			if (TLAS_instancesMapped != nullptr)
 			{
@@ -6844,7 +6850,7 @@ namespace wi::scene
 			geometry.flags = SHADERMESH_FLAG_DOUBLE_SIDED | SHADERMESH_FLAG_EMITTEDPARTICLE;
 
 			const size_t geometryAllocation = gg_hair_geometry_offset + hairs.GetCount() + args.jobIndex; // GGMAX: by its index
-			std::memcpy(geometryArrayMapped + geometryAllocation, &geometry, sizeof(geometry));
+			GGWrite(gg_upload_geometry, geometryArrayMapped + geometryAllocation, &geometry, sizeof(geometry));
 
 			ShaderMeshInstance inst;
 			inst.init();
@@ -6858,7 +6864,7 @@ namespace wi::scene
 			inst.baseGeometryCount = inst.geometryCount;
 
 			const size_t instanceIndex = objects.GetCount() + hairs.GetCount() + args.jobIndex;
-			std::memcpy(instanceArrayMapped + instanceIndex, &inst, sizeof(inst));
+			GGWrite(gg_upload_instances, instanceArrayMapped + instanceIndex, &inst, sizeof(inst));
 
 			if (TLAS_instancesMapped != nullptr)
 			{
@@ -7055,7 +7061,7 @@ namespace wi::scene
 			ShaderMaterial material;
 			material.init();
 			rainMaterial.WriteShaderMaterial(&material);
-			std::memcpy(materialArrayMapped + rainMaterialOffset, &material, sizeof(material));
+			GGWrite(gg_upload_materials, materialArrayMapped + rainMaterialOffset, &material, sizeof(material));
 
 			ShaderGeometry geometry = shader_geometry_null;
 			geometry.indexOffset = 0;
@@ -7068,7 +7074,7 @@ namespace wi::scene
 			geometry.vb_col = rainEmitter.vb_col.descriptor_srv;
 			geometry.flags = SHADERMESH_FLAG_DOUBLE_SIDED | SHADERMESH_FLAG_EMITTEDPARTICLE;
 
-			std::memcpy(geometryArrayMapped + rainGeometryOffset, &geometry, sizeof(geometry));
+			GGWrite(gg_upload_geometry, geometryArrayMapped + rainGeometryOffset, &geometry, sizeof(geometry));
 
 			ShaderMeshInstance inst;
 			inst.init();
@@ -7082,7 +7088,7 @@ namespace wi::scene
 			inst.baseGeometryCount = inst.geometryCount;
 
 			const size_t instanceIndex = rainInstanceOffset;
-			std::memcpy(instanceArrayMapped + instanceIndex, &inst, sizeof(inst));
+			GGWrite(gg_upload_instances, instanceArrayMapped + instanceIndex, &inst, sizeof(inst));
 
 			if (TLAS_instancesMapped != nullptr)
 			{

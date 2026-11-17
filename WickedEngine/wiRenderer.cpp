@@ -7982,6 +7982,9 @@ void UpdatePerFrameData(
 // 4 KB blocks that differ from what the buffer was last given are written to this frame's upload buffer and copied, a run
 // of them in one copy; a new GPU buffer is given everything. Bytes [always_from, always_to) are always given (records the
 // renderer patches later in the frame). Otherwise (stock, or a cache coherent UMA device) the whole array, as before
+// GG: blocks a full compare found changed though no writer marked them (should stay 0; GetUploadMissedBlocks)
+static std::atomic<uint32_t> gg_upload_missed_blocks{ 0 };
+uint32_t GetUploadMissedBlocks() { return gg_upload_missed_blocks.load(); }
 static uint64_t GG_UploadChanged(GPUBuffer& dst, GPUBuffer& upload, wi::scene::Scene::GGUploadArray& arr, bool cached, size_t size,
 	size_t always_from, size_t always_to, CommandList cmd)
 {
@@ -7997,13 +8000,23 @@ static uint64_t GG_UploadChanged(GPUBuffer& dst, GPUBuffer& upload, wi::scene::S
 	const bool fresh = arr.lastBuffer != dst.internal_state.get() || arr.lastBufferSize != dst.desc.size;
 	const size_t last_size = fresh ? 0 : arr.last.size();
 	wi::vector<uint8_t> changed(blocks);
+	// GG: with the writers marking their blocks (gg_upload_tracked) only the marked ones are compared, and every block every
+	// 2 s (GG_UPLOAD_FULL_FRAMES) against a writer left out
+	const bool gg_tracked = wi::scene::gg_upload_tracked != 0 && arr.dirty.size() >= blocks && !fresh &&
+		(device->GetFrameCount() % 120) != 0;
 	wi::jobsystem::context ctx;
 	wi::jobsystem::Dispatch(ctx, (uint32_t)blocks, 64, [&](wi::jobsystem::JobArgs args) {
 		const size_t from = args.jobIndex * block;
 		const size_t to = std::min(size, from + block);
-		changed[args.jobIndex] = to > last_size || (from < always_to && to > always_from) || std::memcmp(cpu + from, arr.last.data() + from, to - from) != 0;
+		if (to > last_size || (from < always_to && to > always_from)) { changed[args.jobIndex] = 1; return; }
+		if (gg_tracked && arr.dirty[args.jobIndex] == 0) { changed[args.jobIndex] = 0; return; }
+		changed[args.jobIndex] = std::memcmp(cpu + from, arr.last.data() + from, to - from) != 0;
+		// GG: the full compare's changed blocks no writer marked: a writer left out of the tracking
+		if (!gg_tracked && wi::scene::gg_upload_tracked != 0 && changed[args.jobIndex] && args.jobIndex < arr.dirty.size() && arr.dirty[args.jobIndex] == 0)
+			gg_upload_missed_blocks.fetch_add(1, std::memory_order_relaxed);
 	});
 	wi::jobsystem::Wait(ctx);
+	if (!arr.dirty.empty()) std::memset(arr.dirty.data(), 0, arr.dirty.size());
 	if (arr.last.size() < size)
 		arr.last.resize(size);
 	arr.lastBuffer = dst.internal_state.get();
