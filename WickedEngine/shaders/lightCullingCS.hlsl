@@ -245,6 +245,13 @@ void main(uint3 Gid : SV_GroupID, uint3 DTid : SV_DispatchThreadID, uint3 GTid :
 		// Construct a tight fitting sphere around the spotlight cone:
 		const float r = entity.GetRange() * 0.5f / (entity.GetConeAngleCos() * entity.GetConeAngleCos());
 		Sphere sphere = { positionVS - directionVS * r, r };
+		// GG: past a 90 degree cone that sphere outgrows the light's own reach (16 times its range at 160 degrees: every lamp in
+		// every tile, 2.6 ms on a night street); a spot never lights past its range, so the point light's sphere bounds it then
+		if (r > entity.GetRange())
+		{
+			sphere.c = positionVS;
+			sphere.r = entity.GetRange();
+		}
 		if (SphereInsideFrustum(sphere, GroupFrustum, nearClipVS, maxDepthVS))
 		{
 			AppendEntity_Transparent(i);

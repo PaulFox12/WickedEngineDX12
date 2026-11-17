@@ -316,7 +316,8 @@ inline void light_point(in ShaderEntity light, in Surface surface, inout Lightin
 		if ((GetFrame().options & OPTION_BIT_RAYTRACED_SHADOWS) == 0 || GetCamera().texture_rtshadow_index < 0 || (GetCamera().options & SHADERCAMERA_OPTION_USE_SHADOW_MASK) == 0)
 #endif // SHADOW_MASK_ENABLED
 		{
-			light_color *= shadow_cube(light, LunnormalizedShadow, surface.pixel);
+			// GG: the shadow fades in over its first moments (the colour's alpha, 1 once settled; gg_shadow_fade_seconds)
+			light_color *= lerp((half3)1, (half3)shadow_cube(light, LunnormalizedShadow, surface.pixel), light.GetColor().a);
 		}
 		
 		if (!any(light_color))
@@ -454,7 +455,8 @@ inline void light_spot(in ShaderEntity light, in Surface surface, inout Lighting
 				// distance cushion (the user-observed spot/point asymmetry).
 				// GGMAX 2.07f: camera_distance -1 = FIXED 8 taps (DX11 spot parity — the sun's
 				// distance-stepped tap count put camera-anchored brightness divides in spot shadows).
-				light_color *= shadow_2D_feathered(light, shadow_pos.z, shadow_uv.xy, 0, -1.0);
+				// GG: the shadow fades in over its first moments (the colour's alpha, 1 once settled; gg_shadow_fade_seconds)
+				light_color *= lerp((half3)1, (half3)shadow_2D_feathered(light, shadow_pos.z, shadow_uv.xy, 0, -1.0), light.GetColor().a);
 			}
 		}
 

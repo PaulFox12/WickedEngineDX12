@@ -542,6 +542,35 @@ static wi::vector<wi::ecs::Entity> localShadowDirty;
 // renders 1.2/s, but the GPU frame and the shadow pass the same within 0.05 ms with point or spot lamps, as a re-render of
 // the set is cheap beside the steady refreshes; and the slots reserve full-size atlas space. So off by default, kept as a switch.
 int gg_shadow_stable_slots = 0;
+// GG (2026-11-17, the user): a point or spot light's shadow FADES IN over this many seconds from the frame it gains one
+// (a lamp joining the shadowed set as the player moves popped its shadow in at once); the fade rides in the light's colour
+// alpha, which the shaders read only for this. 0 = no fade (harness SET_SHADOWFADE). Losing a shadow stays immediate.
+float gg_shadow_fade_seconds = 0.3f;
+struct GGShadowFade { double start = 0; uint64_t lastFrame = 0; };
+static wi::unordered_map<wi::ecs::Entity, GGShadowFade> gg_shadowFades;
+static uint32_t gg_shadowFadesStarted = 0; // shadows that began a fade (harness)
+// the fade (0..1) of a light this frame; casting false forgets it, so its next shadow fades in again; a light not seen
+// last frame starts afresh too
+static float gg_ShadowFadeFor(wi::ecs::Entity e, bool casting, uint64_t frame)
+{
+	if (!casting)
+	{
+		gg_shadowFades.erase(e);
+		return 1.0f;
+	}
+	static wi::Timer clock; // started at its first use
+	const double now = clock.elapsed_seconds();
+	GGShadowFade& f = gg_shadowFades[e];
+	if (f.lastFrame == 0 || frame > f.lastFrame + 1)
+	{
+		f.start = now;
+		gg_shadowFadesStarted++;
+	}
+	f.lastFrame = frame;
+	if (gg_shadow_fade_seconds <= 0.0f) return 1.0f;
+	const double t = (now - f.start) / (double)gg_shadow_fade_seconds;
+	return t >= 1.0 ? 1.0f : (t <= 0.0 ? 0.0f : (float)t);
+}
 static const int GG_SLOTID_POINT = -1000; // packer ids of the slots: -1000 - n (points), -2000 - n (spots and rects)
 static const int GG_SLOTID_SPOT = -2000;
 static wi::vector<wi::ecs::Entity> gg_slotOwnerPoint, gg_slotOwnerSpot; // slot -> the light holding it
@@ -7612,6 +7641,9 @@ void UpdatePerFrameData(
 			{
 				shaderentity.SetFlags(ENTITY_FLAG_LIGHT_CASTING_SHADOW);
 			}
+			// GG: the shadow's fade in its colour's alpha
+			shaderentity.SetColor(float4(light.color.x * light.intensity, light.color.y * light.intensity, light.color.z * light.intensity,
+				gg_ShadowFadeFor(entity, shadowmap && light.IsCastingShadow() && (!GG_LocalShadowBudgetActive() || shadow_rect.w > 0), device->GetFrameCount())));
 			if (light.IsStatic())
 			{
 				shaderentity.SetFlags(ENTITY_FLAG_LIGHT_STATIC);
@@ -7689,6 +7721,9 @@ void UpdatePerFrameData(
 			{
 				shaderentity.SetFlags(ENTITY_FLAG_LIGHT_CASTING_SHADOW);
 			}
+			// GG: the shadow's fade in its colour's alpha
+			shaderentity.SetColor(float4(light.color.x * light.intensity, light.color.y * light.intensity, light.color.z * light.intensity,
+				gg_ShadowFadeFor(entity, shadowmap && light.IsCastingShadow() && (!GG_LocalShadowBudgetActive() || shadow_rect.w > 0), device->GetFrameCount())));
 			if (light.IsStatic())
 			{
 				shaderentity.SetFlags(ENTITY_FLAG_LIGHT_STATIC);
@@ -10029,6 +10064,9 @@ uint32_t GetLocalShadowFullClearTotal()
 }
 // GG: stable atlas slots for the local shadows on (1) or off (0, every rect packed per frame as before); a switch forces one
 // clean full clear. The counters: lights rendered alone on joining the set, and granted lights left without a slot
+// GG: the local shadows' fade-in time in seconds (0 none), and how many fades have begun
+void SetShadowFadeSeconds(float seconds) { gg_shadow_fade_seconds = seconds < 0.0f ? 0.0f : seconds; }
+void GetShadowFadeStats(float& seconds, uint32_t& started) { seconds = gg_shadow_fade_seconds; started = gg_shadowFadesStarted; }
 void SetLocalShadowStableSlots(int value)
 {
 	if (gg_shadow_stable_slots != value)

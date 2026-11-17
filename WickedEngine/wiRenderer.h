@@ -1527,6 +1527,8 @@ namespace wi::renderer
 	void GetLocalShadowStats(int& granted, int& capped, int& rendered);
 	// GGMAX BR-0006: full local-shadow atlas clears (every cached local shadow re-rendered) since startup
 	uint32_t GetLocalShadowFullClearTotal();
+	void SetShadowFadeSeconds(float seconds); // GG: a point or spot shadow fades in over this (0 none)
+	void GetShadowFadeStats(float& seconds, uint32_t& started);
 	void SetLocalShadowStableSlots(int value); // GG: stable atlas slots for the local shadows (1) or the per-frame pack (0)
 	void GetLocalShadowSlotStats(int& stable, uint32_t& newRenders, uint32_t& slotFails);
 	// GG Phase 2: cache static local shadows (render once, reuse atlas texels until something changes).
