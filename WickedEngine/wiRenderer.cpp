@@ -521,6 +521,19 @@ uint32_t GG_GetShadowRects(uint32_t* entities, int* widths, int* heights, int* t
 }
 static int localShadowCappedCount = 0;    // local casters denied a slot (rendered fully lit)
 static int localShadowRenderedCount = 0;  // local shadows actually re-rendered this frame
+// GG: the local shadows re-rendered since the start, and the frames counted (an average a frame); and, while
+// gg_shadow_movers_on, each moving object that made a local shadow re-render, and how many times (harness SHADOW_MOVERS)
+static uint64_t gg_localShadowRenderedTotal = 0, gg_localShadowFramesTotal = 0;
+static int gg_shadow_movers_on = 0;
+static wi::unordered_set<wi::ecs::Entity> gg_shadowFarPending; // far lights a mover dirtied, waiting their turn
+// GG (2026-11-17): a local shadow whose light is farther from the camera than gg_shadow_mover_near units re-renders for a
+// moving caster only every gg_shadow_mover_far_every frames (its own turn, by its entity), a near one every frame: traffic
+// under a street's lamps re-rendered about five lamp shadows a frame walking Hanoi at night; at 600 units and every third
+// frame 2.2 a frame, the CPU's Render 0.24 ms and its shadow recording 0.39 ms lighter (shadow_movers_check.py). A far
+// lamp shows a passing car's shadow 20 times a second. every 1 = every frame for all (harness SET_SHADOWMOVERS <near> <every>)
+float gg_shadow_mover_near = 600.0f;
+int gg_shadow_mover_far_every = 3;
+static wi::unordered_map<wi::ecs::Entity, uint32_t> gg_shadowMovers;
 // GGMAX BR-0006: full local-atlas clears since startup. The per-frame counters above only show the frame a harness read
 // lands on, so a once-per-camera-move full re-render was invisible to them.
 static uint32_t gg_localShadowFullClearTotal = 0;
@@ -6164,6 +6177,7 @@ void UpdateVisibility(Visibility& vis)
 		localShadowGrantedCount = 0;
 		localShadowCappedCount = 0;
 		localShadowRenderedCount = 0;
+		gg_localShadowFramesTotal++;
 		if (localBudgetActive)
 		{
 			struct ShadowCand { uint32_t idx; wi::ecs::Entity ent; float score; };
@@ -6714,6 +6728,7 @@ void UpdateVisibility(Visibility& vis)
 			// replaces.
 			localShadowDirty.clear();
 			for (const wi::ecs::Entity e : ggNewlyDirty) localShadowDirty.push_back(e);
+			const uint64_t gg_frame_for_movers = wi::graphics::GetDevice() != nullptr ? wi::graphics::GetDevice()->GetFrameCount() : 0;
 			if (!changed && !cur.empty()
 				&& vis.scene->matrix_objects.size() == vis.scene->objects.GetCount()
 				&& vis.scene->matrix_objects_prev.size() == vis.scene->objects.GetCount())
@@ -6727,6 +6742,23 @@ void UpdateVisibility(Visibility& vis)
 					const XMFLOAT4X4& mPrev = vis.scene->matrix_objects_prev[i];
 					if (std::memcmp(&mNow, &mPrev, sizeof(XMFLOAT4X4)) == 0)
 						continue; // did not move
+					// GG: an object none of whose materials casts a shadow draws nothing into one (the shadow pass leaves its
+					// subsets out), so its move changes no shadow: the first person gun, its material's shadow off, made every
+					// lamp near the player re-render each frame (2026-11-17)
+					{
+						const MeshComponent* gg_mesh = vis.scene->meshes.GetComponent(object.meshID);
+						if (gg_mesh != nullptr && !gg_mesh->subsets.empty())
+						{
+							bool gg_casts = false;
+							for (const MeshComponent::MeshSubset& gg_subset : gg_mesh->subsets)
+							{
+								const MaterialComponent* gg_material = vis.scene->materials.GetComponent(gg_subset.materialID);
+								if (gg_material == nullptr || gg_material->IsCastingShadow()) { gg_casts = true; break; }
+							}
+							if (!gg_casts)
+								continue;
+						}
+					}
 					const float dx = mNow._41 - mPrev._41;
 					const float dy = mNow._42 - mPrev._42;
 					const float dz = mNow._43 - mPrev._43;
@@ -6735,13 +6767,36 @@ void UpdateVisibility(Visibility& vis)
 					for (const LocalShadowSlot& s : cur)
 					{
 						Sphere sph(s.pos, s.range + delta);
+						// GG: a far light waits its turn (gg_shadow_mover_far_every), pending till then
+						if (gg_shadow_mover_far_every > 1 && gg_shadow_mover_near > 0.0f && gg_frame_for_movers % (uint64_t)gg_shadow_mover_far_every != (uint64_t)(s.ent % (wi::ecs::Entity)gg_shadow_mover_far_every))
+						{
+							const float ex = s.pos.x - vis.camera->Eye.x, ey = s.pos.y - vis.camera->Eye.y, ez = s.pos.z - vis.camera->Eye.z;
+							if (ex * ex + ey * ey + ez * ez > gg_shadow_mover_near * gg_shadow_mover_near)
+							{
+								if (sph.intersects(aabb)) gg_shadowFarPending.insert(s.ent);
+								continue;
+							}
+						}
 						if (sph.intersects(aabb) && !gg_IsLocalShadowDirty(s.ent))
+						{
 							localShadowDirty.push_back(s.ent);
+							if (gg_shadow_movers_on) gg_shadowMovers[vis.scene->objects.GetEntity(i)]++; // GG: SHADOW_MOVERS
+						}
 					}
 					if (localShadowDirty.size() >= cur.size())
 						break; // every slot already dirty - nothing further to learn this frame
 				}
 			}
+			// GG: the far lights left pending by a mover render at their turn
+			if (!gg_shadowFarPending.empty() && !changed && gg_shadow_mover_far_every > 1)
+			{
+				for (const LocalShadowSlot& s : cur)
+				{
+					if (gg_frame_for_movers % (uint64_t)gg_shadow_mover_far_every != (uint64_t)(s.ent % (wi::ecs::Entity)gg_shadow_mover_far_every)) continue;
+					if (gg_shadowFarPending.erase(s.ent) > 0 && !gg_IsLocalShadowDirty(s.ent)) localShadowDirty.push_back(s.ent);
+				}
+			}
+			if (changed) gg_shadowFarPending.clear(); // everything renders anyway
 			// Switch off the per-light path and a moved caster means what it used to: everything.
 			if (gg_shadow_perlight_invalidate == 0 && !localShadowDirty.empty())
 			{
@@ -10060,6 +10115,18 @@ void GetLocalShadowStats(int& granted, int& capped, int& rendered)
 	capped = localShadowCappedCount;
 	rendered = localShadowRenderedCount;
 }
+// GG: the local shadows re-rendered and the frames since the start; SetShadowMoverLog(1) starts counting the moving objects that
+// made a local shadow re-render (cleared), GetShadowMovers gives them with their counts, most first
+void GetLocalShadowRenderTotals(uint64_t& rendered, uint64_t& frames) { rendered = gg_localShadowRenderedTotal; frames = gg_localShadowFramesTotal; }
+void SetShadowMoverLog(int on) { gg_shadow_movers_on = on; gg_shadowMovers.clear(); }
+void SetShadowMoverThrottle(float nearUnits, int farEvery) { gg_shadow_mover_near = nearUnits < 0.0f ? 0.0f : nearUnits; gg_shadow_mover_far_every = farEvery < 1 ? 1 : farEvery; }
+void GetShadowMoverThrottle(float& nearUnits, int& farEvery) { nearUnits = gg_shadow_mover_near; farEvery = gg_shadow_mover_far_every; }
+void GetShadowMovers(wi::vector<std::pair<wi::ecs::Entity, uint32_t>>& out)
+{
+	out.clear();
+	for (auto& it : gg_shadowMovers) out.push_back({ it.first, it.second });
+	std::sort(out.begin(), out.end(), [](const std::pair<wi::ecs::Entity, uint32_t>& a, const std::pair<wi::ecs::Entity, uint32_t>& b) { return a.second > b.second; });
+}
 uint32_t GetLocalShadowFullClearTotal()
 {
 	return gg_localShadowFullClearTotal;
@@ -10293,6 +10360,7 @@ void DrawShadowmaps(
 			if (localCachingActive && !gg_IsLocalShadowDirty(vis.scene->lights.GetEntity(lightIndex)))
 				continue; // cached and clean -> reuse atlas texels via LOAD
 			localShadowRenderedCount++;
+			gg_localShadowRenderedTotal++;
 		}
 
 		renderQueue.init();

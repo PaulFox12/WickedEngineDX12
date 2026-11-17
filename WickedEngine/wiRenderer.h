@@ -1527,6 +1527,11 @@ namespace wi::renderer
 	void GetLocalShadowStats(int& granted, int& capped, int& rendered);
 	// GGMAX BR-0006: full local-shadow atlas clears (every cached local shadow re-rendered) since startup
 	uint32_t GetLocalShadowFullClearTotal();
+	void GetLocalShadowRenderTotals(uint64_t& rendered, uint64_t& frames); // GG
+	void SetShadowMoverLog(int on); // GG: count the moving objects that make local shadows re-render
+	void SetShadowMoverThrottle(float nearUnits, int farEvery); // GG: far lights re-render for movers every farEvery frames
+	void GetShadowMoverThrottle(float& nearUnits, int& farEvery);
+	void GetShadowMovers(wi::vector<std::pair<wi::ecs::Entity, uint32_t>>& out);
 	void SetShadowFadeSeconds(float seconds); // GG: a point or spot shadow fades in over this (0 none)
 	void GetShadowFadeStats(float& seconds, uint32_t& started);
 	void SetLocalShadowStableSlots(int value); // GG: stable atlas slots for the local shadows (1) or the per-frame pack (0)
