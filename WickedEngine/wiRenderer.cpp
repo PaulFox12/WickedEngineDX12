@@ -540,8 +540,10 @@ static wi::vector<wi::ecs::Entity> localShadowDirty;
 // frame as before (harness SET_SHADOWSLOTS). The atlas is sized for the whole budget at full resolution.
 // Measured 2026-11-17 (lamp_shadow_drive_check.py, Hanoi at night, 16 lamp shadows, 12 m/s): full clears 2.5/s to 0, lone
 // renders 1.2/s, but the GPU frame and the shadow pass the same within 0.05 ms with point or spot lamps, as a re-render of
-// the set is cheap beside the steady refreshes; and the slots reserve full-size atlas space. So off by default, kept as a switch.
-int gg_shadow_stable_slots = 0;
+// the set is cheap beside the steady refreshes; and the slots reserve full-size atlas space. Then with 32 spot lamp shadows and
+// a set change every 66 ms (run 1693's rate at night): the CPU's Render 0.63 ms dearer with the per-frame pack, no dearer with
+// the slots, the GPU the same either way (cpu_parts_check.py, baselines/2026-11-17_1601_cpu_parts_night_churn_dx12/). So on.
+int gg_shadow_stable_slots = 1;
 // GG (2026-11-17, the user): a point or spot light's shadow FADES IN over this many seconds from the frame it gains one
 // (a lamp joining the shadowed set as the player moves popped its shadow in at once); the fade rides in the light's colour
 // alpha, which the shaders read only for this. 0 = no fade (harness SET_SHADOWFADE). Losing a shadow stays immediate.
