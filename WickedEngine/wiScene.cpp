@@ -42,6 +42,10 @@ using namespace wi::primitive;
 
 namespace wi::scene
 {
+	// GG: Lee's BR-0026 (a block-compressed static sky sampled raw, as DX11) on (1) or the sRGB view as before (0, the
+	// default until the user has seen it, 2026-11-17; harness SET_SKYBCRAW)
+	int gg_sky_bc_raw = 0;
+
 	static constexpr uint32_t small_subtask_groupsize = 256u;
 
 	// GGMAX 1.55: global env-probe brightness multiplier (1 = stock), set by the game's
@@ -1105,7 +1109,7 @@ namespace wi::scene
 			// at low Exposure. A block-compressed sky therefore uses its own view: BC*_UNORM raw (as
 			// DX11), BC*_UNORM_SRGB decoded by the format, BC6H HDR unchanged (no sRGB view anyway).
 			int skySubresource = weather.skyMap.GetTextureSRGBSubresource();
-			if (IsFormatBlockCompressed(weather.skyMap.GetTexture().desc.format))
+			if (gg_sky_bc_raw != 0 && IsFormatBlockCompressed(weather.skyMap.GetTexture().desc.format))
 			{
 				skySubresource = -1;
 			}
