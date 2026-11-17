@@ -111,7 +111,18 @@ namespace wi::scene
 	// this spreads the identical writes across the pool. Behaviour-neutral by construction —
 	// same bytes, same slots, only the scheduling differs. Default 0 while it is being A/B'd.
 	// Harness: SET_INSTINIT 0|1.
-	bool gg_instinit_parallel = false;
+	// GG (2026-11-17): on, the CPU frame 0.25 ms lighter on Outdoors (23,000 slots; cpu_parts_check.py).
+	bool gg_instinit_parallel = true;
+	// GG (2026-11-17): 1 = the blank pass leaves the objects' slots to the object update, which writes each object's
+	// instance and now a blank one for an object with no mesh (19,000 of the 23,000 slots on Outdoors); 0 every slot
+	// blanked first as stock. Harness SET_INSTINIT <parallel> [objects own].
+	int gg_instinit_objects_own = 1;
+	// the blank instance both writers use (a magic static: built once, thread safe)
+	static const ShaderMeshInstance& GG_BlankInstance()
+	{
+		static const ShaderMeshInstance blank = []() { ShaderMeshInstance i; i.init(); return i; }();
+		return blank;
+	}
 
 	// GGMAX: 1 uploads only the changed blocks of the instance, geometry and material arrays (Scene::GGUploadArray); 0 stock,
 	// the whole arrays written to the upload buffer and copied every frame. Harness: SET_UPLOADCHANGED 0|1
@@ -447,24 +458,21 @@ namespace wi::scene
 			// before the stage's jobsystem::Wait.
 			//
 			// Default OFF so this ships as an opt-in A/B first. Live knob: SET_INSTINIT 0|1.
+			// GG: the objects' slots left to the object update (gg_instinit_objects_own)
+			const uint32_t gg_blank_from = gg_instinit_objects_own ? std::min<uint32_t>((uint32_t)objects.GetCount(), (uint32_t)instanceArraySize) : 0u;
 			if (gg_instinit_parallel)
 			{
-				static const ShaderMeshInstance gg_inst_blank = []() {
-					ShaderMeshInstance i;
-					i.init();
-					return i;
-				}();
-				wi::jobsystem::Dispatch(ctx, instanceArraySize, 1024, [this](wi::jobsystem::JobArgs args) {
-					std::memcpy(instanceArrayMapped + args.jobIndex, &gg_inst_blank, sizeof(gg_inst_blank));
+				wi::jobsystem::Dispatch(ctx, instanceArraySize - gg_blank_from, 1024, [this, gg_blank_from](wi::jobsystem::JobArgs args) {
+					std::memcpy(instanceArrayMapped + gg_blank_from + args.jobIndex, &GG_BlankInstance(), sizeof(ShaderMeshInstance));
 				});
 			}
 			else
 			{
-				wi::jobsystem::Execute(ctx, [&](wi::jobsystem::JobArgs args) {
+				wi::jobsystem::Execute(ctx, [&, gg_blank_from](wi::jobsystem::JobArgs args) {
 					// Must not keep inactive instances, so init them for safety:
 					ShaderMeshInstance inst;
 					inst.init();
-					for (uint32_t i = 0; i < instanceArraySize; ++i)
+					for (uint32_t i = gg_blank_from; i < instanceArraySize; ++i)
 					{
 						std::memcpy(instanceArrayMapped + i, &inst, sizeof(inst));
 					}
@@ -6400,6 +6408,11 @@ namespace wi::scene
 				{
 					shared_bounds = AABB::Merge(shared_bounds, aabb_objects[args.jobIndex]);
 				}
+			}
+			else if (gg_instinit_objects_own && instanceArrayMapped != nullptr)
+			{
+				// GG: the blank pass left this slot to us (gg_instinit_objects_own); no mesh, no instance
+				std::memcpy(instanceArrayMapped + args.jobIndex, &GG_BlankInstance(), sizeof(ShaderMeshInstance));
 			}
 
 		});
