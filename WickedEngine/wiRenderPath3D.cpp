@@ -73,6 +73,7 @@ namespace wi
 	// GGMAX (2026-11-18): FSR targets replaced at another display size are kept, not released (see DeleteGPUResources); the
 	// last four pairs, so window resizes with FSR on can't grow it without bound (34 MB a pair at 2560x1600)
 	int gg_fsr_keep_targets = 1;
+	int gg_refl_ao_white = 1;
 	int gg_ocean_fsr = 3;
 	static wi::vector<wi::graphics::Texture> gg_fsr_retired;
 	static void gg_RetireFSRTargets(wi::graphics::Texture* pair)
@@ -1061,7 +1062,10 @@ namespace wi
 		camera_reflection.texture_reflection_depth_index = -1;
 		camera_reflection.texture_refraction_index = -1;
 		camera_reflection.texture_waterriples_index = -1;
-		camera_reflection.texture_ao_index = -1;
+		// GG (2026-11-18): a white texture for the AO, as the shadow mask below: with -1 the object shader's AO fetch, which the
+		// compiler can issue outside its branch, read the released FSR target after FSR went off (nine Aftermath dumps, the PC at
+		// that branch); the AO multiplies, so white changes nothing drawn
+		camera_reflection.texture_ao_index = gg_refl_ao_white ? device->GetDescriptorIndex(wi::texturehelper::getWhite(), SubresourceType::SRV) : -1;
 		camera_reflection.texture_ssr_index = -1;
 		camera_reflection.texture_ssgi_index = -1;
 		camera_reflection.texture_rtshadow_index = device->GetDescriptorIndex(wi::texturehelper::getWhite(), SubresourceType::SRV); // AMD descriptor branching fix
