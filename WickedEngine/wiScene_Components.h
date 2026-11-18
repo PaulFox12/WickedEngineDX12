@@ -43,6 +43,10 @@ namespace wi::scene
 		void Serialize(wi::Archive& archive, wi::ecs::EntitySerializer& seri);
 	};
 
+	// GG (2026-11-17): bumped by each scene's hierarchy walk; a transform made dirty takes its value (gg_stamp), so the walk
+	// finds the subtrees with a change (Scene::RunHierarchyUpdateSystem, gg_hier_skip)
+	extern uint32_t gg_transform_stamp;
+
 	struct alignas(16) TransformComponent
 	{
 		enum FLAGS
@@ -57,14 +61,14 @@ namespace wi::scene
 		XMFLOAT3 translation_local = XMFLOAT3(0, 0, 0);
 
 		// Non-serialized attributes:
-		float _padding = 0;
+		uint32_t gg_stamp = 0; // GG: gg_transform_stamp when last made dirty (was the padding)
 
 		// The world matrix can be computed from local scale, rotation, translation
 		//	- by calling UpdateTransform()
 		//	- or by calling SetDirty() and letting the TransformUpdateSystem handle the updating
 		XMFLOAT4X4 world = wi::math::IDENTITY_MATRIX;
 
-		constexpr void SetDirty(bool value = true) { if (value) { _flags |= DIRTY; } else { _flags &= ~DIRTY; } }
+		inline void SetDirty(bool value = true) { if (value) { _flags |= DIRTY; gg_stamp = gg_transform_stamp; } else { _flags &= ~DIRTY; } }
 		constexpr bool IsDirty() const { return _flags & DIRTY; }
 
 		XMFLOAT3 GetPosition() const;

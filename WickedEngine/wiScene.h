@@ -28,6 +28,13 @@ namespace wi::scene
 	extern float gg_lod_fade_time;
 	// GG: the scene arrays' writers mark the blocks they change, the upload compares only those (wiScene.cpp)
 	extern int gg_upload_tracked;
+	// GG: the hierarchy walks only the subtrees with a change (1) or every subtree each frame (0); its counts: nodes a full
+	// walk found stale where the skip would have left them (should stay 0), roots walked last time, roots
+	extern int gg_hier_skip;
+	void GetHierarchySkipStats(uint32_t& missed, uint32_t& walked, uint32_t& roots);
+	void GetHierarchyMissed(wi::ecs::Entity* ents, uint64_t* frames, int* kinds, float* deltas, uint32_t* masks, uint32_t& count);
+	void GetHierarchyWalkCounts(uint32_t& walks, uint32_t& full, uint32_t& fresh);
+	void GetHierarchyBumps(uint32_t* b8);
 	// GG: the scene update's change counts (harness SCENE_CHANGES): last10 = transforms, dirty, hierarchy, visited, changed,
 	// objects, moved, materials, recomposed, meshes; sum10 the same summed over the updates counted
 	extern int gg_dbg_scene_changes;
@@ -209,6 +216,15 @@ namespace wi::scene
 			wi::ecs::Entity parent = wi::ecs::INVALID_ENTITY; // root's parent (not a hierarchy entry itself; may be INVALID)
 		};
 		wi::vector<GGHierRoot> gg_hier_roots;
+		// GG (2026-11-17): the subtrees with a change since the last walk (gg_hier_skip): each hierarchy entry's root and each
+		// non-hierarchy parent's roots, built with the snapshot; a root is walked when a transform in it, or its parent, was
+		// made dirty (TransformComponent::gg_stamp at or after gg_hier_scan_from), and every root every 30th walk
+		wi::unordered_map<wi::ecs::Entity, uint32_t> gg_hier_node_root;
+		wi::unordered_map<wi::ecs::Entity, wi::vector<uint32_t>> gg_hier_parent_roots;
+		wi::vector<uint8_t> gg_hier_root_dirty;
+		bool gg_hier_maps_fresh = false;
+		uint32_t gg_hier_scan_from = 0;
+		uint32_t gg_hier_walks_since_full = 0;
 		// GGMAX 1.36 (review F9/F11): hierarchy count at snapshot-build time. The fast subtree
 		// path only runs when this matches the LIVE count — otherwise (snapshot never built for
 		// this scene e.g. Scene::Instantiate temp scenes / standalone Lua scenes, or hierarchy

@@ -135,6 +135,36 @@ namespace wi::scene
 	// GG (2026-11-17): what changes in a scene update, counted while gg_dbg_scene_changes (harness SCENE_CHANGES): transforms
 	// dirty, hierarchy entries whose world changed (of those visited), objects whose world changed, materials recomposed; the
 	// last update of the scene with the most transforms kept with the counts of each kind
+	// GG (2026-11-17): the hierarchy walks only the subtrees with a change (Scene::RunHierarchyUpdateSystem; harness SET_HIERSKIP)
+	uint32_t gg_transform_stamp = 1;
+	int gg_hier_skip = 1;
+	static std::atomic<uint32_t> gg_hier_missed{ 0 }, gg_hier_walked{ 0 };
+	// the first stale nodes found (entity, frame, kind 1 world 2 layer, the largest element's difference or the two masks)
+	static wi::ecs::Entity gg_hier_missed_ent[16] = {}; static uint64_t gg_hier_missed_frame[16] = {};
+	static int gg_hier_missed_kind[16] = {}; static float gg_hier_missed_delta[16] = {}; static uint32_t gg_hier_missed_masks[16][2] = {};
+	static void gg_hier_note_missed(wi::ecs::Entity e, int kind, float delta, uint32_t had, uint32_t want)
+	{
+		const uint32_t n = gg_hier_missed.fetch_add(1, std::memory_order_relaxed);
+		if (n < 16)
+		{
+			gg_hier_missed_ent[n] = e; gg_hier_missed_frame[n] = wi::graphics::GetDevice() ? wi::graphics::GetDevice()->GetFrameCount() : 0;
+			gg_hier_missed_kind[n] = kind; gg_hier_missed_delta[n] = delta; gg_hier_missed_masks[n][0] = had; gg_hier_missed_masks[n][1] = want;
+		}
+	}
+	void GetHierarchyMissed(wi::ecs::Entity* ents, uint64_t* frames, int* kinds, float* deltas, uint32_t* masks, uint32_t& count)
+	{
+		count = std::min(gg_hier_missed.load(), 16u);
+		for (uint32_t i = 0; i < count; i++) { ents[i] = gg_hier_missed_ent[i]; frames[i] = gg_hier_missed_frame[i]; kinds[i] = gg_hier_missed_kind[i]; deltas[i] = gg_hier_missed_delta[i]; masks[i * 2] = gg_hier_missed_masks[i][0]; masks[i * 2 + 1] = gg_hier_missed_masks[i][1]; }
+	}
+	// walks of the scene with the most roots: all, full, full for a rebuilt snapshot
+	// the snapshot's invalidations by site: clear, merge, remove (in the hierarchy, a transform only, neither), attach (moved
+	// into the parent's space, already local), detach
+	std::atomic<uint32_t> gg_hier_bumps[8] = {};
+	void GetHierarchyBumps(uint32_t* b8) { for (int i = 0; i < 8; i++) b8[i] = gg_hier_bumps[i].load(); }
+	static uint32_t gg_hier_stat_walks = 0, gg_hier_stat_full = 0, gg_hier_stat_fresh = 0, gg_hier_stat_maxroots = 0;
+	void GetHierarchyWalkCounts(uint32_t& walks, uint32_t& full, uint32_t& fresh) { walks = gg_hier_stat_walks; full = gg_hier_stat_full; fresh = gg_hier_stat_fresh; }
+	static uint32_t gg_hier_walked_last = 0, gg_hier_roots_last = 0;
+	void GetHierarchySkipStats(uint32_t& missed, uint32_t& walked, uint32_t& roots) { missed = gg_hier_missed.load(); walked = gg_hier_walked_last; roots = gg_hier_roots_last; }
 	int gg_dbg_scene_changes = 0;
 	static std::atomic<uint32_t> gg_dbg_xdirty{ 0 }, gg_dbg_hchanged{ 0 }, gg_dbg_hvisited{ 0 }, gg_dbg_omoved{ 0 }, gg_dbg_mrecomposed{ 0 };
 	static uint32_t gg_dbg_last[10] = {};
@@ -1335,7 +1365,7 @@ namespace wi::scene
 		collider_count_gpu = 0;
 
 		topdown_hierarchy.clear();
-		gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); // GGMAX 1.36b
+		gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); gg_hier_bumps[0]++; // GGMAX 1.36b
 	}
 	// GGMAX 2.60 diagnostic: merge cost attribution (main-thread only; the terrain generator's
 	// output merges through here and produced ~490ms Scene-S1 frames). Dumped by MERGE_PROF.
@@ -1348,6 +1378,9 @@ namespace wi::scene
 	void Scene::MergeFastInternal(Scene& other)
 	{
 		wi::Timer gg_t_merge; // GGMAX 2.60
+		// GG (2026-11-17): only a merge that brings hierarchy entries changes the forest; GG merges scenes without any about
+		// twice a frame while the player moves, and each bump made the next hierarchy walk rebuild and walk everything
+		const bool gg_merge_adds_hierarchy = other.hierarchy.GetCount() > 0;
 		for (auto& entry : componentLibrary.entries)
 		{
 			if (other.componentLibrary.entries.count(entry.first) == 0)
@@ -1376,7 +1409,7 @@ namespace wi::scene
 		gg_mergeprof_total_us += gg_total;
 		gg_mergeprof_calls++;
 		if (gg_total > gg_mergeprof_max_us) gg_mergeprof_max_us = gg_total;
-		gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); // GGMAX 1.36b: bulk hierarchy adds
+		if (gg_merge_adds_hierarchy) { gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); gg_hier_bumps[1]++; } // GGMAX 1.36b: bulk hierarchy adds
 	}
 	void Scene::Merge(Scene& other)
 	{
@@ -1656,7 +1689,7 @@ namespace wi::scene
 		// for the walk, but the bump only costs a stock-path frame).
 		if (hierarchy.GetCount() > 0)
 		{
-			gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed);
+			gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); gg_hier_bumps[hierarchy.Contains(entity) ? 2 : transforms.Contains(entity) ? 3 : 4]++;
 		}
 
 		if (recursive)
@@ -2325,7 +2358,7 @@ namespace wi::scene
 
 		HierarchyComponent& parentcomponent = hierarchy.Create(entity);
 		parentcomponent.parentID = parent;
-		gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); // GGMAX 1.36b
+		gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); gg_hier_bumps[child_already_in_local_space ? 6 : 5]++; // GGMAX 1.36b
 
 		TransformComponent* transform_parent = transforms.GetComponent(parent);
 		TransformComponent* transform_child = transforms.GetComponent(entity);
@@ -2359,7 +2392,7 @@ namespace wi::scene
 			}
 
 			hierarchy.Remove(entity);
-			gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); // GGMAX 1.36b
+			gg_hier_mutation_counter.fetch_add(1, std::memory_order_relaxed); gg_hier_bumps[7]++; // GGMAX 1.36b
 		}
 	}
 	void Scene::Component_DetachChildren(Entity parent)
@@ -4137,8 +4170,54 @@ namespace wi::scene
 				gg_hier_max_subtree.store(0, std::memory_order_relaxed);
 				gg_hier_visited.store(0, std::memory_order_relaxed);
 
-				wi::jobsystem::Dispatch(ctx, (uint32_t)gg_hier_roots.size(), 8, [this](wi::jobsystem::JobArgs args) {
+				// GG (2026-11-17, gg_hier_skip): only the subtrees holding a transform made dirty since the last walk (or whose
+				// parent was), every subtree on every 30th walk and the first after a rebuilt snapshot; a full walk counts the
+				// nodes it finds stale in a subtree the skip would have left (gg_hier_missed: a writer that changed a transform
+				// without SetDirty)
+				const bool gg_skip_on = gg_hier_skip != 0 && gg_hier_root_dirty.size() == gg_hier_roots.size();
+				// a rebuilt snapshot's walk is full by design (attach writes a child's world straight, unmarked): only a timed full
+				// walk counts stale nodes
+				const bool gg_fresh = gg_hier_maps_fresh;
+				bool gg_full = !gg_skip_on || gg_hier_maps_fresh || ++gg_hier_walks_since_full >= 30;
+				gg_hier_stat_maxroots = std::max(gg_hier_stat_maxroots, (uint32_t)gg_hier_roots.size());
+				if (gg_hier_roots.size() + 1000 >= gg_hier_stat_maxroots)
+				{
+					gg_hier_stat_walks++;
+					if (gg_full) gg_hier_stat_full++;
+					if (gg_hier_maps_fresh) gg_hier_stat_fresh++;
+				}
+				if (gg_full) { gg_hier_walks_since_full = 0; gg_hier_maps_fresh = false; }
+				// the stamp moves on before the scan: a transform made dirty from here on (another thread too) takes the new value
+				const uint32_t gg_scan_stamp = gg_transform_stamp;
+				gg_transform_stamp++;
+				if (gg_skip_on)
+				{
+					std::memset(gg_hier_root_dirty.data(), 0, gg_hier_root_dirty.size());
+					const uint32_t gg_from = gg_hier_scan_from;
+					wi::jobsystem::context gg_mctx;
+					wi::jobsystem::Dispatch(gg_mctx, (uint32_t)transforms.GetCount(), 1024, [this, gg_from](wi::jobsystem::JobArgs args) {
+						if ((int32_t)(transforms[args.jobIndex].gg_stamp - gg_from) < 0) return;
+						const Entity e = transforms.GetEntity(args.jobIndex);
+						auto it = gg_hier_node_root.find(e);
+						if (it != gg_hier_node_root.end()) gg_hier_root_dirty[it->second] = 1;
+						auto pit = gg_hier_parent_roots.find(e);
+						if (pit != gg_hier_parent_roots.end()) for (uint32_t r : pit->second) gg_hier_root_dirty[r] = 1;
+					});
+					wi::jobsystem::Wait(gg_mctx);
+				}
+				// the next scan starts at the value this one began with: one made dirty while this scan ran may have taken it
+				// after the scan passed it (its subtree walked twice, harmlessly)
+				gg_hier_scan_from = gg_scan_stamp;
+				gg_hier_walked_last = gg_hier_walked.exchange(0);
+				gg_hier_roots_last = (uint32_t)gg_hier_roots.size();
 
+				wi::jobsystem::Dispatch(ctx, (uint32_t)gg_hier_roots.size(), 8, [this, gg_skip_on, gg_full, gg_fresh](wi::jobsystem::JobArgs args) {
+
+					const bool gg_marked = !gg_skip_on || gg_hier_root_dirty[args.jobIndex] != 0;
+					if (!gg_full && !gg_marked)
+						return; // GG: nothing in this subtree changed
+					const bool gg_count_stale = gg_full && !gg_fresh && gg_skip_on && !gg_marked;
+					gg_hier_walked.fetch_add(1, std::memory_order_relaxed);
 					const GGHierRoot& root = gg_hier_roots[args.jobIndex];
 
 					struct StackItem
@@ -4181,6 +4260,16 @@ namespace wi::scene
 						if (transform_child != nullptr)
 						{
 							const XMMATRIX worldmatrix = transform_child->GetLocalMatrix() * XMLoadFloat4x4(&item.carried_world);
+							if (gg_count_stale)
+							{
+								XMFLOAT4X4 gg_new; XMStoreFloat4x4(&gg_new, worldmatrix);
+								if (std::memcmp(&gg_new, &transform_child->world, sizeof(gg_new)) != 0)
+								{
+									float gg_d = 0;
+									for (int k = 0; k < 16; k++) gg_d = std::max(gg_d, std::abs((&gg_new._11)[k] - (&transform_child->world._11)[k]));
+									gg_hier_note_missed(item.entity, 1, gg_d, 0, 0);
+								}
+							}
 							if (gg_dbg_scene_changes)
 							{
 								XMFLOAT4X4 gg_new; XMStoreFloat4x4(&gg_new, worldmatrix);
@@ -4195,6 +4284,7 @@ namespace wi::scene
 						LayerComponent* layer_child = layers.GetComponent(item.entity);
 						if (layer_child != nullptr)
 						{
+							if (gg_count_stale && layer_child->propagationMask != item.carried_mask) gg_hier_note_missed(item.entity, 2, 0, layer_child->propagationMask, item.carried_mask);
 							layer_child->propagationMask = item.carried_mask;
 							next_mask &= layer_child->layerMask;
 						}
@@ -11318,6 +11408,30 @@ namespace wi::scene
 					root.parent = hier.parentID;
 				}
 			}
+			// GG: each entry's root and each non-hierarchy parent's roots (gg_hier_skip), every root walked once after
+			gg_hier_node_root.clear();
+			gg_hier_parent_roots.clear();
+			gg_hier_node_root.reserve(hierarchy.GetCount());
+			{
+				wi::vector<Entity> gg_stack;
+				for (uint32_t r = 0; r < (uint32_t)gg_hier_roots.size(); ++r)
+				{
+					if (gg_hier_roots[r].parent != INVALID_ENTITY) gg_hier_parent_roots[gg_hier_roots[r].parent].push_back(r);
+					gg_stack.clear();
+					gg_stack.push_back(gg_hier_roots[r].entity);
+					uint32_t gg_guard = 0;
+					while (!gg_stack.empty() && gg_guard++ < 100000u)
+					{
+						const Entity e = gg_stack.back();
+						gg_stack.pop_back();
+						gg_hier_node_root[e] = r;
+						auto gg_it = topdown_hierarchy.find(e);
+						if (gg_it != topdown_hierarchy.end()) for (Entity c : gg_it->second) gg_stack.push_back(c);
+					}
+				}
+			}
+			gg_hier_root_dirty.assign(gg_hier_roots.size(), 1);
+			gg_hier_maps_fresh = true;
 			gg_hier_snapshot_count = hierarchy.GetCount(); // GGMAX 1.36 (review F9/F11)
 			// GGMAX 3.14: this snapshot is now current FOR THIS SCENE.
 			gg_hier_snapshot_scene = this;
