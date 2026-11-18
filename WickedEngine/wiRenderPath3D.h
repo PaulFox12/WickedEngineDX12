@@ -8,6 +8,9 @@
 
 namespace wi
 {
+	// GG (2026-11-18): the display-size FSR targets kept through the render path's rebuilds (1, see DeleteGPUResources) or
+	// released with the rest as before (0, harness SET_FSRKEEP, for finding the stale reader)
+	extern int gg_fsr_keep_targets;
 
 	class RenderPath3D : public RenderPath2D
 	{

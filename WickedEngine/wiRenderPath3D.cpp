@@ -72,9 +72,12 @@ namespace wi
 
 	// GGMAX (2026-11-18): FSR targets replaced at another display size are kept, not released (see DeleteGPUResources); the
 	// last four pairs, so window resizes with FSR on can't grow it without bound (34 MB a pair at 2560x1600)
+	int gg_fsr_keep_targets = 1;
 	static wi::vector<wi::graphics::Texture> gg_fsr_retired;
 	static void gg_RetireFSRTargets(wi::graphics::Texture* pair)
 	{
+		if (!gg_fsr_keep_targets)
+			return;
 		for (int i = 0; i < 2; ++i)
 		{
 			if (pair[i].IsValid())
@@ -135,6 +138,11 @@ namespace wi
 		// rtFSR, 3 to 39 s after FSR 3.1 went off (the rebuild for the new render size freed them though the display size was
 		// the same) or a game ended; the freed bindless slot guard doesn't cover the read, and the holder isn't found. They are
 		// remade only at another display size, the old pair then kept (gg_fsr_retired), so a stale read finds live memory
+		if (!gg_fsr_keep_targets)
+		{
+			rtFSR[0] = {};
+			rtFSR[1] = {};
+		}
 		rtOutlineSource = {};
 
 		rtPostprocess = {};
