@@ -70,6 +70,20 @@ namespace wi
 		return wi::graphics::gg_lean_async ? wi::graphics::QUEUE_GRAPHICS : q;
 	}
 
+	// GGMAX (2026-11-18): FSR targets replaced at another display size are kept, not released (see DeleteGPUResources); the
+	// last four pairs, so window resizes with FSR on can't grow it without bound (34 MB a pair at 2560x1600)
+	static wi::vector<wi::graphics::Texture> gg_fsr_retired;
+	static void gg_RetireFSRTargets(wi::graphics::Texture* pair)
+	{
+		for (int i = 0; i < 2; ++i)
+		{
+			if (pair[i].IsValid())
+				gg_fsr_retired.push_back(pair[i]);
+		}
+		while (gg_fsr_retired.size() > 8)
+			gg_fsr_retired.erase(gg_fsr_retired.begin());
+	}
+
 	void RenderPath3D::DeleteGPUResources()
 	{
 		RenderPath2D::DeleteGPUResources();
@@ -116,8 +130,11 @@ namespace wi
 		rtGUIBlurredBackground[2] = {};
 		for (auto& x : rtLensRainBlur) x = {};
 		rtShadingRate = {};
-		rtFSR[0] = {};
-		rtFSR[1] = {};
+		// GGMAX (2026-11-18): the display-size FSR targets are not released with the rest. Nine GPU page faults (Aftermath,
+		// 2026-11-11 to 11-18: device removed) were objectPS in the planar reflection's draws reading the released 2560x1600
+		// rtFSR, 3 to 39 s after FSR 3.1 went off (the rebuild for the new render size freed them though the display size was
+		// the same) or a game ended; the freed bindless slot guard doesn't cover the read, and the holder isn't found. They are
+		// remade only at another display size, the old pair then kept (gg_fsr_retired), so a stale read finds live memory
 		rtOutlineSource = {};
 
 		rtPostprocess = {};
@@ -3910,6 +3927,7 @@ namespace wi
 			if (!(rtFSR[0].IsValid() && rtFSR[1].IsValid() && rtFSR[0].desc.width == desc.width && rtFSR[0].desc.height == desc.height
 				&& rtFSR[0].desc.format == desc.format && rtFSR[0].desc.bind_flags == desc.bind_flags))
 			{
+				gg_RetireFSRTargets(rtFSR);
 				device->CreateTexture(&desc, nullptr, &rtFSR[0]);
 				device->SetName(&rtFSR[0], "rtFSR[0]");
 				device->CreateTexture(&desc, nullptr, &rtFSR[1]);
@@ -3921,7 +3939,7 @@ namespace wi
 			// GGMAX: the FSR targets are kept when the upscaler goes off (2 x 17 MB at 1440p), not released: six GPU page
 			// faults on 2026-11-11 (Aftermath) were a pixel shader reading the released display-size rtFSR after FSR 3.1 was
 			// switched off or a game left, and the reader is not yet found; a stale read now shows an old frame instead of
-			// removing the device. They go with the other targets (DeleteGPUResources) and are remade at another size.
+			// removing the device. Since 2026-11-18 they also outlive the render path's rebuilds (see DeleteGPUResources).
 		}
 	}
 	void RenderPath3D::setFSR2Enabled(bool value)
@@ -3950,6 +3968,7 @@ namespace wi
 			if (!(rtFSR[0].IsValid() && rtFSR[1].IsValid() && rtFSR[0].desc.width == desc.width && rtFSR[0].desc.height == desc.height
 				&& rtFSR[0].desc.format == desc.format && rtFSR[0].desc.bind_flags == desc.bind_flags))
 			{
+				gg_RetireFSRTargets(rtFSR);
 				device->CreateTexture(&desc, nullptr, &rtFSR[0]);
 				device->SetName(&rtFSR[0], "rtFSR[0]");
 				device->CreateTexture(&desc, nullptr, &rtFSR[1]);
@@ -3962,7 +3981,7 @@ namespace wi
 			// GGMAX: the FSR targets are kept when the upscaler goes off (2 x 17 MB at 1440p), not released: six GPU page
 			// faults on 2026-11-11 (Aftermath) were a pixel shader reading the released display-size rtFSR after FSR 3.1 was
 			// switched off or a game left, and the reader is not yet found; a stale read now shows an old frame instead of
-			// removing the device. They go with the other targets (DeleteGPUResources) and are remade at another size.
+			// removing the device. Since 2026-11-18 they also outlive the render path's rebuilds (see DeleteGPUResources).
 		}
 
 		// Depending on FSR2 is on/off, these either need to run at display or internal resolution:
