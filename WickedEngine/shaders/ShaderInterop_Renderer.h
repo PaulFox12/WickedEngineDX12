@@ -1338,6 +1338,10 @@ enum FRAME_OPTIONS
 	OPTION_BIT_GG_DX11_FOG_CURVE = 1 << 27,
 	// GG: a temporal upscaler (FSR 3.1) in place of the TAA: dithers animate with blue noise as under the TAA, so it averages them
 	OPTION_BIT_GG_TEMPORAL_DITHER = 1 << 26,
+	// GGMAX BR-0034 (review 11-17): the Graphics & Performance "Fast Point Light Shadows" tick - the one-tap filter for
+	// POINT lights only (shadow_cube). It used to set OPTION_BIT_GG_FAST_SHADOWS, which GG's own sun/spot paths (its
+	// lightingHF.hlsli shadow_2D) also honour, so ticking it hardened sun and spot shadows on baked terrain, trees and grass.
+	OPTION_BIT_GG_FAST_POINT_SHADOWS = 1 << 25, // GG: bit 26 is the temporal dither here
 };
 
 // ---------- Common Constant buffers: -----------------
