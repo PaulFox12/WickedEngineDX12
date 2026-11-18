@@ -74,7 +74,7 @@ float3 AccurateAtmosphericScattering(float2 pixelPosition, float3 rayOrigin, flo
     if (enableSun)
     {
         float3 sunIlluminance = sunColor;
-		totalColor = luminance + GetSunLuminance(worldPosition, worldDirection, sunDirection, sunIlluminance, atmosphere, texture_transmittancelut) * (1.0f - saturate(GetWeather().gg_overcast)); // GG: the disc fades with overcast
+		totalColor = luminance + GetSunLuminance(worldPosition, worldDirection, sunDirection, sunIlluminance, atmosphere, texture_transmittancelut, luminance) * (1.0f - saturate(GetWeather().gg_overcast)); // GG: the disc fades with overcast
 	}
     else
     {

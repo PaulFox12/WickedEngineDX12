@@ -401,8 +401,12 @@ struct alignas(16) ShaderWeather
 	// 2026-11-06), so what follows moves a whole row and keeps its alignment
 	float gg_overcast;
 	float gg_water_glint; // GG: the sun's glint on water, 0-1 (SetWaterSunGlint; 1 stock), times 1 - gg_overcast
-	float gg_weather_pad0;
-	float gg_weather_pad1;
+	// GG: when the stars come out (skyAtmosphere.hlsli GetSunLuminance), two packed half2, 0 = stock (out from sunset):
+	// x the sun's depth below the horizon (sine) where they begin, y where all are out; then the sky's own brightness
+	// against the sun's past which none shows (negative: bands of that ratio drawn over the sky), and the depth of haze in
+	// world units they are seen through at the zenith (the fog's density along it dims them)
+	uint gg_stars_twilight;
+	uint gg_stars_fade;
 	// GGMAX 1.65: DX11-style Fog Opacity (FogA). In non-realistic-sky modes DX11 fog is a
 	// recolor of the surface toward the user fog RGB scaled by THIS value (0 = fog off);
 	// with realistic sky it blends the user fog RGB over the sampled sky color. See fogHF.hlsli.

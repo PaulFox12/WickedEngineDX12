@@ -138,6 +138,12 @@ namespace wi::scene
 	// GG (2026-11-17): the hierarchy walks only the subtrees with a change (Scene::RunHierarchyUpdateSystem; harness SET_HIERSKIP)
 	uint32_t gg_transform_stamp = 1;
 	int gg_hier_skip = 1;
+	// GG (2026-11-18): when the stars come out (skyAtmosphere.hlsli; harness SET_STARS); 0 = stock, out from sunset
+	int gg_stars_rule = 1;
+	float gg_stars_twilight_start = 0.035f;
+	float gg_stars_twilight_end = 0.24f;
+	float gg_stars_skyfade = 0.01f;
+	float gg_stars_haze = 3000.0f;
 	static std::atomic<uint32_t> gg_hier_missed{ 0 }, gg_hier_walked{ 0 };
 	// the first stale nodes found (entity, frame, kind 1 world 2 layer, the largest element's difference or the two masks)
 	static wi::ecs::Entity gg_hier_missed_ent[16] = {}; static uint64_t gg_hier_missed_frame[16] = {};
@@ -1237,6 +1243,8 @@ namespace wi::scene
 		shaderscene.weather.gg_fog_opacity = weather.gg_fog_opacity; // GGMAX 1.65
 		shaderscene.weather.gg_overcast = weather.gg_overcast; // GG: SetOvercast
 		shaderscene.weather.gg_water_glint = weather.gg_water_glint; // GG: SetWaterSunGlint
+		shaderscene.weather.gg_stars_twilight = gg_stars_rule ? wi::math::pack_half2(gg_stars_twilight_start, gg_stars_twilight_end) : 0; // GG: when the stars come out
+		shaderscene.weather.gg_stars_fade = wi::math::pack_half2(gg_stars_skyfade, gg_stars_haze);
 		shaderscene.weather.horizon = wi::math::pack_half3(weather.horizon);
 		shaderscene.weather.zenith = wi::math::pack_half3(weather.zenith);
 		shaderscene.weather.sky_exposure = weather.skyExposure;

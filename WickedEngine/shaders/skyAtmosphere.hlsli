@@ -434,7 +434,7 @@ float3 GetCameraPlanetPos(AtmosphereParameters atmosphere, float3 cameraPosition
 	return (skyWorldCameraOrigin - planetCenterWorld) * M_TO_SKY_UNIT;
 }
 
-half3 GetSunLuminance(float3 worldPosition, float3 worldDirection, float3 sunDirection, half3 sunIlluminance, AtmosphereParameters atmosphere, Texture2D<half4> transmittanceLutTexture)
+half3 GetSunLuminance(float3 worldPosition, float3 worldDirection, float3 sunDirection, half3 sunIlluminance, AtmosphereParameters atmosphere, Texture2D<half4> transmittanceLutTexture, float3 skyLuminance = 0)
 {
 	//float sunApexAngleDegree = 0.545; // Angular diameter of sun to earth from sea level, see https://en.wikipedia.org/wiki/Solid_angle
 	float sunApexAngleDegree = 2.4; // Modified sun size
@@ -460,10 +460,33 @@ half3 GetSunLuminance(float3 worldPosition, float3 worldDirection, float3 sunDir
 		{
 			float3 stars_direction = rotate_vector(worldDirection, GetWeather().stars_rotation);
 			float stars_visibility = pow(saturate(1 - sunDirection.y), 2);
+			float stars_haze = 1;
+			// GG: the stars come out once the sun has set and the sky has darkened, not at sunset: by the sun's depth below
+			// the horizon, fading where the sky is still bright against the sun (the glow over a sunset), and dimmed by the
+			// haze along the view
+			if (GetWeather().gg_stars_twilight != 0)
+			{
+				const half2 twilight = unpack_half2(GetWeather().gg_stars_twilight);
+				const half2 fade = unpack_half2(GetWeather().gg_stars_fade);
+				stars_visibility = smoothstep(twilight.x, twilight.y, -sunDirection.y);
+				const float sun_brightness = max(dot(float3(sunIlluminance), float3(0.2126, 0.7152, 0.0722)), 0.0001);
+				const float sky_ratio = dot(skyLuminance, float3(0.2126, 0.7152, 0.0722)) / sun_brightness;
+				if (fade.x < 0)
+				{
+					// the ratio in bands of the setting: blue under a quarter, cyan a half, green 1, yellow 2, red 4, magenta above
+					const float r = sky_ratio / -fade.x;
+					retval = 1000 * (r < 0.25 ? float3(0, 0, 1) : r < 0.5 ? float3(0, 1, 1) : r < 1 ? float3(0, 1, 0) : r < 2 ? float3(1, 1, 0) : r < 4 ? float3(1, 0, 0) : float3(1, 0, 1));
+					return retval;
+				}
+				if (fade.x > 0)
+					stars_visibility *= saturate(1 - sky_ratio / fade.x);
+				if (fade.y > 0)
+					stars_haze = exp(-GetWeather().fog.density * fade.y / max(worldDirection.y, 0.05));
+			}
 			float stars_density_at_maximum = lerp(22, 8, GetWeather().stars);
 			float stars_threshold = lerp(32, stars_density_at_maximum, stars_visibility); // modifies the number of stars that are visible
 			float stars_exposure = lerp(0, 512, stars_visibility); // modifies the overall strength of the stars
-			float stars = saturate(pow(noise_gradient_3D(stars_direction * 300), stars_threshold)) * stars_exposure;
+			float stars = saturate(pow(noise_gradient_3D(stars_direction * 300), stars_threshold)) * stars_exposure * stars_haze;
 			stars *= lerp(0.4, 1.4, noise_gradient_3D(stars_direction * 256 + GetTime())); // time based flickering
 			retval += stars;
 		}

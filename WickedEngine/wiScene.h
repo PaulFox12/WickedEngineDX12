@@ -31,6 +31,10 @@ namespace wi::scene
 	// GG: the hierarchy walks only the subtrees with a change (1) or every subtree each frame (0); its counts: nodes a full
 	// walk found stale where the skip would have left them (should stay 0), roots walked last time, roots
 	extern int gg_hier_skip;
+	// GG: when the stars come out: the rule on (1) or stock (0, from sunset); the sun's depth below the horizon (sine) where
+	// they begin and where all are out; the sky's brightness against the sun's past which none shows; the haze's depth
+	extern int gg_stars_rule;
+	extern float gg_stars_twilight_start, gg_stars_twilight_end, gg_stars_skyfade, gg_stars_haze;
 	void GetHierarchySkipStats(uint32_t& missed, uint32_t& walked, uint32_t& roots);
 	void GetHierarchyMissed(wi::ecs::Entity* ents, uint64_t* frames, int* kinds, float* deltas, uint32_t* masks, uint32_t& count);
 	void GetHierarchyWalkCounts(uint32_t& walks, uint32_t& full, uint32_t& fresh);
