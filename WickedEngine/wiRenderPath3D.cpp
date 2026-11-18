@@ -73,6 +73,7 @@ namespace wi
 	// GGMAX (2026-11-18): FSR targets replaced at another display size are kept, not released (see DeleteGPUResources); the
 	// last four pairs, so window resizes with FSR on can't grow it without bound (34 MB a pair at 2560x1600)
 	int gg_fsr_keep_targets = 1;
+	int gg_ocean_fsr = 3;
 	static wi::vector<wi::graphics::Texture> gg_fsr_retired;
 	static void gg_RetireFSRTargets(wi::graphics::Texture* pair)
 	{
@@ -2805,8 +2806,10 @@ namespace wi
 			device->RenderPassEnd(cmd);
 		}
 
-		if (getFSR2Enabled())
-		{
+		// GG: the pre-alpha copy for FSR's reactive mask is taken after the sea (gg_ocean_fsr bit 2): before it, the whole sea
+		// differed from the copy and was marked reactive, shown unaveraged
+		const bool gg_prealpha_after_sea = getFSR2Enabled() && (gg_ocean_fsr & 2) != 0;
+		auto gg_copy_prealpha = [&]() {
 			// Save the pre-alpha for FSR2 reactive mask:
 			//	Note that rtFSR temp resource is always larger or equal to rtMain, so CopyTexture is used instead of CopyResource!
 			GPUBarrier barriers[] = {
@@ -2824,6 +2827,10 @@ namespace wi
 				std::swap(barriers[i].image.layout_before, barriers[i].image.layout_after);
 			}
 			device->Barrier(barriers, arraysize(barriers), cmd);
+		};
+		if (getFSR2Enabled() && !gg_prealpha_after_sea)
+		{
+			gg_copy_prealpha();
 		}
 
 		Rect scissor = GetScissorInternalResolution();
@@ -2872,7 +2879,26 @@ namespace wi
 			wi::renderer::Postprocess_Downsample4x(rtMain, rtSceneCopy, cmd);
 			device->EventEnd(cmd);
 
-			device->RenderPassBegin(rp, rp_count, cmd);
+			// GG: the sea writes its own motion into the velocity buffer as a second target (gg_ocean_fsr bit 1): the buffer was made
+			// from the opaque scene before it, so every water pixel carried the seabed's or the sky's motion, and FSR and the TAA
+			// reprojected the water by the wrong parallax when the camera moved (a distortion over it, most in a car)
+			RenderPassImage rp_ocean[4];
+			uint32_t rp_ocean_count = 0;
+			for (uint32_t i = 0; i < rp_count; ++i)
+			{
+				rp_ocean[rp_ocean_count++] = rp[i];
+			}
+			if ((gg_ocean_fsr & 1) != 0 && rtVelocity.IsValid() && getMSAASampleCount() == 1)
+			{
+				rp_ocean[rp_ocean_count++] = RenderPassImage::RenderTarget(
+					&rtVelocity,
+					RenderPassImage::LoadOp::LOAD,
+					RenderPassImage::StoreOp::STORE,
+					rtVelocity.desc.layout,
+					rtVelocity.desc.layout
+				);
+			}
+			device->RenderPassBegin(rp_ocean, rp_ocean_count, cmd);
 
 			wi::renderer::DrawScene(
 				visibility_main,
@@ -2896,6 +2922,11 @@ namespace wi
 			device->GG_InvalidateCommandListState(cmd);
 			wi::renderer::BindCameraCB(*camera, camera_previous, camera_reflection, cmd);
 			wi::renderer::BindCommonResources(cmd);
+		}
+
+		if (gg_prealpha_after_sea)
+		{
+			gg_copy_prealpha();
 		}
 
 		// GG: the screen-space GI reads the lit scene from this copy (the frame before's); made only for transparents it

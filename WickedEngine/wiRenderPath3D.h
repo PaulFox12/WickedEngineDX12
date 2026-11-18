@@ -11,6 +11,9 @@ namespace wi
 	// GG (2026-11-18): the display-size FSR targets kept through the render path's rebuilds (1, see DeleteGPUResources) or
 	// released with the rest as before (0, harness SET_FSRKEEP, for finding the stale reader)
 	extern int gg_fsr_keep_targets;
+	// GG (2026-11-18): the sea for FSR 3.1 and the TAA: 1 its own motion written into the velocity buffer as it is drawn (it
+	// carried the seabed's), 2 drawn before the pre-alpha copy, so FSR's reactive mask leaves it out; 3 both (harness SET_OCEANFSR)
+	extern int gg_ocean_fsr;
 
 	class RenderPath3D : public RenderPath2D
 	{

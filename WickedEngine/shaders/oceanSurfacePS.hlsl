@@ -11,8 +11,18 @@
 Texture2D<float4> texture_ocean_displacementmap : register(t0);
 Texture2D<float4> texture_gradientmap : register(t1);
 
+// GG (2026-11-18): the velocity buffer is a second target in the main pass (wi::gg_ocean_fsr), written as the visibility pass
+// writes a still surface's: this pixel taken back by the camera's rotation and move at its own depth; the waves' own motion
+// is left to FSR as a change of shading. Elsewhere the second output has no target and goes nowhere. Its alpha is the
+// colour's, so the velocity fades out with the sea in the distance as the colour does
+struct GGOceanOut
+{
+	float4 color : SV_Target0;
+	float4 velocity : SV_Target1;
+};
+
 [earlydepthstencil]
-float4 main(PSIn input) : SV_TARGET
+GGOceanOut main(PSIn input)
 {
 	float lineardepth = GetCamera().IsOrtho() ? ((1 - input.pos.z) * GetCamera().z_far) : input.pos.w;
 	half4 color = xOceanWaterColor;
@@ -225,6 +235,21 @@ float4 main(PSIn input) : SV_TARGET
 	
 	ApplyFog(dist, V, color);
 
-	return saturateMediump(color);
+	float2 gg_velocity = 0;
+	{
+		const float2 gg_clip = uv_to_clipspace(ScreenCoord);
+		const float gg_depth = input.pos.z;
+		float4 gg_prev = mul(GetCamera().reprojection, float4(gg_clip, gg_depth, 1)) * compute_lineardepth(gg_depth);
+		if (gg_prev.w > 0)
+		{
+			gg_prev.xy /= gg_prev.w;
+			gg_velocity = clamp(((gg_prev.xy - GetCamera().temporalaa_jitter_prev) - (gg_clip - GetCamera().temporalaa_jitter)) * float2(0.5, -0.5), -1, 1);
+		}
+	}
+
+	GGOceanOut gg_out;
+	gg_out.color = saturateMediump(color);
+	gg_out.velocity = float4(gg_velocity, 0, color.a);
+	return gg_out;
 }
 
