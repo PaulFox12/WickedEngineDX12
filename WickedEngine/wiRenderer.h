@@ -1620,6 +1620,10 @@ namespace wi::renderer
 	void SetOcclusionCullingEnabled(bool enabled);
 	bool GetOcclusionCullingEnabled();
 	void SetTemporalAAEnabled(bool enabled);
+	// GG: MSAO's rejection falloff (how fast it drops samples that occlude by too much to be reliable: the dark halo
+	// round a near object in front of a far wall); 0, the default, takes 2 x the AO power as before
+	void SetMSAORejectionFalloff(float value);
+	float GetMSAORejectionFalloff();
 	bool GetTemporalAAEnabled();
 	void SetTemporalAADebugEnabled(bool enabled);
 	bool GetTemporalAADebugEnabled();

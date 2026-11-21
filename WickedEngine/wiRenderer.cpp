@@ -17435,6 +17435,10 @@ void CreateMSAOResources(MSAOResources& res, XMUINT2 resolution)
 	device->CreateTexture(&desc, nullptr, &res.texture_ao_merged4);
 	device->CreateTexture(&desc, nullptr, &res.texture_ao_hq4);
 }
+// GG: MSAO's rejection falloff, 0 the stock 2 x power (SetMSAORejectionFalloff)
+static float msaoRejectionFalloff = 0;
+void SetMSAORejectionFalloff(float value) { msaoRejectionFalloff = value < 0 ? 0 : value; }
+float GetMSAORejectionFalloff() { return msaoRejectionFalloff; }
 void Postprocess_MSAO(
 	const MSAOResources& res,
 	const CameraComponent& camera,
@@ -17601,7 +17605,7 @@ void Postprocess_MSAO(
 	SampleThickness[9] = sqrt(1.0f - 0.4f * 0.4f - 0.6f * 0.6f);
 	SampleThickness[10] = sqrt(1.0f - 0.4f * 0.4f - 0.8f * 0.8f);
 	SampleThickness[11] = sqrt(1.0f - 0.6f * 0.6f - 0.6f * 0.6f);
-	const float RejectionFalloff = 2.0f * power;
+	const float RejectionFalloff = msaoRejectionFalloff > 0 ? msaoRejectionFalloff : 2.0f * power;
 	const float Accentuation = 0.1f;
 
 	// The msao_compute will be called repeatedly, so create a local lambda for it:
