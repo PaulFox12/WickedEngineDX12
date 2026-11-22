@@ -534,6 +534,13 @@ static wi::unordered_set<wi::ecs::Entity> gg_shadowFarPending; // far lights a m
 // lamp shows a passing car's shadow 20 times a second. every 1 = every frame for all (harness SET_SHADOWMOVERS <near> <every>)
 float gg_shadow_mover_near = 600.0f;
 int gg_shadow_mover_far_every = 3;
+// GG (2026-11-22): the objects the far throttle leaves out (SetShadowMoverExempt): a light the player's own car or body moves
+// through re-renders for it every frame wherever the camera is. The chase camera sits about 420 units behind the car, so a
+// lamp it drove into (its range about 790) was still past 600 from the eye, and the car's shadow under it redrew at 20 Hz
+// until the car was nearly beneath it. Five slots of Wicked objects, merged into one set
+static wi::vector<wi::ecs::Entity> gg_shadowExemptSlots[5];
+static wi::unordered_set<wi::ecs::Entity> gg_shadowExempt;
+static uint64_t gg_shadowExemptRenders = 0;
 static wi::unordered_map<wi::ecs::Entity, uint32_t> gg_shadowMovers;
 // GGMAX BR-0006: full local-atlas clears since startup. The per-frame counters above only show the frame a harness read
 // lands on, so a once-per-camera-move full re-render was invisible to them.
@@ -6838,14 +6845,18 @@ void UpdateVisibility(Visibility& vis)
 					const float dz = mNow._43 - mPrev._43;
 					const float delta = std::sqrt(dx * dx + dy * dy + dz * dz);
 					const AABB& aabb = vis.scene->aabb_objects[i];
+					// GG: the player's own car or body re-renders every light it moves through each frame (SetShadowMoverExempt)
+					const bool gg_exempt = !gg_shadowExempt.empty() && gg_shadowExempt.count(vis.scene->objects.GetEntity(i)) != 0;
 					for (const LocalShadowSlot& s : cur)
 					{
 						Sphere sph(s.pos, s.range + delta);
 						// GG: a far light waits its turn (gg_shadow_mover_far_every), pending till then
+						bool gg_far = false;
 						if (gg_shadow_mover_far_every > 1 && gg_shadow_mover_near > 0.0f && gg_frame_for_movers % (uint64_t)gg_shadow_mover_far_every != (uint64_t)(s.ent % (wi::ecs::Entity)gg_shadow_mover_far_every))
 						{
 							const float ex = s.pos.x - vis.camera->Eye.x, ey = s.pos.y - vis.camera->Eye.y, ez = s.pos.z - vis.camera->Eye.z;
-							if (ex * ex + ey * ey + ez * ez > gg_shadow_mover_near * gg_shadow_mover_near)
+							gg_far = ex * ex + ey * ey + ez * ez > gg_shadow_mover_near * gg_shadow_mover_near;
+							if (gg_far && !gg_exempt)
 							{
 								if (sph.intersects(aabb)) gg_shadowFarPending.insert(s.ent);
 								continue;
@@ -6854,6 +6865,7 @@ void UpdateVisibility(Visibility& vis)
 						if (sph.intersects(aabb) && !gg_IsLocalShadowDirty(s.ent))
 						{
 							localShadowDirty.push_back(s.ent);
+							if (gg_far) gg_shadowExemptRenders++; // GG: one the throttle would have held back
 							if (gg_shadow_movers_on) gg_shadowMovers[vis.scene->objects.GetEntity(i)]++; // GG: SHADOW_MOVERS
 						}
 					}
@@ -10213,6 +10225,15 @@ void GetLocalShadowRenderTotals(uint64_t& rendered, uint64_t& frames) { rendered
 void SetShadowMoverLog(int on) { gg_shadow_movers_on = on; gg_shadowMovers.clear(); }
 void SetShadowMoverThrottle(float nearUnits, int farEvery) { gg_shadow_mover_near = nearUnits < 0.0f ? 0.0f : nearUnits; gg_shadow_mover_far_every = farEvery < 1 ? 1 : farEvery; }
 void GetShadowMoverThrottle(float& nearUnits, int& farEvery) { nearUnits = gg_shadow_mover_near; farEvery = gg_shadow_mover_far_every; }
+void SetShadowMoverExempt(int slot, const wi::ecs::Entity* entities, int count)
+{
+	if (slot < 0 || slot >= 5) return;
+	gg_shadowExemptSlots[slot].clear();
+	for (int k = 0; entities != nullptr && k < count; ++k) if (entities[k] != wi::ecs::INVALID_ENTITY) gg_shadowExemptSlots[slot].push_back(entities[k]);
+	gg_shadowExempt.clear();
+	for (const wi::vector<wi::ecs::Entity>& list : gg_shadowExemptSlots) for (wi::ecs::Entity e : list) gg_shadowExempt.insert(e);
+}
+void GetShadowMoverExemptStats(uint32_t& objects, uint64_t& renders) { objects = (uint32_t)gg_shadowExempt.size(); renders = gg_shadowExemptRenders; }
 void GetShadowMovers(wi::vector<std::pair<wi::ecs::Entity, uint32_t>>& out)
 {
 	out.clear();
