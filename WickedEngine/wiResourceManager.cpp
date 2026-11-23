@@ -869,38 +869,41 @@ namespace wi
 
 						if (has_flag(flags, Flags::IMPORT_COLORGRADINGLUT))
 						{
+							// GG: a strip of N tiles of N x N (N 16, 32 or 64: 256 x 16, 1024 x 32, 4096 x 64), not only 16; a 16 step
+							// table bends a smooth gradient at each step, which shows as rings in a bright sky
+							const uint32_t lutSize = desc.height;
 							if (desc.type != TextureDesc::Type::TEXTURE_2D ||
-								desc.width != 256 ||
-								desc.height != 16 ||
+								(lutSize != 16 && lutSize != 32 && lutSize != 64) ||
+								desc.width != lutSize * lutSize ||
 								format != Format::R8G8B8A8_UNORM)
 							{
-								wi::helper::messageBox("The Dimensions must be 256 x 16 for color grading LUT and format must be RGB or RGBA!", "Error");
+								wi::helper::messageBox("The Dimensions must be 256 x 16, 1024 x 32 or 4096 x 64 for color grading LUT and format must be RGB or RGBA!", "Error");
 							}
 							else
 							{
-								uint32_t data[16 * 16 * 16];
+								wi::vector<uint32_t> data(lutSize * lutSize * lutSize);
 								int pixel = 0;
-								for (int z = 0; z < 16; ++z)
+								for (uint32_t z = 0; z < lutSize; ++z)
 								{
-									for (int y = 0; y < 16; ++y)
+									for (uint32_t y = 0; y < lutSize; ++y)
 									{
-										for (int x = 0; x < 16; ++x)
+										for (uint32_t x = 0; x < lutSize; ++x)
 										{
-											int coord = x + y * 256 + z * 16;
+											uint32_t coord = x + y * lutSize * lutSize + z * lutSize;
 											data[pixel++] = ((uint32_t*)rgba)[coord];
 										}
 									}
 								}
 
 								desc.type = TextureDesc::Type::TEXTURE_3D;
-								desc.width = 16;
-								desc.height = 16;
-								desc.depth = 16;
+								desc.width = lutSize;
+								desc.height = lutSize;
+								desc.depth = lutSize;
 								desc.bind_flags = BindFlag::SHADER_RESOURCE;
 								SubresourceData InitData;
-								InitData.data_ptr = data;
-								InitData.row_pitch = 16 * sizeof(uint32_t);
-								InitData.slice_pitch = 16 * InitData.row_pitch;
+								InitData.data_ptr = data.data();
+								InitData.row_pitch = lutSize * sizeof(uint32_t);
+								InitData.slice_pitch = lutSize * InitData.row_pitch;
 								success = device->CreateTexture(&desc, &InitData, &resource->texture);
 								device->SetName(&resource->texture, name.c_str());
 							}

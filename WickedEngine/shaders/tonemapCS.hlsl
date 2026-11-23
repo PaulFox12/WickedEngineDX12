@@ -151,7 +151,14 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	[branch]
 	if (tonemap_push.texture_colorgrade_lookuptable >= 0)
 	{
-		result.rgb = bindless_textures3D[descriptor_index(tonemap_push.texture_colorgrade_lookuptable)].SampleLevel(sampler_linear_clamp, result.rgb, 0).rgb;
+		// GG: sampled at the middles of the table's first and last steps (16, 32 or 64 a side): read with the colour as it was,
+		// the bottom and top half step of each channel clamped flat (the darkest and brightest 3% crushed in a 16 step table)
+		// and everything between moved by up to half a step
+		Texture3D lut = bindless_textures3D[descriptor_index(tonemap_push.texture_colorgrade_lookuptable)];
+		uint lutW, lutH, lutD;
+		lut.GetDimensions(lutW, lutH, lutD);
+		const float lutN = (float)max(lutW, 2u);
+		result.rgb = lut.SampleLevel(sampler_linear_clamp, saturate(result.rgb) * ((lutN - 1) / lutN) + 0.5 / lutN, 0).rgb;
 	}
 
 	[branch]
