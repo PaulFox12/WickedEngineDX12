@@ -67,6 +67,8 @@ namespace wi::renderer
 	// GGMAX: heat shimmer (see wiRenderer.cpp), drawn by GG_DrawHeatShimmer inside the distortion particles' pass
 	extern float gg_heat_strength, gg_heat_start, gg_heat_full, gg_heat_sun_boost, gg_heat_band, gg_heat_scale, gg_heat_speed;
 	void GG_DrawHeatShimmer(wi::graphics::CommandList cmd);
+	// GGMAX: the sun's light shafts against their stock look, 1 as before: brightness and reach toward the sun (Postprocess_LightShafts)
+	extern float gg_lightshaft_gain, gg_lightshaft_length;
 	extern int gg_dred_trace_draws;
 	void GG_RPTrace(const char* what);
 	bool GG_RPTraceNear();

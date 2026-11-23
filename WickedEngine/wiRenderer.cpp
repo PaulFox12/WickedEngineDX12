@@ -684,6 +684,10 @@ float gg_heat_sun_boost = 2.0f;
 float gg_heat_band = 0.06f;
 float gg_heat_scale = 1.0f;
 float gg_heat_speed = 1.0f;
+// GGMAX: the sun's light shafts (Lua SetLightShaftStrength): their brightness and their reach toward the sun against the stock
+// look, both 1 as before; the reach stretches the radial blur's march, so the streaks lengthen with the same total weight
+float gg_lightshaft_gain = 1.0f;
+float gg_lightshaft_length = 1.0f;
 // GG: the objects drawn twice this frame for an LOD crossfade (DUMP_LODSTATS)
 std::atomic<int> gg_dbg_lod_fading{ 0 };
 // GG: the temporal upscaler (FSR 3.1) drew last frame, set by RenderPath3D (OPTION_BIT_GG_TEMPORAL_DITHER)
@@ -20390,10 +20394,10 @@ void Postprocess_LightShafts(
 	postprocess.resolution.y = desc.height;
 	postprocess.resolution_rcp.x = 1.0f / postprocess.resolution.x;
 	postprocess.resolution_rcp.y = 1.0f / postprocess.resolution.y;
-	postprocess.params0.x = 0.65f;		// density
+	postprocess.params0.x = 0.65f * gg_lightshaft_length;	// density (GG: times the shafts' reach)
 	postprocess.params0.y = 0.25f;		// weight
 	postprocess.params0.z = 0.945f;		// decay
-	postprocess.params0.w = strength;	// exposure
+	postprocess.params0.w = strength * gg_lightshaft_gain;	// exposure (GG: times the shafts' brightness)
 	postprocess.params1.x = center.x;
 	postprocess.params1.y = center.y;
 	device->PushConstants(&postprocess, sizeof(postprocess), cmd);
