@@ -507,6 +507,10 @@ namespace wi::scene
 		{
 			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_GG_TERRAIN;
 		}
+		if (_flags & GG_KILLBOXCLIP) // GG: a plant clipped inside the vehicles' boxes
+		{
+			material.options_stencilref |= SHADERMATERIAL_OPTION_BIT_GG_KILLBOXCLIP;
+		}
 
 		material.options_stencilref |= wi::renderer::CombineStencilrefs(engineStencilRef, userStencilRef) << 24u;
 

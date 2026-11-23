@@ -202,6 +202,11 @@ namespace wi::renderer
 	extern float gg_shadow_caster_extrude;
 	// GG: the sun's feathered shadow taps nearest the camera (1-8, 8 DX11's); harness SET_SUNSHADOWTAPS
 	extern int gg_sun_shadow_taps;
+	// GG: the vehicles' boxes a plant's pixels are clipped inside (materials marked MaterialComponent::GG_KILLBOXCLIP): two
+	// float4 a box (the centre and the cos of its yaw, then the half sizes and the sin), up to GG_KILLBOX_CLIP_MAX; 0 none
+	void SetKillBoxClip(const XMFLOAT4* pShapes, uint32_t count);
+	uint32_t GetKillBoxClipCount();
+	extern int gg_killbox_clip_debug; // 1: every alpha-tested pixel in a box is cut, marked or not (a test lever)
 	// GGMAX 2.28: per-frame count of objects the DIRECTIONAL cascade cull selected as casters.
 	// The executed-check for gg_shadow_caster_extrude — VISIBLE_OBJECTS cannot see the effect,
 	// so without this an A/B cannot distinguish "no cost" from "the knob did nothing".

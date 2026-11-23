@@ -238,6 +238,20 @@ float gg_shadow_caster_extrude = 4000.0f; // ~101 m; stock behaviour is 1000 u (
 // 333 units out, down to 1; 8 is DX11's. Each tap is a 2x2 gather. Harness: SET_SUNSHADOWTAPS <1-8>.
 int gg_sun_shadow_taps = 8;
 
+// GG: the vehicles' boxes a plant's pixels are clipped inside (objectHF.hlsli GGInKillBoxClip), into FrameCB each frame
+static XMFLOAT4 gg_killbox_clip[GG_KILLBOX_CLIP_MAX * 2] = {};
+static uint32_t gg_killbox_clip_count = 0;
+int gg_killbox_clip_debug = 0; // harness KILLBOX_CLIP debug 1: every alpha-tested pixel in a box is cut, marked or not
+void SetKillBoxClip(const XMFLOAT4* pShapes, uint32_t count)
+{
+	gg_killbox_clip_count = std::min(count, (uint32_t)GG_KILLBOX_CLIP_MAX);
+	for (uint32_t i = 0; i < gg_killbox_clip_count * 2; ++i)
+	{
+		gg_killbox_clip[i] = pShapes[i];
+	}
+}
+uint32_t GetKillBoxClipCount() { return gg_killbox_clip_count; }
+
 // GGMAX 1.79 (low-VRAM preset, batch 3): build object PSOs LAZILY.
 // GGMAX 1.82: DEFAULT ON for everybody. Revert with setup.ini `lazypso=0`.
 //
@@ -7372,6 +7386,11 @@ void UpdatePerFrameData(
 		frameCB.entityarray_descriptor = device->GetDescriptorIndex(&vis.entityBuffer, SubresourceType::SRV);
 		frameCB.matrixarray_descriptor = device->GetDescriptorIndex(&vis.matrixBuffer, SubresourceType::SRV);
 		frameCB.gg_sun_shadow_taps = std::max(1, std::min(8, gg_sun_shadow_taps));
+		frameCB.gg_killbox_clip_count = gg_killbox_clip_count | (gg_killbox_clip_debug ? 0x80000000u : 0u); // GG: the vehicles' boxes plants are clipped inside
+		for (uint32_t i = 0; i < gg_killbox_clip_count * 2; ++i)
+		{
+			frameCB.gg_killbox_clip[i] = gg_killbox_clip[i];
+		}
 		ShaderEntity* entityArray = vis.entityArray.data();
 		float4x4* matrixArray = vis.matrixArray.data();
 

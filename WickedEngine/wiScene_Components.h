@@ -153,7 +153,10 @@ namespace wi::scene
 			// upstream grows this enum by append and would silently collide (see engine 2.02).
 			GG_FORCEDEPTH = 1 << 24,
 			// GGMAX: a terrain chunk's material (wiTerrain), for GameGuru's wet ground in the object shader
-			GG_TERRAIN = 1 << 25
+			GG_TERRAIN = 1 << 25,
+			// GG: a plant whose pixels are clipped inside the vehicles' boxes (an .fpe's killboxclip = 1;
+			// wi::renderer::SetKillBoxClip), so its fronds don't poke through a car parked in it
+			GG_KILLBOXCLIP = 1 << 26
 		};
 		uint32_t _flags = CAST_SHADOW;
 

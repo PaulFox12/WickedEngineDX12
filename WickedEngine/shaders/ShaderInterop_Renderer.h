@@ -111,6 +111,9 @@ enum SHADERMATERIAL_OPTIONS
 	SHADERMATERIAL_OPTION_BIT_GG_WEAPON_SHADOW = 1 << 23,
 	// GGMAX: a terrain chunk (MaterialComponent::GG_TERRAIN), for GameGuru's wet ground; the next bit down from the weapon's
 	SHADERMATERIAL_OPTION_BIT_GG_TERRAIN = 1 << 22,
+	// GG: a plant clipped inside the vehicles' boxes (MaterialComponent::GG_KILLBOXCLIP, an .fpe's killboxclip = 1;
+	// FrameCB gg_killbox_clip), so its fronds don't poke through a car parked in it; the next bit down
+	SHADERMATERIAL_OPTION_BIT_GG_KILLBOXCLIP = 1 << 21,
 };
 
 #ifndef __cplusplus
@@ -1346,6 +1349,9 @@ enum FRAME_OPTIONS
 
 // ---------- Common Constant buffers: -----------------
 
+// GG: the most vehicle boxes a plant is clipped inside (FrameCB gg_killbox_clip), as GameGuru's grass kill box slots
+#define GG_KILLBOX_CLIP_MAX 8
+
 struct alignas(16) FrameCB
 {
 	uint		options;					// wi::renderer bool options packed into bitmask (OPTION_BIT_ values)
@@ -1424,7 +1430,11 @@ struct alignas(16) FrameCB
 	int entityarray_descriptor;
 	int matrixarray_descriptor;
 	int gg_sun_shadow_taps;	// GG (was padding_entityarray0): the sun's feathered shadow taps near the camera, 1-8 (0 = 8, DX11's)
-	int padding_entityarray1;
+	// GG (was padding_entityarray1): the vehicles' boxes a plant's pixels are clipped inside (an .fpe's killboxclip = 1; Lua
+	// SetGrassKillBox's foliage pad), each two float4 after the rest of the frame's constants (so nothing before moves): the
+	// centre and the cos of its yaw, then its half sizes and the sin
+	uint gg_killbox_clip_count;
+	float4 gg_killbox_clip[GG_KILLBOX_CLIP_MAX * 2];
 };
 
 enum SHADERCAMERA_OPTIONS

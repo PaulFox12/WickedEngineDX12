@@ -650,6 +650,23 @@ PixelInput main(VertexInput input)
 #define APPEND_COVERAGE_OUTPUT , out uint coverage : SV_Coverage
 #endif // DISABLE_ALPHATEST
 
+// GG: true when p lies inside one of the vehicles' boxes a plant is clipped in (FrameCB gg_killbox_clip, as the grass kill
+// boxes of hairparticle_simulateCS.hlsl GGInShape: the centre and the cos of the yaw, then the half sizes and the sin)
+inline bool GGInKillBoxClip(float3 p)
+{
+	const uint count = min(GetFrame().gg_killbox_clip_count & 0xFFu, (uint)GG_KILLBOX_CLIP_MAX);
+	for (uint i = 0; i < count; ++i)
+	{
+		const float4 c = GetFrame().gg_killbox_clip[i * 2];
+		const float4 h = GetFrame().gg_killbox_clip[i * 2 + 1];
+		const float3 d = p - c.xyz;
+		const float3 local = float3(d.x * c.w - d.z * h.w, d.y, d.x * h.w + d.z * c.w);
+		if (all(abs(local) <= h.xyz))
+			return true;
+	}
+	return false;
+}
+
 #ifdef EARLY_DEPTH_STENCIL
 [earlydepthstencil]
 #endif // EARLY_DEPTH_STENCIL
@@ -1657,6 +1674,13 @@ float4 main(PixelInput input, in bool is_frontface : SV_IsFrontFace APPEND_COVER
 		coverage = coverage_alpha >= 0.5 ? ~0u : 0u;
 	else
 	coverage = AlphaToCoverage(coverage_alpha, coverage_test, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
+	// GG: a plant's pixels inside a vehicle's box are cut (an .fpe's killboxclip = 1), so its fronds don't poke through a car
+	// parked in it; in the depth prepass too, so nothing of it is drawn there
+	[branch]
+	// (the count's top bit, harness KILLBOX_CLIP debug 1: every alpha-tested pixel in a box is cut, marked or not)
+	if (((material.GetOptions() & SHADERMATERIAL_OPTION_BIT_GG_KILLBOXCLIP) || (GetFrame().gg_killbox_clip_count & 0x80000000u))
+		&& (GetFrame().gg_killbox_clip_count & 0xFFu) > 0 && GGInKillBoxClip(surface.P))
+		coverage = 0;
 #else
 	coverage = AlphaToCoverage(color.a, alphatest, dithering, input.pos); // opaque soft alpha test (MSAA, temporal AA support)
 #endif // TRANSPARENT
