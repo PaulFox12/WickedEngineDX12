@@ -144,6 +144,10 @@ namespace wi::scene
 	float gg_stars_twilight_end = 0.24f;
 	float gg_stars_skyfade = 0.01f;
 	float gg_stars_haze = 3000.0f;
+	// GG (2026-11-22): the sun's disc alone (skyAtmosphere.hlsli GetSunLuminance): its brightness times the sun's light, and a
+	// tint over the sun's colour, 0-1 a channel; GameGuru's Tab Tab Sun Disc and Lua SetSunDisc
+	float gg_sun_disc_gain = 1.0f;
+	XMFLOAT3 gg_sun_disc_tint = XMFLOAT3(1, 1, 1);
 	static std::atomic<uint32_t> gg_hier_missed{ 0 }, gg_hier_walked{ 0 };
 	// the first stale nodes found (entity, frame, kind 1 world 2 layer, the largest element's difference or the two masks)
 	static wi::ecs::Entity gg_hier_missed_ent[16] = {}; static uint64_t gg_hier_missed_frame[16] = {};
@@ -1270,6 +1274,11 @@ namespace wi::scene
 		shaderscene.weather.ocean.underwater_color = weather.oceanParameters.underwater_color;
 		shaderscene.weather.ocean.gg_fog_min = weather.oceanParameters.gg_waterFogMin; // GG: SetWaterFog (underwaterCS)
 		shaderscene.weather.ocean.gg_fog_max = weather.oceanParameters.gg_waterFogMax;
+		shaderscene.weather.ocean.gg_sun_disc_gain = std::max(0.0f, gg_sun_disc_gain); // GG: the sun's disc alone
+		{
+			auto channel = [](float v) { return (uint32_t)(std::min(std::max(v, 0.0f), 1.0f) * 255.0f + 0.5f); };
+			shaderscene.weather.ocean.gg_sun_disc_tint = channel(gg_sun_disc_tint.x) | (channel(gg_sun_disc_tint.y) << 8u) | (channel(gg_sun_disc_tint.z) << 16u) | (255u << 24u);
+		}
 		shaderscene.weather.ocean.extinction_color.w = weather.oceanParameters.gg_waterFogMinAmount;
 		shaderscene.weather.ocean.texture_displacementmap = device->GetDescriptorIndex(ocean.getDisplacementMap(), SubresourceType::SRV);
 		shaderscene.weather.ocean.texture_gradientmap = device->GetDescriptorIndex(ocean.getGradientMap(), SubresourceType::SRV);

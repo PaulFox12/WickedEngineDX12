@@ -367,8 +367,10 @@ struct alignas(16) ShaderOcean
 	// a whole row and keeps its alignment
 	float gg_fog_min;	// GG: a script's SetWaterFog, DX11's under water fog (underwaterCS): no fog nearer than this (units of water)
 	float gg_fog_max;	// GG: full fog by this; 0 = off (Lee's underwater fog above as it is). Its minimum amount is extinction_color.w
-	float gg_fog_pad0;
-	float gg_fog_pad1;
+	// GG: the sun's disc alone, in what were this row's two pads (nothing else moves): its brightness times the sun's light
+	// (Tab Tab's Sun Disc, SetSunDisc; 1 stock) and a tint over the sun's colour, packed 8 bits a channel (0 = white)
+	float gg_sun_disc_gain;
+	uint gg_sun_disc_tint;
 
 	float4 underwater_color;	// GG delta 1.23: colour the submerged view fogs toward + the waterline transition band, DECOUPLED from the surface water_color.rgb. Only used when underwater_fog_density > 0. rgb used, a spare.
 

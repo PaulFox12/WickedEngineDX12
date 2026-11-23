@@ -35,6 +35,9 @@ namespace wi::scene
 	// they begin and where all are out; the sky's brightness against the sun's past which none shows; the haze's depth
 	extern int gg_stars_rule;
 	extern float gg_stars_twilight_start, gg_stars_twilight_end, gg_stars_skyfade, gg_stars_haze;
+	// GG: the sun's disc alone: its brightness times the sun's light (1 stock) and a tint over the sun's colour, 0-1 a channel
+	extern float gg_sun_disc_gain;
+	extern XMFLOAT3 gg_sun_disc_tint;
 	void GetHierarchySkipStats(uint32_t& missed, uint32_t& walked, uint32_t& roots);
 	void GetHierarchyMissed(wi::ecs::Entity* ents, uint64_t* frames, int* kinds, float* deltas, uint32_t* masks, uint32_t& count);
 	void GetHierarchyWalkCounts(uint32_t& walks, uint32_t& full, uint32_t& fresh);
