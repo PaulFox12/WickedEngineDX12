@@ -144,6 +144,10 @@ namespace wi::scene
 	int gg_anim_object_list = 1;
 	// GG (2026-11-24): a hierarchy walk that isn't full hands the job system only the marked roots (harness SET_HIERSKIP list 0|1)
 	int gg_hier_walk_listed = 1;
+	// GG (2026-11-24): a texture's views changing anywhere (the streaming min lod fade, every frame while textures stream in)
+	// moved one epoch that made every material recompose (4,760 of 9,849 a frame walking Hanoi); now a material recomposes
+	// only when one of its own textures' descriptor versions moved (harness SET_MATTEXSIG)
+	int gg_material_texsig = 1;
 	// GG (2026-11-18): when the stars come out (skyAtmosphere.hlsli; harness SET_STARS); 0 = stock, out from sunset
 	int gg_stars_rule = 1;
 	float gg_stars_twilight_start = 0.035f;
@@ -5855,8 +5859,23 @@ namespace wi::scene
 			const uint32_t gg_frame = (uint32_t)device->GetFrameCount();
 			const bool gg_heartbeat = ((args.jobIndex ^ gg_frame) & 63u) == 0;
 			const bool gg_has_attachment = (videos.GetComponent(entity) != nullptr) || (material.cameraSource != INVALID_ENTITY);
+			// GG (gg_material_texsig): the epoch moved, so some texture's views changed somewhere; this material recomposes only if
+			// one of its own slots now holds another resource or one whose descriptor version moved
+			bool gg_textures_moved = false;
+			if (material.gg_shader_cache_epoch != gg_epoch)
+			{
+				uint64_t gg_sig = 1469598103934665603ull;
+				for (const auto& slot : material.textures)
+				{
+					gg_sig = (gg_sig ^ (uint64_t)(uintptr_t)slot.resource.internal_state.get()) * 1099511628211ull;
+					gg_sig = (gg_sig ^ (uint64_t)slot.resource.GetDescriptorVersion()) * 1099511628211ull;
+				}
+				gg_textures_moved = gg_material_texsig == 0 || gg_sig != material.gg_texture_signature;
+				material.gg_texture_signature = gg_sig;
+				material.gg_shader_cache_epoch = gg_epoch;
+			}
 			if (!gg_material_cache || gg_was_dirty || !material.gg_shader_cache_valid ||
-				material.gg_shader_cache_epoch != gg_epoch || gg_heartbeat || gg_has_attachment)
+				gg_textures_moved || gg_heartbeat || gg_has_attachment)
 			{
 				material.WriteShaderMaterial(&material.gg_shader_cache);
 				material.gg_shader_cache_valid = true;

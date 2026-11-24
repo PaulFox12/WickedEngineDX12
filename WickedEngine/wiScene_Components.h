@@ -421,6 +421,8 @@ namespace wi::scene
 		mutable ShaderMaterial gg_shader_cache;
 		mutable uint32_t gg_shader_cache_epoch = ~0u;
 		mutable bool gg_shader_cache_valid = false;
+		// GGMAX (2026-11-24): its texture slots' resources and their descriptor versions as last seen (gg_material_texsig)
+		mutable uint64_t gg_texture_signature = 0;
 		// GG: the colour and emissive maps read through their plain view, as stored (GameGuru's legacy particle sheets, made
 		// against their stored values and filtered as DX11 filters them), while gg_particle_plain_sheets is on
 		bool gg_plain_sheets = false;

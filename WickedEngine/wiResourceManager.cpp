@@ -47,6 +47,10 @@ namespace wi
 		resourcemanager::Flags flags = resourcemanager::Flags::NONE;
 		wi::graphics::Texture texture;
 		int srgb_subresource = -1;
+		// GGMAX (2026-11-24): moves whenever this resource's texture or its shader views change (a load, SetTexture, a streaming
+		// swap, the streaming min lod fade, a texture detail apply), so a material recomposes only when one of its own textures
+		// moved, not on every texture's change in the scene (wiScene RunMaterialUpdateSystem, gg_material_texsig)
+		std::atomic<uint32_t> gg_descriptor_version{ 0 };
 		wi::audio::Sound sound;
 		std::string script;
 		size_t script_hash = 0;
@@ -120,6 +124,11 @@ namespace wi
 		const ResourceInternal* resourceinternal = (ResourceInternal*)internal_state.get();
 		return resourceinternal->srgb_subresource;
 	}
+	uint32_t Resource::GetDescriptorVersion() const
+	{
+		const ResourceInternal* resourceinternal = (ResourceInternal*)internal_state.get();
+		return resourceinternal == nullptr ? 0u : resourceinternal->gg_descriptor_version.load(std::memory_order_relaxed);
+	}
 	int Resource::GetFontStyle() const
 	{
 		const ResourceInternal* resourceinternal = (ResourceInternal*)internal_state.get();
@@ -153,6 +162,7 @@ namespace wi
 		ResourceInternal* resourceinternal = (ResourceInternal*)internal_state.get();
 		resourceinternal->texture = texture;
 		resourceinternal->srgb_subresource = srgb_subresource;
+		resourceinternal->gg_descriptor_version.fetch_add(1, std::memory_order_relaxed);
 	}
 	void Resource::SetTextureVirtual(const GPUBuffer& tile_pool, const Texture& residency, const Texture& feedback)
 	{
@@ -1033,6 +1043,8 @@ namespace wi
 				resource->filedata.shrink_to_fit();
 			}
 
+			resource->gg_descriptor_version.fetch_add(1, std::memory_order_relaxed); // GGMAX: loaded or reloaded in place
+
 			return success;
 		}
 
@@ -1350,6 +1362,7 @@ namespace wi
 			{
 				replace.resource->texture = replace.texture;
 				replace.resource->srgb_subresource = replace.srgb_subresource;
+				replace.resource->gg_descriptor_version.fetch_add(1, std::memory_order_relaxed); // GGMAX
 			}
 			streaming_texture_replacements.clear();
 			streaming_replacement_mutex.unlock();
@@ -1373,6 +1386,7 @@ namespace wi
 						continue;
 					resource->streaming_texture.min_lod_clamp_absolute = min_lod_clamp_absolute_next;
 					gg_any_subresource_recreated = true; // GGMAX 1.41: descriptors recreated below
+					resource->gg_descriptor_version.fetch_add(1, std::memory_order_relaxed); // GGMAX: this one's views
 
 					const float min_lod_clamp_relative = min_lod_clamp_absolute_next - mip_offset;
 
@@ -2082,6 +2096,7 @@ namespace wi
 
 				e.res->texture              = fresh->texture;
 				e.res->srgb_subresource     = fresh->srgb_subresource;
+				e.res->gg_descriptor_version.fetch_add(1, std::memory_order_relaxed); // GGMAX
 				e.res->streaming_texture    = fresh->streaming_texture;
 				e.res->flags                = fresh->flags;
 				e.res->timestamp            = fresh->timestamp;

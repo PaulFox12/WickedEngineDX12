@@ -34,6 +34,7 @@ namespace wi::scene
 	// GG: the animation system's passes over the objects with an armature walk the object update's list of them (wiScene.cpp)
 	extern int gg_anim_object_list;
 	extern int gg_hier_walk_listed;
+	extern int gg_material_texsig;
 	// GG: when the stars come out: the rule on (1) or stock (0, from sunset); the sun's depth below the horizon (sine) where
 	// they begin and where all are out; the sky's brightness against the sun's past which none shows; the haze's depth
 	extern int gg_stars_rule;

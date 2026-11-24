@@ -29,6 +29,8 @@ namespace wi
 		size_t GetScriptHash() const;
 		const wi::video::Video& GetVideo() const;
 		int GetTextureSRGBSubresource() const;
+		// GGMAX: moves whenever the texture or its views change (a material recomposes only when one of its own textures moved)
+		uint32_t GetDescriptorVersion() const;
 		int GetFontStyle() const;
 
 		void SetFileData(const wi::vector<uint8_t>& data);
