@@ -51,6 +51,7 @@ namespace wi::scene
 	extern int gg_dbg_scene_changes;
 	void GetSceneChangeCounts(uint32_t* last10, uint64_t* sum10, uint32_t& updates);
 	void ResetSceneChangeCounts();
+	uint64_t GetMaterialsRecomposedTotal();
 
 	// GGMAX 3.25: Reduction Scale (the slider under "Lower Animation & LUA Speed"). Defined in
 	// wiScene.cpp - see the long note there for the specification and why the phase key is the

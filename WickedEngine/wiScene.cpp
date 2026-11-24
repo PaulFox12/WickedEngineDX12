@@ -191,6 +191,9 @@ namespace wi::scene
 	static uint64_t gg_dbg_sum[10] = {}; static uint32_t gg_dbg_updates = 0;
 	void GetSceneChangeCounts(uint32_t* last10, uint64_t* sum10, uint32_t& updates) { for (int i = 0; i < 10; i++) { last10[i] = gg_dbg_last[i]; sum10[i] = gg_dbg_sum[i]; } updates = gg_dbg_updates; }
 	void ResetSceneChangeCounts() { for (int i = 0; i < 10; i++) gg_dbg_sum[i] = 0; gg_dbg_updates = 0; }
+	// GG: every material recomposed since the start, always counted (Lua GetEngineCounters, for the game's run logs)
+	static std::atomic<uint64_t> gg_materials_recomposed_total{ 0 };
+	uint64_t GetMaterialsRecomposedTotal() { return gg_materials_recomposed_total.load(std::memory_order_relaxed); }
 
 	// Run a Scene::Update system, optionally serialised + timed. Variadic so call expressions
 	// containing commas (RunPhysicsUpdateSystem(ctx, *this, dt)) pass through intact.
@@ -5880,6 +5883,7 @@ namespace wi::scene
 				material.WriteShaderMaterial(&material.gg_shader_cache);
 				material.gg_shader_cache_valid = true;
 				if (gg_dbg_scene_changes) gg_dbg_mrecomposed.fetch_add(1, std::memory_order_relaxed);
+				gg_materials_recomposed_total.fetch_add(1, std::memory_order_relaxed);
 				material.gg_shader_cache_epoch = gg_epoch;
 			}
 			GGWrite(gg_upload_materials, materialArrayMapped + args.jobIndex, &material.gg_shader_cache, sizeof(ShaderMaterial));
