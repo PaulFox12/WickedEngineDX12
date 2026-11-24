@@ -31,6 +31,9 @@ namespace wi::scene
 	// GG: the hierarchy walks only the subtrees with a change (1) or every subtree each frame (0); its counts: nodes a full
 	// walk found stale where the skip would have left them (should stay 0), roots walked last time, roots
 	extern int gg_hier_skip;
+	// GG: the animation system's passes over the objects with an armature walk the object update's list of them (wiScene.cpp)
+	extern int gg_anim_object_list;
+	extern int gg_hier_walk_listed;
 	// GG: when the stars come out: the rule on (1) or stock (0, from sunset); the sun's depth below the horizon (sine) where
 	// they begin and where all are out; the sky's brightness against the sun's past which none shows; the haze's depth
 	extern int gg_stars_rule;
@@ -229,6 +232,8 @@ namespace wi::scene
 		wi::unordered_map<wi::ecs::Entity, uint32_t> gg_hier_node_root;
 		wi::unordered_map<wi::ecs::Entity, wi::vector<uint32_t>> gg_hier_parent_roots;
 		wi::vector<uint8_t> gg_hier_root_dirty;
+		// GG: the marked roots alone, handed to the jobs on a walk that isn't full (the jobs for every root were mostly empty)
+		wi::vector<uint32_t> gg_hier_walk_list;
 		bool gg_hier_maps_fresh = false;
 		uint32_t gg_hier_scan_from = 0;
 		uint32_t gg_hier_walks_since_full = 0;
@@ -363,6 +368,13 @@ namespace wi::scene
 		bool gg_upload_tracked_now = false; // this frame's gg_upload_tracked, fixed at the arrays' Prepare
 		uint32_t gg_hair_geometry_offset = 0;	// the hairs' geometry records, then the emitters', start here
 		wi::vector<uint32_t> gg_object_meshlet_offsets;
+		// GG: the objects whose mesh has an armature, listed by the object update for the animation system's next frame, with
+		// the object count and last object they were listed for: an object added or removed since changes one of them, and the
+		// animation system then looks at every object as before (gg_anim_object_list)
+		wi::vector<uint32_t> gg_armature_objects;
+		std::atomic<uint32_t> gg_armature_objects_count{ 0 };
+		size_t gg_armature_objects_for = ~0ull;
+		wi::ecs::Entity gg_armature_objects_last = wi::ecs::INVALID_ENTITY;
 		uint64_t gg_upload_bytes = 0;			// what the last upload copied (DUMP_UPLOADS)
 
 		// Occlusion query state:

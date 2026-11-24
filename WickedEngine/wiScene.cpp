@@ -138,6 +138,12 @@ namespace wi::scene
 	// GG (2026-11-17): the hierarchy walks only the subtrees with a change (Scene::RunHierarchyUpdateSystem; harness SET_HIERSKIP)
 	uint32_t gg_transform_stamp = 1;
 	int gg_hier_skip = 1;
+	// GG (2026-11-24): the animation system's two passes over every object to find the ones with an armature (the reduction's
+	// nearest distances, the off-screen hold: about 200 of 18,000 in Hanoi) walk the object update's list of them instead
+	// (Scene::gg_armature_objects); harness SET_ANIMOBJLIST
+	int gg_anim_object_list = 1;
+	// GG (2026-11-24): a hierarchy walk that isn't full hands the job system only the marked roots (harness SET_HIERSKIP list 0|1)
+	int gg_hier_walk_listed = 1;
 	// GG (2026-11-18): when the stars come out (skyAtmosphere.hlsli; harness SET_STARS); 0 = stock, out from sunset
 	int gg_stars_rule = 1;
 	float gg_stars_twilight_start = 0.035f;
@@ -2625,6 +2631,13 @@ namespace wi::scene
 	{
 		auto range = wi::profiler::BeginRangeCPU("Animations");
 
+		// GG: the passes below over the objects with an armature walk the object update's list of them where it still stands for
+		// these objects (gg_anim_object_list); objects added or removed since, every object as before
+		const bool gg_use_list = gg_anim_object_list != 0 && objects.GetCount() > 0 && gg_armature_objects_for == objects.GetCount() &&
+			gg_armature_objects_last == objects.GetEntity(objects.GetCount() - 1);
+		const uint32_t gg_walk_count = gg_use_list ? std::min<uint32_t>(gg_armature_objects_count.load(), (uint32_t)gg_armature_objects.size()) :
+			(uint32_t)objects.GetCount();
+
 		// ---- GGMAX 3.93: one Reduction Scale decision per CHARACTER, for this frame ----------
 		// Single-threaded and cheap, and it must happen before the jobs below read it.
 		//
@@ -2675,8 +2688,10 @@ namespace wi::scene
 				objcount.resize(armCount, 0);
 				const XMFLOAT3& eye = GetCamera().Eye;
 				const size_t objCount = objects.GetCount();
-				for (size_t oi = 0; oi < objCount; ++oi)
+				for (uint32_t gg_wi = 0; gg_wi < gg_walk_count; ++gg_wi)
 				{
+					const size_t oi = gg_use_list ? gg_armature_objects[gg_wi] : gg_wi;
+					if (oi >= objCount) continue;
 					const ObjectComponent& obj = objects[oi];
 					const MeshComponent* m = meshes.GetComponent(obj.meshID);
 					if (m == nullptr || m->armatureID == wi::ecs::INVALID_ENTITY) continue;
@@ -2833,8 +2848,10 @@ namespace wi::scene
 				const uint32_t curFrame = (uint32_t)GetDevice()->GetFrameCount();
 				const uint32_t nearDist2 = gg_anim_vis_pause_neardist2.load(std::memory_order_relaxed);
 				const XMFLOAT3 eye = GetCamera().Eye;
-				for (size_t oi = 0; oi < objects.GetCount(); ++oi)
+				for (uint32_t gg_wi = 0; gg_wi < gg_walk_count; ++gg_wi)
 				{
+					const size_t oi = gg_use_list ? gg_armature_objects[gg_wi] : gg_wi;
+					if (oi >= objects.GetCount()) continue;
 					const ObjectComponent& obj = objects[oi];
 					const MeshComponent* m = meshes.GetComponent(obj.meshID);
 					if (m == nullptr || m->armatureID == wi::ecs::INVALID_ENTITY) continue;
@@ -4228,14 +4245,27 @@ namespace wi::scene
 				gg_hier_walked_last = gg_hier_walked.exchange(0);
 				gg_hier_roots_last = (uint32_t)gg_hier_roots.size();
 
-				wi::jobsystem::Dispatch(ctx, (uint32_t)gg_hier_roots.size(), 8, [this, gg_skip_on, gg_full, gg_fresh](wi::jobsystem::JobArgs args) {
+				// GG (2026-11-24): a walk that isn't full is handed only the marked roots: given every root (18,014 in Hanoi, in groups
+				// of 8) for about 100 marked, the job system ran some 2,250 jobs a frame that returned at once
+				const bool gg_listed = gg_hier_walk_listed != 0 && gg_skip_on && !gg_full;
+				if (gg_listed)
+				{
+					gg_hier_walk_list.clear();
+					for (uint32_t r = 0; r < (uint32_t)gg_hier_root_dirty.size(); ++r)
+						if (gg_hier_root_dirty[r] != 0)
+							gg_hier_walk_list.push_back(r);
+				}
+				const uint32_t gg_walk_count = gg_listed ? (uint32_t)gg_hier_walk_list.size() : (uint32_t)gg_hier_roots.size();
 
-					const bool gg_marked = !gg_skip_on || gg_hier_root_dirty[args.jobIndex] != 0;
+				wi::jobsystem::Dispatch(ctx, gg_walk_count, 8, [this, gg_skip_on, gg_full, gg_fresh, gg_listed](wi::jobsystem::JobArgs args) {
+
+					const uint32_t gg_root_index = gg_listed ? gg_hier_walk_list[args.jobIndex] : args.jobIndex;
+					const bool gg_marked = !gg_skip_on || gg_hier_root_dirty[gg_root_index] != 0;
 					if (!gg_full && !gg_marked)
 						return; // GG: nothing in this subtree changed
 					const bool gg_count_stale = gg_full && !gg_fresh && gg_skip_on && !gg_marked;
 					gg_hier_walked.fetch_add(1, std::memory_order_relaxed);
-					const GGHierRoot& root = gg_hier_roots[args.jobIndex];
+					const GGHierRoot& root = gg_hier_roots[gg_root_index];
 
 					struct StackItem
 					{
@@ -6054,7 +6084,13 @@ namespace wi::scene
 
 		parallel_bounds.clear();
 		parallel_bounds.resize((size_t)wi::jobsystem::DispatchGroupCount((uint32_t)objects.GetCount(), small_subtask_groupsize));
-		
+
+		// GG: the objects with an armature, listed for the animation system's next frame (gg_anim_object_list)
+		gg_armature_objects.resize(objects.GetCount());
+		gg_armature_objects_count.store(0);
+		gg_armature_objects_for = objects.GetCount();
+		gg_armature_objects_last = objects.GetCount() > 0 ? objects.GetEntity(objects.GetCount() - 1) : INVALID_ENTITY;
+
 		wi::jobsystem::Dispatch(ctx, (uint32_t)objects.GetCount(), small_subtask_groupsize, [&](wi::jobsystem::JobArgs args) {
 
 			Entity entity = objects.GetEntity(args.jobIndex);
@@ -6107,6 +6143,10 @@ namespace wi::scene
 				// These will only be valid for a single frame:
 				object.mesh_index = (uint32_t)meshes.GetIndex(object.meshID);
 				const MeshComponent& mesh = meshes[object.mesh_index];
+				if (mesh.IsSkinned())
+				{
+					gg_armature_objects[gg_armature_objects_count.fetch_add(1, std::memory_order_relaxed)] = (uint32_t)args.jobIndex; // GG: gg_anim_object_list
+				}
 
 				if (object.IsWetmapEnabled() && !object.wetmap.IsValid())
 				{
@@ -6549,10 +6589,19 @@ namespace wi::scene
 					shared_bounds = AABB::Merge(shared_bounds, aabb_objects[args.jobIndex]);
 				}
 			}
-			else if (gg_instinit_objects_own && instanceArrayMapped != nullptr)
+			else
 			{
-				// GG: the blank pass left this slot to us (gg_instinit_objects_own); no mesh, no instance
-				GGWrite(gg_upload_instances, instanceArrayMapped + args.jobIndex, &GG_BlankInstance(), sizeof(ShaderMeshInstance));
+				// GG: an object with an armature but no transform still counts for the animation system (gg_anim_object_list)
+				const MeshComponent* gg_lone_mesh = object.meshID != INVALID_ENTITY ? meshes.GetComponent(object.meshID) : nullptr;
+				if (gg_lone_mesh != nullptr && gg_lone_mesh->IsSkinned())
+				{
+					gg_armature_objects[gg_armature_objects_count.fetch_add(1, std::memory_order_relaxed)] = (uint32_t)args.jobIndex;
+				}
+				if (gg_instinit_objects_own && instanceArrayMapped != nullptr)
+				{
+					// GG: the blank pass left this slot to us (gg_instinit_objects_own); no mesh, no instance
+					GGWrite(gg_upload_instances, instanceArrayMapped + args.jobIndex, &GG_BlankInstance(), sizeof(ShaderMeshInstance));
+				}
 			}
 
 		});
