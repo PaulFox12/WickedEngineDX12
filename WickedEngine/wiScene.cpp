@@ -264,6 +264,10 @@ namespace wi::scene
 	// coordinates; the default since the 2026-11-06 merge: it covers the camera's magnitude too, and stopped the same
 	// flicker), > 0 our share of the box's distance from the origin (1e-6, 2026-11-04), 0 stock
 	float gg_occlusion_box_grow = -1.0f;
+	float gg_occlusion_margin = 0.0f;                  // GGMAX BR-0046, see wiScene.h
+	std::atomic<uint32_t> gg_occlusion_pops{ 0 };      // GGMAX BR-0046 instrument
+	std::atomic<uint32_t> gg_occlusion_culls{ 0 };     // GGMAX BR-0046 instrument
+	bool gg_occlusion_instrument = false;              // GGMAX BR-0046: set by the harness (OCCLUSION_POPS)
 
 	void Scene::Update(float dt)
 	{
@@ -6194,6 +6198,10 @@ namespace wi::scene
 					if (visible)
 					{
 						occlusion_result.occlusionHistory |= 1; // visible
+						if (gg_occlusion_instrument && occlusion_result.gg_culled_at_query[queryheap_idx])
+						{
+							gg_occlusion_pops.fetch_add(1, std::memory_order_relaxed); // GGMAX BR-0046 instrument
+						}
 					}
 				}
 				else
@@ -6202,6 +6210,7 @@ namespace wi::scene
 				}
 			}
 			occlusion_result.occlusionQueries[queryheap_idx] = -1; // invalidate query
+			occlusion_result.gg_culled_at_query[queryheap_idx] = false; // GGMAX BR-0046 instrument
 
 			const LayerComponent* layer = layers.GetComponent(entity);
 			uint32_t layerMask;
