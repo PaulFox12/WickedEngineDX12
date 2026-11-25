@@ -93,7 +93,7 @@ namespace wi::scene
 	// the box was drawn, so an object revealed by a sideways camera move stays culled for that
 	// long - a one-frame gap where a wall behind a column should be. A margin > 0 widens each
 	// query box by this fraction of its distance from the camera (a fixed angle on screen), so
-	// the box peeks out from behind the occluder before the object itself does. 0 = stock.
+	// the box peeks out from behind the occluder before the object itself does. 0 = stock; GG's default 0.01.
 	extern float gg_occlusion_margin;
 	// GGMAX BR-0046 instrument: objects culled by occlusion in a frame whose OWN query from that
 	// frame later read visible ("pops" - hidden while visible; with a margin this is an upper

@@ -264,7 +264,9 @@ namespace wi::scene
 	// coordinates; the default since the 2026-11-06 merge: it covers the camera's magnitude too, and stopped the same
 	// flicker), > 0 our share of the box's distance from the origin (1e-6, 2026-11-04), 0 stock
 	float gg_occlusion_box_grow = -1.0f;
-	float gg_occlusion_margin = 0.0f;                  // GGMAX BR-0046, see wiScene.h
+	// GGMAX BR-0046, see wiScene.h. GG: 0.01 by default (the user, 2026-11-25): in Hanoi it cut the objects missing a
+	// frame while driving from 4.7 to 1.05, for 0.22 ms of GPU (occlusion_pops_check.py); harness SET_OCCLUSIONMARGIN 0
+	float gg_occlusion_margin = 0.01f;
 	std::atomic<uint32_t> gg_occlusion_pops{ 0 };      // GGMAX BR-0046 instrument
 	std::atomic<uint32_t> gg_occlusion_culls{ 0 };     // GGMAX BR-0046 instrument
 	bool gg_occlusion_instrument = false;              // GGMAX BR-0046: set by the harness (OCCLUSION_POPS)
