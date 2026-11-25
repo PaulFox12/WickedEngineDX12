@@ -221,6 +221,8 @@ namespace wi::renderer
 	// object-cascade pairs that left out last frame
 	extern float gg_shadow_min_texels;
 	extern unsigned int gg_shadow_texel_skipped;
+	// GGMAX BR-0044: the same for point-light cube shadows below 256 (true = default; false = stock, A/B only).
+	extern bool gg_point_lowres_bias_enable;
 	// GGMAX 3.108: sun shadows of SHADOW_DISTANCE_FADE objects dissolve with their distance fade
 	// (false = stock hard cut, for A/B); per-frame count of casters inside their fade band.
 	extern bool gg_shadow_distance_fade;
