@@ -144,6 +144,12 @@ namespace wi::scene
 	int gg_anim_object_list = 1;
 	// GG (2026-11-24): a hierarchy walk that isn't full hands the job system only the marked roots (harness SET_HIERSKIP list 0|1)
 	int gg_hier_walk_listed = 1;
+	// GG (2026-11-24): the object update's meshlet offsets (every object's meshlets in object order) were summed in one pass
+	// over every object on the calling thread before the object jobs were handed out (0.27 ms of the main thread in Hanoi);
+	// now each group of objects is summed by a job, the groups' bases taken in order, and each object job counts on from
+	// its group's base as it goes (the same offsets to the bit); harness SET_MESHLETPARALLEL
+	int gg_meshlet_parallel = 1;
+	std::atomic<uint32_t> gg_meshlet_checked{ 0 }, gg_meshlet_mismatches{ 0 };
 	// GG (2026-11-24): a texture's views changing anywhere (the streaming min lod fade, every frame while textures stream in)
 	// moved one epoch that made every material recompose (4,760 of 9,849 a frame walking Hanoi); now a material recomposes
 	// only when one of its own textures' descriptor versions moved (harness SET_MATTEXSIG)
@@ -6091,18 +6097,54 @@ namespace wi::scene
 		// the object jobs in whatever order they ran, so every instance's record changed each frame); last frame's mesh
 		// index where it still names the object's mesh
 		gg_object_meshlet_offsets.resize(objects.GetCount());
+		// an object's meshlet count, its mesh found as last frame's index names it, else by its entity
+		auto gg_object_meshlets = [&](size_t i) -> uint32_t {
+			const ObjectComponent& gg_object = objects[i];
+			const MeshComponent* gg_mesh = gg_object.mesh_index < meshes.GetCount() && meshes.GetEntity(gg_object.mesh_index) == gg_object.meshID ?
+				&meshes[gg_object.mesh_index] : meshes.GetComponent(gg_object.meshID);
+			return gg_mesh != nullptr ? gg_mesh->meshletCount : 0;
+		};
+		const int gg_meshlet_mode = gg_meshlet_parallel;
+		gg_meshlet_mode_now = gg_meshlet_mode;
+		if (gg_meshlet_mode == 0 || gg_meshlet_mode == 2)
 		{
+			// in one pass here, as before (and the check's reference: gg_meshlet_parallel 2)
+			wi::vector<uint32_t>& gg_out = gg_meshlet_mode == 2 ? gg_meshlet_check : gg_object_meshlet_offsets;
+			gg_out.resize(objects.GetCount());
 			uint32_t gg_meshlets = 0;
 			for (size_t i = 0; i < objects.GetCount(); ++i)
 			{
-				gg_object_meshlet_offsets[i] = gg_meshlets;
-				const ObjectComponent& gg_object = objects[i];
-				const MeshComponent* gg_mesh = gg_object.mesh_index < meshes.GetCount() && meshes.GetEntity(gg_object.mesh_index) == gg_object.meshID ?
-					&meshes[gg_object.mesh_index] : meshes.GetComponent(gg_object.meshID);
-				if (gg_mesh != nullptr)
-					gg_meshlets += gg_mesh->meshletCount;
+				gg_out[i] = gg_meshlets;
+				gg_meshlets += gg_object_meshlets(i);
 			}
 			meshletAllocator.store(gg_meshlets);
+		}
+		if (gg_meshlet_mode != 0)
+		{
+			// each group of the object jobs summed by a job of its own, then the groups' bases in order; the object jobs count
+			// on from their group's base (a group's objects run in order on one thread)
+			const uint32_t gg_groups = wi::jobsystem::DispatchGroupCount((uint32_t)objects.GetCount(), small_subtask_groupsize);
+			gg_meshlet_group_base.resize(gg_groups);
+			gg_meshlet_running.resize(gg_groups);
+			wi::jobsystem::context gg_sum_ctx;
+			wi::jobsystem::Dispatch(gg_sum_ctx, gg_groups, 1, [&](wi::jobsystem::JobArgs args) {
+				const size_t gg_from = (size_t)args.jobIndex * small_subtask_groupsize;
+				const size_t gg_to = std::min(gg_from + small_subtask_groupsize, objects.GetCount());
+				uint32_t gg_sum = 0;
+				for (size_t i = gg_from; i < gg_to; ++i)
+					gg_sum += gg_object_meshlets(i);
+				gg_meshlet_group_base[args.jobIndex] = gg_sum;
+			});
+			wi::jobsystem::Wait(gg_sum_ctx);
+			uint32_t gg_meshlets = 0;
+			for (uint32_t g = 0; g < gg_groups; ++g)
+			{
+				const uint32_t gg_sum = gg_meshlet_group_base[g];
+				gg_meshlet_group_base[g] = gg_meshlets;
+				gg_meshlets += gg_sum;
+			}
+			if (gg_meshlet_mode == 1)
+				meshletAllocator.store(gg_meshlets);
 		}
 
 		parallel_bounds.clear();
@@ -6120,6 +6162,25 @@ namespace wi::scene
 			ObjectComponent& object = objects[args.jobIndex];
 			AABB& aabb = aabb_objects[args.jobIndex];
 			GraphicsDevice* device = wi::graphics::GetDevice();
+
+			// GG: this object's meshlet offset, counted on from its group's base (gg_meshlet_parallel), its mesh found as the
+			// summing found it (last frame's index, before it is set again below)
+			if (gg_meshlet_mode_now != 0)
+			{
+				if (args.isFirstJobInGroup)
+					gg_meshlet_running[args.groupID] = gg_meshlet_group_base[args.groupID];
+				const uint32_t gg_offset = gg_meshlet_running[args.groupID];
+				const MeshComponent* gg_mesh = object.mesh_index < meshes.GetCount() && meshes.GetEntity(object.mesh_index) == object.meshID ?
+					&meshes[object.mesh_index] : meshes.GetComponent(object.meshID);
+				gg_meshlet_running[args.groupID] += gg_mesh != nullptr ? gg_mesh->meshletCount : 0;
+				if (gg_meshlet_mode_now == 2)
+				{
+					gg_meshlet_checked.fetch_add(1, std::memory_order_relaxed);
+					if (gg_offset != gg_meshlet_check[args.jobIndex])
+						gg_meshlet_mismatches.fetch_add(1, std::memory_order_relaxed);
+				}
+				gg_object_meshlet_offsets[args.jobIndex] = gg_offset;
+			}
 
 			// Update occlusion culling status:
 			OcclusionResult& occlusion_result = occlusion_results_objects[args.jobIndex];

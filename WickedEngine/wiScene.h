@@ -34,6 +34,10 @@ namespace wi::scene
 	// GG: the animation system's passes over the objects with an armature walk the object update's list of them (wiScene.cpp)
 	extern int gg_anim_object_list;
 	extern int gg_hier_walk_listed;
+	// GG: the object update's meshlet offsets summed by group in parallel (1), in one pass on the calling thread as before (0),
+	// or both, each object's compared (2); the objects compared and those that differed (wiScene.cpp)
+	extern int gg_meshlet_parallel;
+	extern std::atomic<uint32_t> gg_meshlet_checked, gg_meshlet_mismatches;
 	extern int gg_material_texsig;
 	// GG: when the stars come out: the rule on (1) or stock (0, from sunset); the sun's depth below the horizon (sine) where
 	// they begin and where all are out; the sky's brightness against the sun's past which none shows; the haze's depth
@@ -370,6 +374,8 @@ namespace wi::scene
 		bool gg_upload_tracked_now = false; // this frame's gg_upload_tracked, fixed at the arrays' Prepare
 		uint32_t gg_hair_geometry_offset = 0;	// the hairs' geometry records, then the emitters', start here
 		wi::vector<uint32_t> gg_object_meshlet_offsets;
+		wi::vector<uint32_t> gg_meshlet_group_base, gg_meshlet_running, gg_meshlet_check; // gg_meshlet_parallel's
+		int gg_meshlet_mode_now = 0; // gg_meshlet_parallel as this frame's object update started
 		// GG: the objects whose mesh has an armature, listed by the object update for the animation system's next frame, with
 		// the object count and last object they were listed for: an object added or removed since changes one of them, and the
 		// animation system then looks at every object as before (gg_anim_object_list)
