@@ -937,12 +937,34 @@ namespace wi::terrain
 		}
 
 		// Invalidated chunks replacements, originals are removed before merging updated ones:
+		// GGMAX: the GG grass hung under a chunk made again in place (a crater, a sculpt) is taken off it first and hung
+		// back under the merged one (the same entity, whose mesh it grows from each frame, so it follows the new ground).
+		// Removed with the chunk, the whole chunk's grass was gone until GameGuru grew it again: a quarter of a second
+		// round a crater, 2026-11-26
+		struct GGKeptGrass { Entity hair; Entity chunk; TransformComponent local; };
+		wi::vector<GGKeptGrass> gg_kept_grass;
 		for (Chunk chunk : generator->removable_chunks)
 		{
 			auto it = chunks.find(chunk);
 			if (it != chunks.end())
 			{
 				ChunkData& chunk_data = it->second;
+				if (gg_keep_grass_on_regen)
+				{
+					const size_t first = gg_kept_grass.size();
+					for (size_t h = 0; h < scene->hairs.GetCount(); h++)
+					{
+						if (scene->hairs[h].grass_type == 0)
+							continue;
+						const Entity hairEntity = scene->hairs.GetEntity(h);
+						const HierarchyComponent* parent = scene->hierarchy.GetComponent(hairEntity);
+						const TransformComponent* local = scene->transforms.GetComponent(hairEntity);
+						if (parent != nullptr && parent->parentID == chunk_data.entity && local != nullptr)
+							gg_kept_grass.push_back({ hairEntity, chunk_data.entity, *local });
+					}
+					for (size_t k = first; k < gg_kept_grass.size(); k++)
+						scene->Component_Detach(gg_kept_grass[k].hair);
+				}
 				scene->Entity_Remove(chunk_data.entity);
 				chunk_data.props_entity = INVALID_ENTITY;
 				if (chunk_data.vt != nullptr)
@@ -959,6 +981,23 @@ namespace wi::terrain
 
 		// What was generated, will be merged in to the main scene
 		scene->MergeFastInternal(generator->scene);
+
+		// GGMAX: the kept grass hung back under its chunk, in the chunk's space as GameGuru hung it (a chunk not merged back,
+		// its grass is left for GameGuru's own repair to remove)
+		for (const GGKeptGrass& kept : gg_kept_grass)
+		{
+			if (!scene->hairs.Contains(kept.hair) || !scene->objects.Contains(kept.chunk) || !scene->meshes.Contains(kept.chunk))
+				continue;
+			scene->Component_Attach(kept.hair, kept.chunk, true);
+			TransformComponent* local = scene->transforms.GetComponent(kept.hair);
+			if (local != nullptr)
+			{
+				*local = kept.local;
+				local->SetDirty();
+			}
+		}
+		gg_kept_grass_last = (uint32_t)gg_kept_grass.size();
+		gg_kept_grass_total += gg_kept_grass_last;
 		wi::profiler::gg_trace_mark("tg-merge"); // GGMAX 2.61 gap decomposition (fires per caller: S1 + bridge)
 
 		// GGMAX: everything the (now idle) generator produced is live in the main scene —
