@@ -167,6 +167,11 @@ namespace wi
 		mutable bool gg_particlesFullDrawn = false; // GG: this frame's, for the composite after the TAA
 		mutable bool gg_particlesHalfDeferred = false;
 		wi::graphics::Texture rtVolumetricLights; // contains the volumetric light results
+		// GG: the volumetric light results averaged over frames (wi::renderer::GG_VolumetricTemporal), this frame's and the
+		// last's in turn; the index of this frame's and whether the other holds a frame yet
+		wi::graphics::Texture rtVolumetricLightsTemporal[2];
+		mutable int gg_volumetricTemporalIndex = 0;
+		mutable bool gg_volumetricHistoryValid = false;
 		wi::graphics::Texture rtBloom; // contains the bright parts of the image + mipchain
 		wi::graphics::Texture rtBloom_tmp; // temporary for bloom downsampling
 		wi::graphics::Texture rtAO; // full res AO

@@ -2746,7 +2746,24 @@ namespace wi
 
 			device->RenderPassEnd(cmd);
 
+			// GG: averaged over frames into this frame's temporal target, which the contribute pass reads
+			if (wi::renderer::gg_volumetric_temporal && rtVolumetricLightsTemporal[0].IsValid() && rtVolumetricLightsTemporal[1].IsValid())
+			{
+				gg_volumetricTemporalIndex = 1 - gg_volumetricTemporalIndex;
+				wi::renderer::GG_VolumetricTemporal(rtVolumetricLights, rtVolumetricLightsTemporal[1 - gg_volumetricTemporalIndex],
+					rtVolumetricLightsTemporal[gg_volumetricTemporalIndex], gg_volumetricHistoryValid, cmd);
+				gg_volumetricHistoryValid = true;
+			}
+			else
+			{
+				gg_volumetricHistoryValid = false;
+			}
+
 			wi::profiler::EndRange(range);
+		}
+		else
+		{
+			gg_volumetricHistoryValid = false; // none drawn: the history is stale when they come back
 		}
 	}
 	void RenderPath3D::RenderSceneMIPChain(CommandList cmd) const
@@ -2949,7 +2966,7 @@ namespace wi
 		{
 			device->EventBegin("Contribute Volumetric Lights", cmd);
 			wi::renderer::Postprocess_Upsample_Bilateral(
-				rtVolumetricLights,
+				gg_volumetricHistoryValid ? rtVolumetricLightsTemporal[gg_volumetricTemporalIndex] : rtVolumetricLights,
 				rtLinearDepth,
 				rtMain,
 				cmd,
@@ -4212,10 +4229,20 @@ namespace wi
 			desc.height = internalResolution.y / 2;
 			device->CreateTexture(&desc, nullptr, &rtVolumetricLights);
 			device->SetName(&rtVolumetricLights, "rtVolumetricLights");
+			// GG: the averaged results, this frame's and the last's (GG_VolumetricTemporal)
+			for (int i = 0; i < 2; i++)
+			{
+				device->CreateTexture(&desc, nullptr, &rtVolumetricLightsTemporal[i]);
+				device->SetName(&rtVolumetricLightsTemporal[i], i == 0 ? "rtVolumetricLightsTemporal[0]" : "rtVolumetricLightsTemporal[1]");
+			}
+			gg_volumetricHistoryValid = false;
 		}
 		else
 		{
 			rtVolumetricLights = {};
+			rtVolumetricLightsTemporal[0] = {};
+			rtVolumetricLightsTemporal[1] = {};
+			gg_volumetricHistoryValid = false;
 		}
 	}
 	void RenderPath3D::setLightShaftsEnabled(bool value)

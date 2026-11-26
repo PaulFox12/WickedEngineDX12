@@ -2092,6 +2092,7 @@ bool LoadShader(
 static Shader particleCompositePS;
 static Shader ggParticleCompositeCS; // GG: the particles drawn apart laid over the TAA's picture
 static Shader ggHdrProbeCS; // GG: the white screen probe (GG_HdrProbe_*)
+static Shader ggVolumetricTemporalCS; // GG: the volumetric lights averaged over frames (GG_VolumetricTemporal)
 static BlendState particleCompositeBlend;
 static PipelineState PSO_particlecomposite;
 
@@ -2316,6 +2317,7 @@ void LoadShaders()
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::PS, particleCompositePS, "particlecompositePS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, ggParticleCompositeCS, "ggparticlecompositeCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, ggHdrProbeCS, "gg_hdrprobeCS.cso"); });
+	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, ggVolumetricTemporalCS, "ggVolumetricTemporalCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE], "aerialPerspectiveCS.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE], "aerialPerspectiveCS_capture.cso"); });
 	wi::jobsystem::Execute(ctx, [](wi::jobsystem::JobArgs args) { LoadShader(ShaderStage::CS, shaders[CSTYPE_POSTPROCESS_AERIALPERSPECTIVE_CAPTURE_MSAA], "aerialPerspectiveCS_capture_MSAA.cso"); });
@@ -21682,6 +21684,31 @@ static constexpr uint32_t GG_HDRPROBE_LUMINANCE_OFFSET = GG_HDRPROBE_SLOTS * 16;
 // Begin (the clear) is recorded in the transparent pass's command list and End (the copy out) in the post chain's; the two
 // lists are recorded on different threads, so nothing here passes state between them on the CPU: each call stands alone,
 // gated on the switch and on the buffers, which End makes once
+// GG: the volumetric lights averaged over frames (ggVolumetricTemporalCS, 2026-11-26): under FSR 3.1's jitter the half
+// resolution shafts flipped on depth edges each frame and the upscaler showed a shimmer. On by default, the history's share
+bool gg_volumetric_temporal = true;
+float gg_volumetric_temporal_blend = 0.9f;
+void GG_VolumetricTemporal(const Texture& current, const Texture& history, const Texture& output, bool historyValid, CommandList cmd)
+{
+	device->EventBegin("GG_VolumetricTemporal", cmd);
+	PostProcess postprocess;
+	postprocess.resolution.x = output.desc.width;
+	postprocess.resolution.y = output.desc.height;
+	postprocess.resolution_rcp.x = 1.0f / postprocess.resolution.x;
+	postprocess.resolution_rcp.y = 1.0f / postprocess.resolution.y;
+	postprocess.params0.x = gg_volumetric_temporal_blend;
+	postprocess.params0.y = historyValid ? 1.0f : 0.0f;
+	device->BindComputeShader(&ggVolumetricTemporalCS, cmd);
+	device->PushConstants(&postprocess, sizeof(postprocess), cmd);
+	device->BindResource(&current, 0, cmd);
+	device->BindResource(&history, 1, cmd);
+	device->Barrier(GPUBarrier::Image(&output, output.desc.layout, ResourceState::UNORDERED_ACCESS), cmd);
+	device->BindUAV(&output, 0, cmd);
+	device->Dispatch((output.desc.width + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, (output.desc.height + POSTPROCESS_BLOCKSIZE - 1) / POSTPROCESS_BLOCKSIZE, 1, cmd);
+	device->Barrier(GPUBarrier::Image(&output, ResourceState::UNORDERED_ACCESS, output.desc.layout), cmd);
+	device->EventEnd(cmd);
+}
+
 static bool GG_HdrProbe_On()
 {
 	return gg_hdr_probe_enabled && ggHdrProbeCS.IsValid() && ggHdrProbeReady.load();

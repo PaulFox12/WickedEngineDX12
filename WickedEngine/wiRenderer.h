@@ -1205,6 +1205,12 @@ namespace wi::renderer
 		float luminance = 0;
 	};
 	extern bool gg_hdr_probe_enabled;
+	// GG: the volumetric lights (half resolution) averaged over frames before they are laid on the scene, so FSR 3.1's jitter
+	// doesn't make them shimmer on depth edges (on by default; the history's share, 0.9). current: this frame's, history: the
+	// last frame's average, output: this frame's average
+	extern bool gg_volumetric_temporal;
+	extern float gg_volumetric_temporal_blend;
+	void GG_VolumetricTemporal(const wi::graphics::Texture& current, const wi::graphics::Texture& history, const wi::graphics::Texture& output, bool historyValid, wi::graphics::CommandList cmd);
 	void GG_HdrProbe_Begin(wi::graphics::CommandList cmd);
 	void GG_HdrProbe_Texture(const wi::graphics::Texture& input, int slot, wi::graphics::CommandList cmd, uint32_t stride = 1);
 	void GG_HdrProbe_End(const wi::graphics::GPUBuffer* luminance, wi::graphics::CommandList cmd);
