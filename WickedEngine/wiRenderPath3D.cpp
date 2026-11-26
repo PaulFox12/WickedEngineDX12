@@ -2746,8 +2746,10 @@ namespace wi
 
 			device->RenderPassEnd(cmd);
 
-			// GG: averaged over frames into this frame's temporal target, which the contribute pass reads
-			if (wi::renderer::gg_volumetric_temporal && rtVolumetricLightsTemporal[0].IsValid() && rtVolumetricLightsTemporal[1].IsValid())
+			// GG: averaged over frames into this frame's temporal target, which the contribute pass reads; only on a jittered
+			// frame (FSR, TAA), where the shimmer comes from: unjittered they're drawn as before
+			const bool gg_jittered = camera != nullptr && (camera->jitter.x != 0 || camera->jitter.y != 0);
+			if (wi::renderer::gg_volumetric_temporal && gg_jittered && rtVolumetricLightsTemporal[0].IsValid() && rtVolumetricLightsTemporal[1].IsValid())
 			{
 				gg_volumetricTemporalIndex = 1 - gg_volumetricTemporalIndex;
 				wi::renderer::GG_VolumetricTemporal(rtVolumetricLights, rtVolumetricLightsTemporal[1 - gg_volumetricTemporalIndex],
