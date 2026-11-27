@@ -57,7 +57,9 @@ void main(uint3 DTid : SV_DispatchThreadID)
 	// moving over the glow
 	const float depthNow = compute_lineardepth(texture_depth.SampleLevel(sampler_point_clamp, uv, 0));
 	const float depthThen = compute_lineardepth(texture_depth_history.SampleLevel(sampler_point_clamp, prevUV, 0));
-	const bool sameSurface = abs(depthNow - depthThen) <= 2 + depthNow * 0.02;
+	// only where something moved (as the TAA tests it): the jitter alone moves a leaf's edge over the sky too, and dropping the
+	// history there undid the average (11,923 pixels flickering in the still sunward view, 2026-11-27)
+	const bool sameSurface = length(velocity) <= 0.0005 || abs(depthNow - depthThen) <= 2 + depthNow * 0.02;
 	if (is_saturated(prevUV) && sameSurface)
 	{
 		float4 history = input_history.SampleLevel(sampler_linear_clamp, prevUV, 0);
