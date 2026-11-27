@@ -21688,6 +21688,8 @@ static constexpr uint32_t GG_HDRPROBE_LUMINANCE_OFFSET = GG_HDRPROBE_SLOTS * 16;
 // resolution shafts flipped on depth edges each frame and the upscaler showed a shimmer. On by default, the history's share
 bool gg_volumetric_temporal = true;
 float gg_volumetric_temporal_blend = 0.9f;
+float gg_volumetric_upsample_share = 0.05f;
+bool gg_fsr_prealpha_after_shafts = true;
 void GG_VolumetricTemporal(const Texture& current, const Texture& history, const Texture& output, bool historyValid, CommandList cmd)
 {
 	device->EventBegin("GG_VolumetricTemporal", cmd);

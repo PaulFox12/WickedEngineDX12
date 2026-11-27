@@ -1210,6 +1210,8 @@ namespace wi::renderer
 	// last frame's average, output: this frame's average
 	extern bool gg_volumetric_temporal;
 	extern float gg_volumetric_temporal_blend;
+	extern float gg_volumetric_upsample_share;
+	extern bool gg_fsr_prealpha_after_shafts; // GG: FSR's opaque-only copy taken after the volumetric lights and light shafts // GG: the shafts' composite: a sample kept within this share of the pixel's depth (0: Wicked's one unit)
 	void GG_VolumetricTemporal(const wi::graphics::Texture& current, const wi::graphics::Texture& history, const wi::graphics::Texture& output, bool historyValid, wi::graphics::CommandList cmd);
 	void GG_HdrProbe_Begin(wi::graphics::CommandList cmd);
 	void GG_HdrProbe_Texture(const wi::graphics::Texture& input, int slot, wi::graphics::CommandList cmd, uint32_t stride = 1);

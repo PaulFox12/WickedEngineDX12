@@ -2831,7 +2831,11 @@ namespace wi
 
 		// GG: the pre-alpha copy for FSR's reactive mask is taken after the sea (gg_ocean_fsr bit 2): before it, the whole sea
 		// differed from the copy and was marked reactive, shown unaveraged
-		const bool gg_prealpha_after_sea = getFSR2Enabled() && (gg_ocean_fsr & 2) != 0;
+		// GG: and after the volumetric lights and light shafts when gg_fsr_prealpha_after_shafts is set (the default): the glow
+		// they lay over the scene is its lighting, not a transparent; copied before it, every pixel it brightened past the
+		// threshold was marked reactive and shown unaveraged, and each outline in a hazy view flickered (2026-11-27)
+		const bool gg_prealpha_after_shafts = getFSR2Enabled() && wi::renderer::gg_fsr_prealpha_after_shafts;
+		const bool gg_prealpha_after_sea = getFSR2Enabled() && (gg_ocean_fsr & 2) != 0 && !gg_prealpha_after_shafts;
 		auto gg_copy_prealpha = [&]() {
 			// Save the pre-alpha for FSR2 reactive mask:
 			//	Note that rtFSR temp resource is always larger or equal to rtMain, so CopyTexture is used instead of CopyResource!
@@ -2851,7 +2855,7 @@ namespace wi
 			}
 			device->Barrier(barriers, arraysize(barriers), cmd);
 		};
-		if (getFSR2Enabled() && !gg_prealpha_after_sea)
+		if (getFSR2Enabled() && !gg_prealpha_after_sea && !gg_prealpha_after_shafts)
 		{
 			gg_copy_prealpha();
 		}
@@ -2973,7 +2977,8 @@ namespace wi
 				rtMain,
 				cmd,
 				true,
-				1.5f
+				// GG: within a share of the pixel's depth, not one unit (the staircase and flicker on far ridges)
+				wi::renderer::gg_volumetric_upsample_share > 0 ? -1.0f / wi::renderer::gg_volumetric_upsample_share : 1.5f
 			);
 			device->EventEnd(cmd);
 		}
@@ -2988,6 +2993,13 @@ namespace wi
 			fx.opacity = lightShaftsFadeFactor;
 			wi::image::Draw(&rtSun[1], fx, cmd);
 			device->EventEnd(cmd);
+		}
+
+		if (gg_prealpha_after_shafts)
+		{
+			device->RenderPassEnd(cmd);
+			gg_copy_prealpha();
+			device->RenderPassBegin(rp, rp_count, cmd);
 		}
 
 		// Transparent scene
